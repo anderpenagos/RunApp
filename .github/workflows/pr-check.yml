@@ -1,0 +1,67 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  lint-and-build:
+    name: Lint & Build Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+      
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      
+      - name: Create local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+      
+      - name: Run Lint
+        run: ./gradlew lint --continue
+      
+      - name: Upload Lint Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results*.html
+          retention-days: 7
+      
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+      
+      - name: Build Check Summary
+        if: always()
+        run: |
+          echo "## 🔍 Build Check Completo!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "app/build/reports/lint-results-debug.html" ]; then
+            WARNINGS=$(grep -o "warning" app/build/reports/lint-results-debug.html | wc -l || echo "0")
+            ERRORS=$(grep -o "error" app/build/reports/lint-results-debug.html | wc -l || echo "0")
+            
+            echo "### 📊 Lint Report" >> $GITHUB_STEP_SUMMARY
+            echo "- ⚠️ Warnings: $WARNINGS" >> $GITHUB_STEP_SUMMARY
+            echo "- ❌ Errors: $ERRORS" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
+            SIZE=$(du -h app/build/outputs/apk/debug/app-debug.apk | cut -f1)
+            echo "### 📦 APK Info" >> $GITHUB_STEP_SUMMARY
+            echo "- Size: $SIZE" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Build successful!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Build Failed" >> $GITHUB_STEP_SUMMARY
+            echo "O build falhou. Verifique os logs acima." >> $GITHUB_STEP_SUMMARY
+          fi
