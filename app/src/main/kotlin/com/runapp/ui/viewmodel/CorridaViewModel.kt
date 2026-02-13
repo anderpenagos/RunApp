@@ -83,10 +83,13 @@ class CorridaViewModel(
                 val athleteId = container.preferencesRepository.athleteId.first() ?: return@launch
                 val repo = container.createWorkoutRepository(apiKey).also { workoutRepo = it }
 
-                val evento = repo.getTreinoDetalhe(athleteId, eventId).getOrThrow()
-                val zonas = repo.getZonas(athleteId).getOrDefault(null)
-                val paceZones = zonas?.running?.pace ?: emptyList()
-
+                val zonasResponse = repo.getZonas(athleteId).getOrDefault(null)
+                val paceZones = if (zonasResponse != null) {
+                    repo.processarZonas(zonasResponse)
+                } else {
+                    emptyList()
+                }
+                
                 val passos = repo.converterParaPassos(evento, paceZones)
                 _uiState.value = _uiState.value.copy(
                     passos = passos,

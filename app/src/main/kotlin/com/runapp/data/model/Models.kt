@@ -22,7 +22,7 @@ data class WorkoutDoc(
 )
 
 data class WorkoutStep(
-    val type: String = "SteadyState",  // SteadyState, IntervalsT, Rest, Warmup, Cooldown
+    val type: String = "SteadyState",  // SteadyState, IntervalsT, Rest, Warmup, Cooldown, Ramp
     val duration: Int = 0,             // segundos
     @SerializedName("power") val target: StepTarget? = null,
     val pace: StepTarget? = null,
@@ -38,15 +38,22 @@ data class StepTarget(
     val type: String = "pace"  // "zone", "pace", "heart_rate", "power"
 )
 
-// ---- Zonas ----
+// ---- Zonas (FORMATO CORRETO DA API) ----
 
 data class ZonesResponse(
-    val running: RunningZones? = null
+    @SerializedName("sportSettings") val sportSettings: List<SportSetting> = emptyList()
 )
 
-data class RunningZones(
-    val pace: List<PaceZone> = emptyList()
+data class SportSetting(
+    val id: Long = 0,
+    val types: List<String> = emptyList(),
+    @SerializedName("threshold_pace") val thresholdPace: Double? = null,  // m/s
+    @SerializedName("pace_units") val paceUnits: String? = null,
+    @SerializedName("pace_zones") val paceZones: List<Double>? = null,  // PORCENTAGENS!
+    @SerializedName("pace_zone_names") val paceZoneNames: List<String>? = null
 )
+
+// ---- Zona processada (para uso interno) ----
 
 data class PaceZone(
     val id: Int = 0,

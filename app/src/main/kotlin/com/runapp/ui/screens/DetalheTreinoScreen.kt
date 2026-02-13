@@ -60,8 +60,13 @@ class DetalheTreinoViewModel(
                 }
                 val repo = container.createWorkoutRepository(apiKey)
                 val evento = repo.getTreinoDetalhe(athleteId, eventId).getOrThrow()
-                val zonas = repo.getZonas(athleteId).getOrDefault(null)
-                val passos = repo.converterParaPassos(evento, zonas?.running?.pace ?: emptyList())
+                val zonasResponse = repo.getZonas(athleteId).getOrDefault(null)
+                val paceZones = if (zonasResponse != null) {
+                    repo.processarZonas(zonasResponse)
+                } else {
+                    emptyList()
+                }
+                val passos = repo.converterParaPassos(evento, paceZones)
                 _state.value = DetalheTreinoState(treino = evento, passos = passos)
             } catch (e: Exception) {
                 _state.value = DetalheTreinoState(error = "Erro: ${e.message}")
