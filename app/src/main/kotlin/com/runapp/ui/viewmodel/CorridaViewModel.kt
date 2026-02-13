@@ -82,6 +82,7 @@ class CorridaViewModel(
                 val apiKey = container.preferencesRepository.apiKey.first() ?: return@launch
                 val athleteId = container.preferencesRepository.athleteId.first() ?: return@launch
                 val repo = container.createWorkoutRepository(apiKey).also { workoutRepo = it }
+                val evento = repo.getTreinoDetalhe(athleteId, eventId).getOrThrow()
 
                 val zonasResponse = repo.getZonas(athleteId).getOrDefault(null)
                 val paceZones = if (zonasResponse != null) {
