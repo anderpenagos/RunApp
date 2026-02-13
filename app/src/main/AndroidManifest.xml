@@ -32,7 +32,7 @@
         <!-- Obtenha em: console.cloud.google.com → Maps SDK for Android -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="YOUR_GOOGLE_MAPS_API_KEY" />
+            android:value="${MAPS_API_KEY}" />
 
         <activity
             android:name=".MainActivity"
