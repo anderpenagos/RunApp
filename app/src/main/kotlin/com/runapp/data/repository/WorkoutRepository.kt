@@ -221,7 +221,11 @@ class WorkoutRepository(private val api: IntervalsApi) {
         when {
             // CASO 1: type="zone" ou valor pequeno (1-10)
             (paceTarget?.type == "zone" || (paceTarget != null && paceTarget.value in 0.5..10.0)) -> {
-                zona = paceTarget.value.toInt().coerceIn(1, paceZones.size)
+                zona = if (paceZones.isNotEmpty()) {
+                    paceTarget.value.toInt().coerceIn(1, paceZones.size)
+                } else {
+                    paceTarget.value.toInt().coerceIn(1, 5)  // Fallback para zonas 1-5
+                }
                 Log.d(TAG, "✓ Detectado zona: Z$zona")
                 
                 val zonaConfig = paceZones.getOrNull(zona - 1)
