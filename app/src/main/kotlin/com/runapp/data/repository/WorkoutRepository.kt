@@ -119,11 +119,17 @@ class WorkoutRepository(private val api: IntervalsApi) {
             
             // Converter porcentagens para pace em s/m
             // Porcentagem MENOR = pace MAIS LENTO (mais s/m)
-            val paceMaxSecsPerMeter = thresholdSecsPerMeter / (limiteAnterior / 100.0)
+            // Para a primeira zona (limiteAnterior = 0), usar um valor bem alto (pace muito lento)
+            val paceMaxSecsPerMeter = if (limiteAnterior > 0.0) {
+                thresholdSecsPerMeter / (limiteAnterior / 100.0)
+            } else {
+                999.0  // Pace máximo muito lento para a primeira zona
+            }
+            
             val paceMinSecsPerMeter = if (limitePercent < 900) {
                 thresholdSecsPerMeter / (limitePercent / 100.0)
             } else {
-                0.0  // Sem limite superior
+                0.0  // Sem limite superior (pace muito rápido)
             }
 
             zonasProcessadas.add(
