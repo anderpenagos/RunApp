@@ -107,29 +107,37 @@ class WorkoutRepository(private val api: IntervalsApi) {
 
         val zonasProcessadas = mutableListOf<PaceZone>()
         
-        // Zonas são definidas por limites de porcentagem
+        // Zonas são definidas por limites de porcentagem do threshold pace
         // Ex: [77.5, 87.7, 94.3, 100, 103.4, 111.5, 999]
-        // Zone 1: 0% a 77.5%
+        // Zone 1: 0% a 77.5% (pace mais lento)
         // Zone 2: 77.5% a 87.7%
         // etc.
+        // 
+        // IMPORTANTE: % MAIOR = pace MAIS RÁPIDO (menos s/m)
+        // Ex: 100% do threshold = threshold pace
+        //     77.5% do threshold = pace 29% mais lento que threshold
         
         var limiteAnterior = 0.0
         paceZones.forEachIndexed { index, limitePercent ->
             val nome = paceZoneNames?.getOrNull(index) ?: "Zone ${index + 1}"
             
             // Converter porcentagens para pace em s/m
-            // Porcentagem MENOR = pace MAIS LENTO (mais s/m)
-            // Para a primeira zona (limiteAnterior = 0), usar um valor bem alto (pace muito lento)
+            // pace(s/m) = thresholdPace(s/m) / (porcentagem / 100)
+            
+            // Limite superior da zona (pace mais lento = menor porcentagem)
             val paceMaxSecsPerMeter = if (limiteAnterior > 0.0) {
                 thresholdSecsPerMeter / (limiteAnterior / 100.0)
             } else {
-                999.0  // Pace máximo muito lento para a primeira zona
+                // Primeira zona: usar um pace muito lento como limite superior
+                thresholdSecsPerMeter * 2.0  // 2x mais lento que threshold
             }
             
+            // Limite inferior da zona (pace mais rápido = maior porcentagem)
             val paceMinSecsPerMeter = if (limitePercent < 900) {
                 thresholdSecsPerMeter / (limitePercent / 100.0)
             } else {
-                0.0  // Sem limite superior (pace muito rápido)
+                // Última zona: pace muito rápido (sem limite inferior)
+                0.0
             }
 
             zonasProcessadas.add(
@@ -142,7 +150,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
                 )
             )
 
-            Log.d(TAG, "Zona ${index + 1} ($nome): ${formatarPace(paceMinSecsPerMeter)} - ${formatarPace(paceMaxSecsPerMeter)}/km")
+            Log.d(TAG, "Zona ${index + 1} ($nome): ${formatarPace(paceMinSecsPerMeter)} - ${formatarPace(paceMaxSecsPerMeter)}/km (${limiteAnterior}% - ${limitePercent}%)")
             
             limiteAnterior = limitePercent
         }
