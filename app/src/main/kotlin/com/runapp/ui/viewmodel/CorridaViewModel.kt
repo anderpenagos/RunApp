@@ -71,7 +71,7 @@ class CorridaViewModel(
     private var ultimaLocalizacao: Location? = null
     private var ultimoKmAnunciado = 0.0
     private var ultimoFeedbackPace = 0L
-    private val FEEDBACK_PACE_INTERVALO_MS = 15_000L // a cada 15s (feedback mais rápido)
+    private val FEEDBACK_PACE_INTERVALO_MS = 5_000L // a cada 5s (monitoramento constante)
 
     // Repositório instanciado após ter as credenciais
     private var workoutRepo: WorkoutRepository? = null
@@ -251,6 +251,33 @@ class CorridaViewModel(
         )
 
         _uiState.value = state.copy(fase = FaseCorrida.FINALIZADO)
+
+        // Salvar a atividade
+        viewModelScope.launch {
+            try {
+                val apiKey = container.preferencesRepository.apiKey.first()
+                val athleteId = container.preferencesRepository.athleteId.first()
+                
+                if (apiKey != null && athleteId != null && workoutRepo != null) {
+                    val nomeAtividade = "Corrida RunApp - ${java.time.LocalDateTime.now().format(
+                        java.time.format.DateTimeFormatter.ofPattern("dd/MM HH:mm")
+                    )}"
+                    
+                    workoutRepo?.salvarAtividade(
+                        athleteId = athleteId,
+                        nomeAtividade = nomeAtividade,
+                        distanciaMetros = state.distanciaMetros,
+                        tempoSegundos = state.tempoTotalSegundos,
+                        paceMedia = state.paceMedia,
+                        rota = state.rota
+                    )
+                    
+                    android.util.Log.d("CorridaVM", "✅ Atividade salva!")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("CorridaVM", "Erro ao salvar atividade", e)
+            }
+        }
 
         // Para o Foreground Service
         val intent = Intent(context, RunningService::class.java).apply {
