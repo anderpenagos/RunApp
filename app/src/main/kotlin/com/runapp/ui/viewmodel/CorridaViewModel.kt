@@ -78,8 +78,8 @@ class CorridaViewModel(
     fun carregarTreino(eventId: Long) {
         viewModelScope.launch {
             try {
-                val apiKey = container.preferencesRepository.apiKey.value ?: return@launch
-                val athleteId = container.preferencesRepository.athleteId.value ?: return@launch
+                val apiKey = container.preferencesRepository.apiKey.first() ?: return@launch
+                val athleteId = container.preferencesRepository.athleteId.first() ?: return@launch
                 val repo = container.createWorkoutRepository(apiKey).also { workoutRepo = it }
 
                 val evento = repo.getTreinoDetalhe(athleteId, eventId).getOrThrow()
