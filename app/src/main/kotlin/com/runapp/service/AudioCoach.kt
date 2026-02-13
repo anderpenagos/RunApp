@@ -55,12 +55,14 @@ class AudioCoach(private val context: Context) {
 
     fun anunciarPasso(nomePasso: String, paceAlvo: String, duracao: Int) {
         val duracaoTexto = if (duracao >= 60) "${duracao / 60} minutos" else "$duracao segundos"
-        falarUrgente("$nomePasso por $duracaoTexto. Pace alvo: $paceAlvo por quilômetro.")
+        val paceTexto = formatarPaceParaFala(paceAlvo)
+        falarUrgente("$nomePasso por $duracaoTexto. Pace alvo: $paceTexto por quilômetro.")
     }
 
     fun anunciarKm(distanciaKm: Double, paceMedia: String) {
         val km = "%.1f".format(distanciaKm)
-        falar("$km quilômetros. Pace médio: $paceMedia.", respeitarIntervalo = false)
+        val paceTexto = formatarPaceParaFala(paceMedia)
+        falar("$km quilômetros. Pace médio: $paceTexto.", respeitarIntervalo = false)
     }
 
     fun anunciarPaceFeedback(paceAtual: String, paceAlvoMin: String, paceAlvoMax: String) {
@@ -72,8 +74,8 @@ class AudioCoach(private val context: Context) {
 
         val mensagem = when {
             paceAlvoMin == "--:--" -> return
-            atualSecs < minSecs - 10 -> "Você está muito rápido. Reduza o ritmo para $paceAlvoMin."
-            atualSecs > maxSecs + 10 -> "Você está devagar demais. Acelere para $paceAlvoMax."
+            atualSecs < minSecs - 10 -> "Você está muito rápido. Reduza o ritmo para ${formatarPaceParaFala(paceAlvoMin)}."
+            atualSecs > maxSecs + 10 -> "Você está devagar demais. Acelere para ${formatarPaceParaFala(paceAlvoMax)}."
             else -> return // Dentro do alvo, não fala
         }
         falar(mensagem)
@@ -99,6 +101,24 @@ class AudioCoach(private val context: Context) {
     }
 
     // ---- Helpers ----
+
+    /**
+     * Converte pace de "5:30" para "cinco minutos e trinta segundos"
+     */
+    private fun formatarPaceParaFala(pace: String): String {
+        if (pace == "--:--") return "sem pace definido"
+        val partes = pace.split(":")
+        if (partes.size != 2) return pace
+        
+        val minutos = partes[0].toIntOrNull() ?: return pace
+        val segundos = partes[1].toIntOrNull() ?: return pace
+        
+        return if (segundos == 0) {
+            "$minutos minutos"
+        } else {
+            "$minutos minutos e $segundos segundos"
+        }
+    }
 
     private fun paceParaSegundos(pace: String): Int {
         if (pace == "--:--") return 0

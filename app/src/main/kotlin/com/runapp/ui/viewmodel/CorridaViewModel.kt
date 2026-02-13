@@ -71,7 +71,7 @@ class CorridaViewModel(
     private var ultimaLocalizacao: Location? = null
     private var ultimoKmAnunciado = 0.0
     private var ultimoFeedbackPace = 0L
-    private val FEEDBACK_PACE_INTERVALO_MS = 30_000L // a cada 30s
+    private val FEEDBACK_PACE_INTERVALO_MS = 15_000L // a cada 15s (feedback mais rápido)
 
     // Repositório instanciado após ter as credenciais
     private var workoutRepo: WorkoutRepository? = null

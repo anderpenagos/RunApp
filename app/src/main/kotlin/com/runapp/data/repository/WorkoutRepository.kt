@@ -282,8 +282,18 @@ class WorkoutRepository(private val api: IntervalsApi) {
         val nomePasso = when (step.type) {
             "Warmup" -> "Aquecimento"
             "Cooldown" -> "Desaceleração"
-            "Rest" -> "Descanso"
-            "SteadyState" -> if (repAtual != null) "Esforço $repAtual/$repsTotal" else "Ritmo Constante"
+            "Rest" -> if (repAtual != null) "Recuperação $repAtual/$repsTotal" else "Descanso"
+            "SteadyState" -> {
+                if (repAtual != null) {
+                    if (isDescanso || paceMinStr == "--:--") {
+                        "Recuperação $repAtual/$repsTotal"
+                    } else {
+                        "Esforço $repAtual/$repsTotal"
+                    }
+                } else {
+                    "Ritmo Constante"
+                }
+            }
             "IntervalsT" -> "Intervalo"
             "Ramp" -> "RAMP (progressivo)"
             else -> step.text ?: step.type
