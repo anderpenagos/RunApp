@@ -70,15 +70,45 @@ class AudioCoach(private val context: Context) {
         val minSecs = paceParaSegundos(paceAlvoMin)
         val maxSecs = paceParaSegundos(paceAlvoMax)
 
-        if (atualSecs <= 0 || minSecs <= 0) return
+        android.util.Log.d("AudioCoach", "=== FEEDBACK DE PACE ===")
+        android.util.Log.d("AudioCoach", "Pace atual: $paceAtual ($atualSecs s/km)")
+        android.util.Log.d("AudioCoach", "Alvo min: $paceAlvoMin ($minSecs s/km)")
+        android.util.Log.d("AudioCoach", "Alvo max: $paceAlvoMax ($maxSecs s/km)")
+
+        // Se não tem pace alvo definido, não dá feedback
+        if (paceAlvoMin == "--:--") {
+            android.util.Log.d("AudioCoach", "❌ Sem pace alvo definido")
+            return
+        }
+
+        // Se minSecs é 0, o alvo está inválido
+        if (minSecs <= 0) {
+            android.util.Log.d("AudioCoach", "❌ Pace alvo inválido")
+            return
+        }
 
         val mensagem = when {
-            paceAlvoMin == "--:--" -> return
-            atualSecs < minSecs - 10 -> "Você está muito rápido. Reduza o ritmo para ${formatarPaceParaFala(paceAlvoMin)}."
-            atualSecs > maxSecs + 10 -> "Você está devagar demais. Acelere para ${formatarPaceParaFala(paceAlvoMax)}."
-            else -> return // Dentro do alvo, não fala
+            // IMPORTANTE: Se pace atual é --:-- (parado/muito lento), considera como MUITO DEVAGAR
+            paceAtual == "--:--" || atualSecs <= 0 -> {
+                android.util.Log.d("AudioCoach", "⚠️ PARADO OU MUITO DEVAGAR (pace --:--)")
+                "Você está parado ou muito devagar. Acelere para ${formatarPaceParaFala(paceAlvoMax)}."
+            }
+            atualSecs < minSecs - 10 -> {
+                android.util.Log.d("AudioCoach", "⚠️ MUITO RÁPIDO!")
+                "Você está muito rápido. Reduza o ritmo para ${formatarPaceParaFala(paceAlvoMin)}."
+            }
+            atualSecs > maxSecs + 10 -> {
+                android.util.Log.d("AudioCoach", "⚠️ MUITO DEVAGAR!")
+                "Você está devagar demais. Acelere para ${formatarPaceParaFala(paceAlvoMax)}."
+            }
+            else -> {
+                android.util.Log.d("AudioCoach", "✅ Dentro do alvo, não vai avisar")
+                return // Dentro do alvo, não fala
+            }
         }
-        // Não respeita intervalo mínimo pois já é controlado no ViewModel (15s)
+        
+        android.util.Log.d("AudioCoach", "🔊 Vai falar: $mensagem")
+        // Não respeita intervalo mínimo pois já é controlado no ViewModel (5s)
         falar(mensagem, respeitarIntervalo = false)
     }
 
