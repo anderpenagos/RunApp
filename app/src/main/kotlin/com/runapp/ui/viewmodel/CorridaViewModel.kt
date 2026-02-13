@@ -203,13 +203,15 @@ class CorridaViewModel(
             audioCoach.anunciarKm(kmAtual, paceMedia)
         }
 
-        // Feedback de pace a cada 30s
+        // Feedback de pace a cada 15s (monitora constantemente)
         val agora = System.currentTimeMillis()
         if (agora - ultimoFeedbackPace > FEEDBACK_PACE_INTERVALO_MS) {
             val passo = state.passoAtual
             if (passo != null && !passo.isDescanso) {
                 audioCoach.anunciarPaceFeedback(paceAtual, passo.paceAlvoMin, passo.paceAlvoMax)
             }
+            // IMPORTANTE: Sempre atualiza o tempo, mesmo se não falou nada
+            // Isso garante que vai verificar novamente em 15s
             ultimoFeedbackPace = agora
         }
     }

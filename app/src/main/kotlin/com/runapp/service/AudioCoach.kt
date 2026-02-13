@@ -78,7 +78,8 @@ class AudioCoach(private val context: Context) {
             atualSecs > maxSecs + 10 -> "Você está devagar demais. Acelere para ${formatarPaceParaFala(paceAlvoMax)}."
             else -> return // Dentro do alvo, não fala
         }
-        falar(mensagem)
+        // Não respeita intervalo mínimo pois já é controlado no ViewModel (15s)
+        falar(mensagem, respeitarIntervalo = false)
     }
 
     fun anunciarUltimosSegundos(segundos: Int) {

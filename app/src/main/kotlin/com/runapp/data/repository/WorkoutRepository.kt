@@ -185,18 +185,23 @@ class WorkoutRepository(private val api: IntervalsApi) {
         val resultado = mutableListOf<PassoExecucao>()
 
         for (step in steps) {
-            if (step.type == "IntervalsT" && step.steps != null) {
-                val reps = step.reps ?: 1
-                repeat(reps) { i ->
-                    step.steps.forEach { sub ->
-                        resultado.add(converterStep(sub, paceZones, i + 1, reps))
+            // DETECTA INTERVALO: se tem reps E steps (sub-passos)
+            if (step.reps != null && step.reps > 1 && step.steps != null && step.steps.isNotEmpty()) {
+                Log.d(TAG, "🔁 Detectado bloco de repetição: ${step.reps}x com ${step.steps.size} sub-passos")
+                
+                // Expandir cada repetição
+                repeat(step.reps) { i ->
+                    step.steps.forEach { subPasso ->
+                        resultado.add(converterStep(subPasso, paceZones, i + 1, step.reps))
                     }
                 }
             } else {
+                // Passo comum (aquecimento, desaquecimento, etc)
                 resultado.add(converterStep(step, paceZones))
             }
         }
 
+        Log.d(TAG, "✅ Total de passos após expansão: ${resultado.size}")
         return resultado
     }
 
