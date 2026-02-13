@@ -7,6 +7,17 @@ import com.runapp.data.model.WorkoutEvent
 import com.runapp.data.model.ZonesResponse
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import android.util.Log
+
+/**
+ * IMPORTANTE: Certifique-se de que o modelo StepTarget em Models.kt tenha este formato:
+ * 
+ * data class StepTarget(
+ *     val value: Double = 0.0,
+ *     val value2: Double? = null,
+ *     val type: String = "pace"  // "zone", "pace", "heart_rate", "power"
+ * )
+ */
 
 class WorkoutRepository(private val api: IntervalsApi) {
 
@@ -125,9 +136,92 @@ class WorkoutRepository(private val api: IntervalsApi) {
         val isDescanso = step.type == "Rest"
         val paceTarget = step.pace ?: step.target
 
-        // Converte pace de s/m para min/km
-        val paceMinStr = formatarPace(paceTarget?.value)
-        val paceMaxStr = formatarPace(paceTarget?.value2)
+        // Log para debug
+        Log.d("WorkoutRepo", "Step: ${step.type}, pace: ${paceTarget?.value}, type: ${paceTarget?.type}, text: ${step.text}")
+
+        // DETECÇÃO INTELIGENTE: Verificar se é referência a zona
+        val isZonaRef = when {
+            // Método 1: API retorna type="zone"
+            paceTarget?.type == "zone" -> true
+            // Método 2: Valor pequeno (0-10) provavelmente é zona
+            paceTarget?.value != null && paceTarget.value > 0 && paceTarget.value <= 10.0 -> true
+            // Método 3: Texto contém "Z1", "Z2", etc
+            step.text?.contains(Regex("[zZ]\\d")) == true -> true
+            else -> false
+        }
+
+        val (paceMinStr, paceMaxStr, zona) = when {
+            // É referência a zona
+            isZonaRef && paceTarget != null -> {
+                val zonaNum = if (paceTarget.value <= 10.0) {
+                    paceTarget.value.toInt()
+                } else {
+                    extrairZonaDoTexto(step.text) ?: 2
+                }
+                
+                Log.d("WorkoutRepo", "Detectado como zona: Z$zonaNum")
+                
+                // Buscar pace da zona configurada
+                val zonaConfig = paceZones.getOrNull(zonaNum - 1)
+                if (zonaConfig != null) {
+                    Triple(
+                        formatarPace(zonaConfig.min),
+                        formatarPace(zonaConfig.max),
+                        zonaNum
+                    )
+                } else {
+                    Log.w("WorkoutRepo", "Zona $zonaNum não encontrada, usando padrão")
+                    Triple("--:--", "--:--", 2)
+                }
+            }
+            
+            // É pace absoluto
+            paceTarget != null -> {
+                val paceCalc = formatarPace(paceTarget.value)
+                
+                // Validação: Se pace > 10min/km, algo está errado
+                val minutos = paceCalc.split(":").firstOrNull()?.toIntOrNull() ?: 0
+                if (minutos > 10) {
+                    Log.w("WorkoutRepo", "Pace muito lento detectado: $paceCalc - tentando usar zona do texto")
+                    val zonaTexto = extrairZonaDoTexto(step.text)
+                    if (zonaTexto != null) {
+                        val zonaConfig = paceZones.getOrNull(zonaTexto - 1)
+                        if (zonaConfig != null) {
+                            Triple(
+                                formatarPace(zonaConfig.min),
+                                formatarPace(zonaConfig.max),
+                                zonaTexto
+                            )
+                        } else {
+                            Triple(paceCalc, formatarPace(paceTarget.value2), 2)
+                        }
+                    } else {
+                        Triple(paceCalc, formatarPace(paceTarget.value2), 2)
+                    }
+                } else {
+                    Triple(
+                        paceCalc,
+                        formatarPace(paceTarget.value2),
+                        detectarZonaPorPace(paceTarget.value, paceZones)
+                    )
+                }
+            }
+            
+            // Sem target, usar padrão
+            else -> {
+                val zonaTexto = extrairZonaDoTexto(step.text) ?: 2
+                val zonaConfig = paceZones.getOrNull(zonaTexto - 1)
+                if (zonaConfig != null) {
+                    Triple(
+                        formatarPace(zonaConfig.min),
+                        formatarPace(zonaConfig.max),
+                        zonaTexto
+                    )
+                } else {
+                    Triple("--:--", "--:--", 2)
+                }
+            }
+        }
 
         val nomePasso = when (step.type) {
             "Warmup" -> "Aquecimento"
@@ -135,10 +229,9 @@ class WorkoutRepository(private val api: IntervalsApi) {
             "Rest" -> "Descanso / Caminhada"
             "SteadyState" -> if (repAtual != null) "Esforço $repAtual/$repsTotal" else "Ritmo Constante"
             "IntervalsT" -> "Intervalo"
+            "Ramp" -> "RAMP (aquecimento progressivo)"
             else -> step.text ?: step.type
         }
-
-        val zona = detectarZona(paceTarget?.value, paceZones)
 
         return PassoExecucao(
             nome = nomePasso,
@@ -152,6 +245,16 @@ class WorkoutRepository(private val api: IntervalsApi) {
     }
 
     /**
+     * Extrai número da zona do texto (ex: "Z1 Pace" -> 1, "Z2 Pace" -> 2)
+     */
+    private fun extrairZonaDoTexto(texto: String?): Int? {
+        if (texto == null) return null
+        val regex = Regex("[zZ](\\d)")
+        val match = regex.find(texto)
+        return match?.groupValues?.get(1)?.toIntOrNull()
+    }
+
+    /**
      * Converte pace de segundos/metro para string "min:seg/km"
      */
     fun formatarPace(secsPerMeter: Double?): String {
@@ -162,9 +265,16 @@ class WorkoutRepository(private val api: IntervalsApi) {
         return "%d:%02d".format(min, seg)
     }
 
-    private fun detectarZona(secsPerMeter: Double?, paceZones: List<PaceZone>): Int {
+    private fun detectarZonaPorPace(secsPerMeter: Double?, paceZones: List<PaceZone>): Int {
         if (secsPerMeter == null || paceZones.isEmpty()) return 2
-        // Pace mais lento = maior valor de s/m → maior tempo → zona mais baixa
+        
+        // Se o valor é muito pequeno (<10), pode ser referência direta a zona
+        if (secsPerMeter < 10.0) {
+            return secsPerMeter.toInt().coerceIn(1, 5)
+        }
+        
+        // Pace mais lento = maior valor de s/m → maior tempo
+        // Encontrar em qual zona este pace se encaixa
         for ((index, zone) in paceZones.withIndex()) {
             val min = zone.min ?: continue
             val max = zone.max ?: continue
@@ -179,7 +289,8 @@ class WorkoutRepository(private val api: IntervalsApi) {
             "Cooldown" -> "Desacelere gradualmente. Pace de $paceMin a $paceMax."
             "Rest" -> "Caminhada ou corrida muito leve para recuperar."
             "SteadyState" -> "Mantenha pace constante entre $paceMin e $paceMax."
-            else -> "Pace alvo: $paceMin/km"
+            "Ramp" -> "Aumente o ritmo progressivamente de $paceMin até $paceMax."
+            else -> if (paceMin != "--:--") "Pace alvo: $paceMin a $paceMax/km" else "Siga o ritmo indicado"
         }
     }
 }

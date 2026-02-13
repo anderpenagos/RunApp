@@ -35,7 +35,7 @@ data class WorkoutStep(
 data class StepTarget(
     val value: Double = 0.0,
     val value2: Double? = null,
-    val type: String = "pace"  // "pace" (s/m), "heart_rate", "power"
+    val type: String = "pace"  // "zone", "pace", "heart_rate", "power"
 )
 
 // ---- Zonas ----
