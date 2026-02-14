@@ -28,6 +28,11 @@ class RunningService : Service() {
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             result.lastLocation?.let { loc ->
+                // ✅ FIX #1: Filtra pontos com precisão ruim (> 15m de margem de erro).
+                // Pontos imprecisos distorcem o pace e a distância. 15m é um threshold
+                // conservador que funciona bem em áreas urbanas e parques.
+                if (loc.accuracy > MAX_ACCURACY_METERS) return@let
+
                 _location.value = loc
             }
         }
@@ -55,9 +60,12 @@ class RunningService : Service() {
     private fun iniciarRastreamento() {
         val request = LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY,
-            1000L // a cada 1 segundo
+            1000L // atualização a cada 1 segundo
         )
-            .setMinUpdateDistanceMeters(2f) // mínimo 2 metros de diferença
+            // ✅ FIX #2: setMinUpdateDistanceMeters(0f) — sem filtro de distância mínima.
+            // Com 2f (anterior), o GPS "comia" curvas: correr numa curva de 1m de raio
+            // podia não registrar nenhum ponto, encurtando a distância e inflando o pace.
+            .setMinUpdateDistanceMeters(0f)
             .setGranularity(Granularity.GRANULARITY_FINE)
             .build()
 
@@ -109,20 +117,29 @@ class RunningService : Service() {
         const val ACTION_START = "START"
         const val ACTION_STOP = "STOP"
 
+        /** Precisão máxima aceita em metros. Pontos acima disso são descartados. */
+        const val MAX_ACCURACY_METERS = 15f
+
         // Instância compartilhada (simples, sem Hilt)
         private var instance: RunningService? = null
         fun getInstance(): RunningService? = instance
 
-        // Pace calculado a partir da velocidade GPS
+        /**
+         * Converte velocidade em m/s para pace em formato "MM:SS /km".
+         *
+         * Usa o speed Doppler do objeto Location, que é muito mais estável
+         * do que calcular distância entre dois pontos GPS.
+         */
         fun calcularPace(speedMs: Float): String {
             if (speedMs < 0.3f) return "--:--"
+            // 1000m / (speedMs * 60s) = minutos por km
             val minPerKm = 1000f / (speedMs * 60f)
             val min = minPerKm.toInt()
             val seg = ((minPerKm - min) * 60).toInt()
             return "%d:%02d".format(min, seg)
         }
 
-        // Distância entre dois pontos em metros
+        /** Distância em metros entre dois pontos GPS usando a fórmula do Android. */
         fun distanciaMetros(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Float {
             val result = FloatArray(1)
             Location.distanceBetween(lat1, lng1, lat2, lng2, result)

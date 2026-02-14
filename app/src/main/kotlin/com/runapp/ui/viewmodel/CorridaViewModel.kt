@@ -4,7 +4,6 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.location.Location
-import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelProvider
@@ -17,6 +16,7 @@ import com.runapp.data.model.*
 import com.runapp.data.repository.WorkoutRepository
 import com.runapp.service.AudioCoach
 import com.runapp.service.RunningService
+import com.runapp.util.KalmanFilter
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,7 +35,9 @@ data class CorridaUiState(
     val paceMedia: String = "--:--",
     val rota: List<LatLngPonto> = emptyList(),
     val posicaoAtual: LatLngPonto? = null,
-    val erro: String? = null
+    val erro: String? = null,
+    /** true quando o usuário está parado (velocidade < limiar). O timer não conta. */
+    val autoPausado: Boolean = false
 ) {
     val passoAtual: PassoExecucao? get() = passos.getOrNull(passoAtualIndex)
     val progressoPasso: Float get() {
@@ -71,9 +73,36 @@ class CorridaViewModel(
     private var ultimaLocalizacao: Location? = null
     private var ultimoKmAnunciado = 0.0
     private var ultimoFeedbackPace = 0L
-    private val FEEDBACK_PACE_INTERVALO_MS = 5_000L // a cada 5s (monitoramento constante)
+    private val FEEDBACK_PACE_INTERVALO_MS = 5_000L
 
-    // Repositório instanciado após ter as credenciais
+    // ── Melhorias de GPS ─────────────────────────────────────────────────────
+
+    /**
+     * Filtro de Kalman para suavizar coordenadas GPS.
+     * Remove "saltos" impossíveis e mantém a trajetória coerente.
+     */
+    private val kalmanFilter = KalmanFilter(processNoise = 3f)
+
+    /**
+     * Janela deslizante para Média Móvel Simples (SMA) do pace.
+     *
+     * Em vez de exibir o pace do último segundo (muito instável), calculamos
+     * a média das últimas [SPEED_WINDOW_SIZE] velocidades válidas. Isso evita
+     * que o display pule de 5:00 para 8:00 de um segundo para o outro.
+     */
+    private val speedWindow = ArrayDeque<Float>(SPEED_WINDOW_SIZE)
+
+    /**
+     * Flag de auto-pause por GPS. Atualizada em cada onNovaLocalizacao.
+     * O timer lê essa flag para decidir se deve incrementar o tempo.
+     *
+     * @Volatile garante visibilidade entre coroutines.
+     */
+    @Volatile
+    private var autoPausadoGps = false
+
+    // ── ─────────────────────────────────────────────────────────────────────
+
     private var workoutRepo: WorkoutRepository? = null
 
     fun carregarTreino(eventId: Long) {
@@ -90,7 +119,7 @@ class CorridaViewModel(
                 } else {
                     emptyList()
                 }
-                
+
                 val passos = repo.converterParaPassos(evento, paceZones)
                 _uiState.value = _uiState.value.copy(
                     passos = passos,
@@ -103,7 +132,6 @@ class CorridaViewModel(
     }
 
     fun iniciarCorrida() {
-        // Inicia o Foreground Service de GPS
         val intent = Intent(context, RunningService::class.java).apply {
             action = RunningService.ACTION_START
         }
@@ -112,7 +140,6 @@ class CorridaViewModel(
         _uiState.value = _uiState.value.copy(fase = FaseCorrida.CORRENDO)
         audioCoach.anunciarInicioCorrida()
 
-        // Anuncia o primeiro passo
         _uiState.value.passoAtual?.let { passo ->
             audioCoach.anunciarPasso(passo.nome, passo.paceAlvoMin, passo.duracao)
         }
@@ -127,19 +154,27 @@ class CorridaViewModel(
             while (_uiState.value.fase == FaseCorrida.CORRENDO) {
                 delay(1000)
                 val state = _uiState.value
+
+                // ✅ FIX: Auto-pause — se o GPS indica que o usuário está parado,
+                // não contamos esse segundo no tempo total nem no tempo do passo.
+                // Isso evita que ficar parado no semáforo infle o pace médio.
+                if (autoPausadoGps) {
+                    _uiState.value = state.copy(autoPausado = true)
+                    continue
+                }
+
                 val novoTempoPasso = state.tempoPassoDecorrido + 1
                 val novoTempoTotal = state.tempoTotalSegundos + 1
 
-                // Verifica se o passo terminou
                 val passoAtual = state.passoAtual
                 if (passoAtual != null && novoTempoPasso >= passoAtual.duracao) {
                     avancarPasso()
                 } else {
                     _uiState.value = state.copy(
                         tempoPassoDecorrido = novoTempoPasso,
-                        tempoTotalSegundos = novoTempoTotal
+                        tempoTotalSegundos = novoTempoTotal,
+                        autoPausado = false
                     )
-                    // Aviso de últimos segundos
                     audioCoach.anunciarUltimosSegundos(state.tempoPassoRestante)
                 }
             }
@@ -149,38 +184,93 @@ class CorridaViewModel(
     private fun iniciarGPS() {
         viewModelScope.launch {
             val fusedClient = LocationServices.getFusedLocationProviderClient(context)
-            // Registra callback via flow — simplificado aqui
-            // Na prática, escutamos via callback diretamente
         }
     }
 
     /**
-     * Chamado quando chega uma nova localização do GPS.
-     * Conecte isso ao LocationCallback no MainActivity ou via Service.
+     * Chamado quando chega uma nova localização do GPS (via CorridaScreen).
+     *
+     * Pipeline de melhorias aplicadas aqui:
+     * 1. Filtro de precisão (já feito no RunningService, mas mantemos como 2a linha de defesa)
+     * 2. Filtro de Kalman nas coordenadas (suaviza a rota)
+     * 3. Velocidade via location.speed (Doppler, muito mais estável que distância/tempo)
+     * 4. Auto-pause: velocidade < 0.8 m/s = parado, não soma tempo nem distância
+     * 5. Média Móvel Simples (SMA) de 10 leituras para exibição do pace
      */
     fun onNovaLocalizacao(location: Location) {
         val state = _uiState.value
         if (state.fase != FaseCorrida.CORRENDO) return
 
-        val novaRota = state.rota.toMutableList()
-        val novoPonto = LatLngPonto(location.latitude, location.longitude)
-        novaRota.add(novoPonto)
+        // ── 1. Filtro de precisão ───────────────────────────────────────────
+        // Linha de defesa extra, caso o RunningService não tenha filtrado
+        if (location.accuracy > MAX_ACCURACY_METERS) return
 
-        // Calcula distância acumulada
+        // ── 2. Filtro de Kalman nas coordenadas ────────────────────────────
+        val (latSmooth, lngSmooth) = kalmanFilter.process(
+            location.latitude,
+            location.longitude,
+            location.accuracy,
+            location.time
+        )
+        val novoPonto = LatLngPonto(latSmooth, lngSmooth)
+
+        // ── 3. Velocidade instantânea via Doppler ──────────────────────────
+        // location.speed é calculado internamente pelo chipset GPS via efeito Doppler.
+        // É o mesmo princípio que o Garmin usa — muito mais preciso do que
+        // calcular distância/tempo entre dois pontos consecutivos.
+        val speedMs: Float = if (location.hasSpeed() && location.speed > 0f) {
+            location.speed
+        } else {
+            // Fallback: calcula pela distância se Doppler não disponível
+            val anterior = ultimaLocalizacao
+            if (anterior != null) {
+                val distM = RunningService.distanciaMetros(
+                    anterior.latitude, anterior.longitude,
+                    location.latitude, location.longitude
+                )
+                val dtSec = ((location.time - anterior.time) / 1000f).coerceAtLeast(0.1f)
+                distM / dtSec
+            } else 0f
+        }
+
+        // ── 4. Auto-pause ──────────────────────────────────────────────────
+        // Se o usuário está andando muito devagar ou parado (<= 0.8 m/s ≈ 3 km/h),
+        // ativamos o auto-pause: não somamos distância nem tempo.
+        // Sem isso, o drift do GPS parado gera "quilômetros fantasmas" e
+        // o timer correndo sem o atleta se mover infla o pace médio.
+        autoPausadoGps = speedMs < AUTO_PAUSE_SPEED_MS
+        ultimaLocalizacao = location
+
+        if (autoPausadoGps) {
+            // Apenas atualiza posição no mapa — sem contar distância ou alterar pace
+            _uiState.value = state.copy(
+                posicaoAtual = novoPonto,
+                autoPausado = true,
+                paceAtual = "--:--"
+            )
+            return
+        }
+
+        // ── 5. Média Móvel Simples (SMA) para pace ─────────────────────────
+        // Adiciona velocidade à janela e remove a mais antiga se cheia
+        speedWindow.addLast(speedMs)
+        if (speedWindow.size > SPEED_WINDOW_SIZE) speedWindow.removeFirst()
+
+        val avgSpeedMs = speedWindow.average().toFloat()
+        val paceAtual = RunningService.calcularPace(avgSpeedMs)
+
+        // ── Acumula distância usando coordenadas suavizadas ────────────────
         val distanciaAdicional = ultimaLocalizacao?.let { anterior ->
+            // Usa as coordenadas Kalman-filtradas para evitar saltos
             RunningService.distanciaMetros(
                 anterior.latitude, anterior.longitude,
-                location.latitude, location.longitude
+                latSmooth, lngSmooth
             ).toDouble()
         } ?: 0.0
 
         val novaDistancia = state.distanciaMetros + distanciaAdicional
-        ultimaLocalizacao = location
 
-        // Pace atual (velocidade GPS)
-        val paceAtual = RunningService.calcularPace(location.speed)
-
-        // Pace médio
+        // ── Pace médio da corrida toda ─────────────────────────────────────
         val paceMedia = if (state.tempoTotalSegundos > 0 && novaDistancia > 10) {
             val secsPerKm = (state.tempoTotalSegundos * 1000.0 / novaDistancia)
             val min = (secsPerKm / 60).toInt()
@@ -188,30 +278,31 @@ class CorridaViewModel(
             "%d:%02d".format(min, seg)
         } else "--:--"
 
+        val novaRota = state.rota.toMutableList().also { it.add(novoPonto) }
+
         _uiState.value = state.copy(
             distanciaMetros = novaDistancia,
             paceAtual = paceAtual,
             paceMedia = paceMedia,
             rota = novaRota,
-            posicaoAtual = novoPonto
+            posicaoAtual = novoPonto,
+            autoPausado = false
         )
 
-        // Anúncio de km
+        // Anúncio de km completado
         val kmAtual = novaDistancia / 1000.0
         if (kmAtual - ultimoKmAnunciado >= 1.0) {
             ultimoKmAnunciado = Math.floor(kmAtual)
             audioCoach.anunciarKm(kmAtual, paceMedia)
         }
 
-        // Feedback de pace a cada 15s (monitora constantemente)
+        // Feedback de pace a cada 5s
         val agora = System.currentTimeMillis()
         if (agora - ultimoFeedbackPace > FEEDBACK_PACE_INTERVALO_MS) {
             val passo = state.passoAtual
             if (passo != null && !passo.isDescanso) {
                 audioCoach.anunciarPaceFeedback(paceAtual, passo.paceAlvoMin, passo.paceAlvoMax)
             }
-            // IMPORTANTE: Sempre atualiza o tempo, mesmo se não falou nada
-            // Isso garante que vai verificar novamente em 15s
             ultimoFeedbackPace = agora
         }
     }
@@ -232,7 +323,6 @@ class CorridaViewModel(
             tempoTotalSegundos = state.tempoTotalSegundos
         )
 
-        // Anuncia próximo passo
         if (proximoPasso.isDescanso) {
             audioCoach.anunciarDescanso()
         } else {
@@ -252,17 +342,16 @@ class CorridaViewModel(
 
         _uiState.value = state.copy(fase = FaseCorrida.FINALIZADO)
 
-        // Salvar a atividade
         viewModelScope.launch {
             try {
                 val apiKey = container.preferencesRepository.apiKey.first()
                 val athleteId = container.preferencesRepository.athleteId.first()
-                
+
                 if (apiKey != null && athleteId != null && workoutRepo != null) {
                     val nomeAtividade = "Corrida RunApp - ${java.time.LocalDateTime.now().format(
                         java.time.format.DateTimeFormatter.ofPattern("dd/MM HH:mm")
                     )}"
-                    
+
                     workoutRepo?.salvarAtividade(
                         athleteId = athleteId,
                         nomeAtividade = nomeAtividade,
@@ -271,7 +360,7 @@ class CorridaViewModel(
                         paceMedia = state.paceMedia,
                         rota = state.rota
                     )
-                    
+
                     android.util.Log.d("CorridaVM", "✅ Atividade salva!")
                 }
             } catch (e: Exception) {
@@ -279,7 +368,6 @@ class CorridaViewModel(
             }
         }
 
-        // Para o Foreground Service
         val intent = Intent(context, RunningService::class.java).apply {
             action = RunningService.ACTION_STOP
         }
@@ -289,6 +377,9 @@ class CorridaViewModel(
     fun pausar() {
         timerJob?.cancel()
         _uiState.value = _uiState.value.copy(fase = FaseCorrida.PAUSADO)
+        // Reseta o Kalman ao pausar para não criar saltos quando retomar
+        kalmanFilter.reset()
+        speedWindow.clear()
     }
 
     fun retomar() {
@@ -302,6 +393,22 @@ class CorridaViewModel(
     }
 
     companion object {
+        /** Precisão máxima aceita (2ª linha de defesa após RunningService). */
+        private const val MAX_ACCURACY_METERS = 15f
+
+        /**
+         * Velocidade mínima em m/s para considerar que o usuário está correndo.
+         * 0.8 m/s ≈ 3 km/h (caminhada bem lenta / parado no semáforo).
+         */
+        private const val AUTO_PAUSE_SPEED_MS = 0.8f
+
+        /**
+         * Número de amostras na janela de Média Móvel Simples para o pace.
+         * 10 amostras × 1s = média dos últimos ~10 segundos.
+         * Aumentar suaviza mais, mas deixa o pace "lento" para reagir a mudanças.
+         */
+        private const val SPEED_WINDOW_SIZE = 10
+
         val Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : androidx.lifecycle.ViewModel> create(

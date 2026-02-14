@@ -4,6 +4,9 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -76,7 +79,10 @@ fun CorridaScreen(
     DisposableEffect(state.fase) {
         if (state.fase == FaseCorrida.CORRENDO && permissaoGps) {
             val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
-                .setMinUpdateDistanceMeters(2f)
+                // ✅ FIX: setMinUpdateDistanceMeters(0f) — sem filtro de distância mínima.
+                // O valor anterior (2f) fazia o GPS "comer" trechos em curvas fechadas,
+                // o que encurtava a distância real e inflava o pace artificialmente.
+                .setMinUpdateDistanceMeters(0f)
                 .build()
             try {
                 fusedLocationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
@@ -154,6 +160,36 @@ fun CorridaScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+
+            // ✅ Banner de Auto-Pause — aparece quando o usuário está parado
+            AnimatedVisibility(
+                visible = state.autoPausado && state.fase == FaseCorrida.CORRENDO,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text("⏸", fontSize = 16.sp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Auto-pause • Aguardando movimento...",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                }
+            }
 
             // Passo atual com barra de progresso e cor de zona
             state.passoAtual?.let { passo ->
