@@ -28,9 +28,11 @@ class RunningService : Service() {
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             result.lastLocation?.let { loc ->
-                // ✅ FIX #1: Filtra pontos com precisão ruim (> 15m de margem de erro).
-                // Pontos imprecisos distorcem o pace e a distância. 15m é um threshold
-                // conservador que funciona bem em áreas urbanas e parques.
+                // Hard cutoff apenas para leituras genuinamente inúteis (>50m de margem).
+                // Leituras entre 15m-50m (comum em canyons urbanos) não são descartadas —
+                // o Filtro de Kalman no ViewModel recebe a accuracy real e reduz
+                // automaticamente o peso dessas leituras via measurementNoise ∝ accuracy².
+                // Descartar tudo >15m causaria "buracos" de trajeto em regiões urbanas densas.
                 if (loc.accuracy > MAX_ACCURACY_METERS) return@let
 
                 _location.value = loc
@@ -117,8 +119,9 @@ class RunningService : Service() {
         const val ACTION_START = "START"
         const val ACTION_STOP = "STOP"
 
-        /** Precisão máxima aceita em metros. Pontos acima disso são descartados. */
-        const val MAX_ACCURACY_METERS = 15f
+        /** Hard cutoff de precisão GPS. Pontos piores que 50m são descartados aqui.
+         *  Leituras entre 15-50m passam para o Kalman, que as processa com peso menor. */
+        const val MAX_ACCURACY_METERS = 50f
 
         // Instância compartilhada (simples, sem Hilt)
         private var instance: RunningService? = null

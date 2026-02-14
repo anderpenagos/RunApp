@@ -248,16 +248,34 @@ fun CorridaScreen(
                 }
             }
 
-            // Métricas principais
-            Row(
+            // Métricas principais — grid 2×2
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
             ) {
-                MetricaItem("PACE\nATUAL", state.paceAtual + "\n/km")
-                VerticalDivider(modifier = Modifier.height(50.dp))
-                MetricaItem("DISTÂNCIA", "%.2f\nkm".format(state.distanciaMetros / 1000.0))
-                VerticalDivider(modifier = Modifier.height(50.dp))
-                MetricaItem("TEMPO", state.tempoFormatado + "\n")
+                Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp)) {
+                    // Linha 1: pace atual | pace médio
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        MetricaItem("PACE\nATUAL", state.paceAtual + "\n/km")
+                        VerticalDivider(modifier = Modifier.height(50.dp))
+                        MetricaItem("PACE\nMÉDIO", state.paceMedia + "\n/km")
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                    // Linha 2: distância | tempo
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        MetricaItem("DISTÂNCIA", "%.2f\nkm".format(state.distanciaMetros / 1000.0))
+                        VerticalDivider(modifier = Modifier.height(50.dp))
+                        MetricaItem("TEMPO", state.tempoFormatado + "\n")
+                    }
+                }
             }
 
             // Botões de controle

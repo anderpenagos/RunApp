@@ -24,6 +24,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+enum class SalvamentoEstado { PRONTO, SALVANDO, SALVO, ERRO }
+enum class UploadEstado    { PRONTO, ENVIANDO, ENVIADO, ERRO }
+
 data class CorridaUiState(
     val fase: FaseCorrida = FaseCorrida.PREPARANDO,
     val passos: List<PassoExecucao> = emptyList(),
@@ -37,7 +40,13 @@ data class CorridaUiState(
     val posicaoAtual: LatLngPonto? = null,
     val erro: String? = null,
     /** true quando o usuário está parado (velocidade < limiar). O timer não conta. */
-    val autoPausado: Boolean = false
+    val autoPausado: Boolean = false,
+    /** Estado do salvamento local (arquivo GPX) */
+    val salvamentoEstado: SalvamentoEstado = SalvamentoEstado.PRONTO,
+    /** Estado do upload para o Intervals.icu */
+    val uploadEstado: UploadEstado = UploadEstado.PRONTO,
+    /** Mensagem de erro do salvamento ou upload */
+    val erroSalvamento: String? = null,
 ) {
     val passoAtual: PassoExecucao? get() = passos.getOrNull(passoAtualIndex)
     val progressoPasso: Float get() {
@@ -73,7 +82,11 @@ class CorridaViewModel(
     private var ultimaLocalizacao: Location? = null
     private var ultimoKmAnunciado = 0.0
     private var ultimoFeedbackPace = 0L
-    private val FEEDBACK_PACE_INTERVALO_MS = 5_000L
+    // ✅ FIX: intervalo de 5s era invasivo; 10s é mais respeitoso durante a corrida
+    private val FEEDBACK_PACE_INTERVALO_MS = 10_000L
+
+    /** Arquivo GPX gerado após salvarCorrida() — necessário para uploadParaIntervals() */
+    private var arquivoGpxSalvo: java.io.File? = null
 
     // ── Melhorias de GPS ─────────────────────────────────────────────────────
 
@@ -86,9 +99,9 @@ class CorridaViewModel(
     /**
      * Janela deslizante para Média Móvel Simples (SMA) do pace.
      *
-     * Em vez de exibir o pace do último segundo (muito instável), calculamos
-     * a média das últimas [SPEED_WINDOW_SIZE] velocidades válidas. Isso evita
-     * que o display pule de 5:00 para 8:00 de um segundo para o outro.
+     * O Filtro de Kalman já suaviza as coordenadas. Se usarmos uma janela grande
+     * aqui em cima, o pace demora 10-15s para reagir a um sprint. Por isso
+     * usamos apenas 5 leituras — suficiente para estabilidade sem travar a resposta.
      */
     private val speedWindow = ArrayDeque<Float>(SPEED_WINDOW_SIZE)
 
@@ -100,6 +113,22 @@ class CorridaViewModel(
      */
     @Volatile
     private var autoPausadoGps = false
+
+    /**
+     * Histerese de saída do auto-pause.
+     * Só saímos do pause quando velocidade > RESUME_SPEED_MS por pelo menos
+     * RESUME_READINGS_NEEDED leituras consecutivas. Isso evita que uma oscilação
+     * de sinal de 1 segundo tire e recoloque o pause sem parar.
+     */
+    private var speedAboveResumeCount = 0
+
+    /**
+     * Última posição já passada pelo Filtro de Kalman.
+     * Usamos essas coordenadas (e não as brutas do GPS) como ponto de partida
+     * do cálculo de distância — garante consistência em todo o pipeline.
+     */
+    private var ultimaKalmanLat = Double.NaN
+    private var ultimaKalmanLng = Double.NaN
 
     // ── ─────────────────────────────────────────────────────────────────────
 
@@ -191,54 +220,74 @@ class CorridaViewModel(
      * Chamado quando chega uma nova localização do GPS (via CorridaScreen).
      *
      * Pipeline de melhorias aplicadas aqui:
-     * 1. Filtro de precisão (já feito no RunningService, mas mantemos como 2a linha de defesa)
-     * 2. Filtro de Kalman nas coordenadas (suaviza a rota)
+     * 1. Filtro de Kalman nas coordenadas (suaviza a rota)
+     * 2. Sanity check de velocidade (>10 m/s = erro de GPS, descarta)
      * 3. Velocidade via location.speed (Doppler, muito mais estável que distância/tempo)
-     * 4. Auto-pause: velocidade < 0.8 m/s = parado, não soma tempo nem distância
-     * 5. Média Móvel Simples (SMA) de 10 leituras para exibição do pace
+     * 4. Auto-pause com histerese: entra em <0.8 m/s, sai apenas após 2 leituras >1.2 m/s
+     * 5. Média Móvel Simples (SMA) de 5 leituras para exibição do pace
+     * 6. Distância acumulada usando exclusivamente coordenadas Kalman → Kalman
      */
     fun onNovaLocalizacao(location: Location) {
         val state = _uiState.value
         if (state.fase != FaseCorrida.CORRENDO) return
 
-        // ── 1. Filtro de precisão ───────────────────────────────────────────
-        // Linha de defesa extra, caso o RunningService não tenha filtrado
-        if (location.accuracy > MAX_ACCURACY_METERS) return
+        // ── 1. Filtro de Kalman nas coordenadas ────────────────────────────
+        // Passamos a accuracy real do ponto ao Kalman. Se for impreciso (ex: 25m em
+        // canyon urbano), o Kalman aumenta o measurementNoise e confia menos nessa
+        // leitura, sem descartá-la completamente — melhor que um hard cutoff em áreas
+        // densas. Só hard-descartamos leituras verdadeiramente inúteis (>50m).
+        if (location.accuracy > MAX_ACCURACY_HARD_CUTOFF) return
 
-        // ── 2. Filtro de Kalman nas coordenadas ────────────────────────────
         val (latSmooth, lngSmooth) = kalmanFilter.process(
             location.latitude,
             location.longitude,
-            location.accuracy,
+            location.accuracy,  // accuracy real → Kalman calibra o peso automaticamente
             location.time
         )
         val novoPonto = LatLngPonto(latSmooth, lngSmooth)
 
-        // ── 3. Velocidade instantânea via Doppler ──────────────────────────
-        // location.speed é calculado internamente pelo chipset GPS via efeito Doppler.
-        // É o mesmo princípio que o Garmin usa — muito mais preciso do que
-        // calcular distância/tempo entre dois pontos consecutivos.
+        // ── 2. Sanity check de velocidade — Outlier Detection ──────────────
+        // Às vezes o GPS "pula" 50m em 1 segundo (erro de sinal/multipath).
+        // O Kalman ajuda, mas se a velocidade calculada for > 10 m/s (36 km/h),
+        // é fisicamente impossível para um corredor → descarta o ponto inteiro.
         val speedMs: Float = if (location.hasSpeed() && location.speed > 0f) {
             location.speed
         } else {
-            // Fallback: calcula pela distância se Doppler não disponível
-            val anterior = ultimaLocalizacao
-            if (anterior != null) {
+            // Fallback via distância/tempo se Doppler não disponível
+            if (!ultimaKalmanLat.isNaN()) {
                 val distM = RunningService.distanciaMetros(
-                    anterior.latitude, anterior.longitude,
-                    location.latitude, location.longitude
+                    ultimaKalmanLat, ultimaKalmanLng, latSmooth, lngSmooth
                 )
-                val dtSec = ((location.time - anterior.time) / 1000f).coerceAtLeast(0.1f)
+                val dtSec = ((location.time - (ultimaLocalizacao?.time ?: location.time)) / 1000f)
+                    .coerceAtLeast(0.1f)
                 distM / dtSec
             } else 0f
         }
 
-        // ── 4. Auto-pause ──────────────────────────────────────────────────
-        // Se o usuário está andando muito devagar ou parado (<= 0.8 m/s ≈ 3 km/h),
-        // ativamos o auto-pause: não somamos distância nem tempo.
-        // Sem isso, o drift do GPS parado gera "quilômetros fantasmas" e
-        // o timer correndo sem o atleta se mover infla o pace médio.
-        autoPausadoGps = speedMs < AUTO_PAUSE_SPEED_MS
+        if (speedMs > MAX_RUNNING_SPEED_MS) {
+            // Pulo impossível: atualiza Kalman mas descarta o ponto de distância/pace
+            android.util.Log.w("CorridaVM", "GPS outlier descartado: %.1f m/s".format(speedMs))
+            ultimaLocalizacao = location
+            return
+        }
+
+        // ── 3. Auto-pause com histerese ────────────────────────────────────
+        // ENTRAR no pause: imediato quando velocidade < 0.8 m/s
+        // SAIR do pause: apenas após RESUME_READINGS_NEEDED leituras consecutivas
+        //   com velocidade > RESUME_SPEED_MS (evita que 1 oscilação de sinal tire o pause)
+        if (speedMs < AUTO_PAUSE_SPEED_MS) {
+            autoPausadoGps = true
+            speedAboveResumeCount = 0
+        } else if (speedMs > RESUME_SPEED_MS) {
+            speedAboveResumeCount++
+            if (speedAboveResumeCount >= RESUME_READINGS_NEEDED) {
+                autoPausadoGps = false
+            }
+        } else {
+            // Velocidade entre 0.8 e 1.2 m/s: zona neutra, não altera o estado
+            speedAboveResumeCount = 0
+        }
+
         ultimaLocalizacao = location
 
         if (autoPausadoGps) {
@@ -248,25 +297,35 @@ class CorridaViewModel(
                 autoPausado = true,
                 paceAtual = "--:--"
             )
+            // Atualiza a última posição Kalman mesmo pausado, para não criar salto
+            // quando o usuário retomar
+            ultimaKalmanLat = latSmooth
+            ultimaKalmanLng = lngSmooth
             return
         }
 
-        // ── 5. Média Móvel Simples (SMA) para pace ─────────────────────────
-        // Adiciona velocidade à janela e remove a mais antiga se cheia
+        // ── 4. SMA de 5 leituras para exibição do pace ─────────────────────
+        // Kalman já suavizou as coordenadas; 5 amostras é suficiente para estabilidade
+        // sem sacrificar a reatividade (ex: ao iniciar um sprint, pace atualiza em ~5s)
         speedWindow.addLast(speedMs)
         if (speedWindow.size > SPEED_WINDOW_SIZE) speedWindow.removeFirst()
 
         val avgSpeedMs = speedWindow.average().toFloat()
         val paceAtual = RunningService.calcularPace(avgSpeedMs)
 
-        // ── Acumula distância usando coordenadas suavizadas ────────────────
-        val distanciaAdicional = ultimaLocalizacao?.let { anterior ->
-            // Usa as coordenadas Kalman-filtradas para evitar saltos
+        // ── 5. Distância: Kalman → Kalman (pipeline 100% consistente) ──────
+        // Calculamos SEMPRE da última posição Kalman para a posição Kalman atual.
+        // Misturar coordenada bruta no ponto de partida seria inconsistente e
+        // criaria saltos na distância acumulada.
+        val distanciaAdicional = if (!ultimaKalmanLat.isNaN()) {
             RunningService.distanciaMetros(
-                anterior.latitude, anterior.longitude,
+                ultimaKalmanLat, ultimaKalmanLng,
                 latSmooth, lngSmooth
             ).toDouble()
-        } ?: 0.0
+        } else 0.0
+
+        ultimaKalmanLat = latSmooth
+        ultimaKalmanLng = lngSmooth
 
         val novaDistancia = state.distanciaMetros + distanciaAdicional
 
@@ -342,36 +401,138 @@ class CorridaViewModel(
 
         _uiState.value = state.copy(fase = FaseCorrida.FINALIZADO)
 
-        viewModelScope.launch {
-            try {
-                val apiKey = container.preferencesRepository.apiKey.first()
-                val athleteId = container.preferencesRepository.athleteId.first()
-
-                if (apiKey != null && athleteId != null && workoutRepo != null) {
-                    val nomeAtividade = "Corrida RunApp - ${java.time.LocalDateTime.now().format(
-                        java.time.format.DateTimeFormatter.ofPattern("dd/MM HH:mm")
-                    )}"
-
-                    workoutRepo?.salvarAtividade(
-                        athleteId = athleteId,
-                        nomeAtividade = nomeAtividade,
-                        distanciaMetros = state.distanciaMetros,
-                        tempoSegundos = state.tempoTotalSegundos,
-                        paceMedia = state.paceMedia,
-                        rota = state.rota
-                    )
-
-                    android.util.Log.d("CorridaVM", "✅ Atividade salva!")
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("CorridaVM", "Erro ao salvar atividade", e)
-            }
-        }
+        // ✅ Salvamento e upload agora são opcionais e disparados pelo usuário
+        // na ResumoScreen — não acontecem mais aqui automaticamente.
 
         val intent = Intent(context, RunningService::class.java).apply {
             action = RunningService.ACTION_STOP
         }
         context.startService(intent)
+    }
+
+    /**
+     * Salva a corrida como arquivo GPX no armazenamento do dispositivo.
+     * Deve ser chamado a partir da ResumoScreen quando o usuário toca "Salvar".
+     */
+    fun salvarCorrida() {
+        val state = _uiState.value
+        if (state.salvamentoEstado == SalvamentoEstado.SALVANDO) return
+
+        _uiState.value = state.copy(
+            salvamentoEstado = SalvamentoEstado.SALVANDO,
+            erroSalvamento = null
+        )
+
+        viewModelScope.launch {
+            try {
+                val apiKey    = container.preferencesRepository.apiKey.first()
+                val athleteId = container.preferencesRepository.athleteId.first()
+
+                if (athleteId == null) {
+                    _uiState.value = _uiState.value.copy(
+                        salvamentoEstado = SalvamentoEstado.ERRO,
+                        erroSalvamento = "ID do atleta não configurado"
+                    )
+                    return@launch
+                }
+
+                val repo = workoutRepo
+                    ?: container.createWorkoutRepository(apiKey ?: "").also { workoutRepo = it }
+
+                val nomeAtividade = "Corrida RunApp - ${
+                    java.time.LocalDateTime.now().format(
+                        java.time.format.DateTimeFormatter.ofPattern("dd/MM HH:mm")
+                    )
+                }"
+
+                repo.salvarAtividade(
+                    context    = context,
+                    athleteId  = athleteId,
+                    nomeAtividade = nomeAtividade,
+                    distanciaMetros = state.distanciaMetros,
+                    tempoSegundos   = state.tempoTotalSegundos,
+                    paceMedia       = state.paceMedia,
+                    rota            = state.rota
+                ).fold(
+                    onSuccess = { arquivo ->
+                        // Guarda referência do arquivo para o upload posterior
+                        arquivoGpxSalvo = arquivo
+                        _uiState.value = _uiState.value.copy(
+                            salvamentoEstado = SalvamentoEstado.SALVO
+                        )
+                        android.util.Log.d("CorridaVM", "✅ GPX salvo: ${arquivo.absolutePath}")
+                    },
+                    onFailure = { e ->
+                        _uiState.value = _uiState.value.copy(
+                            salvamentoEstado = SalvamentoEstado.ERRO,
+                            erroSalvamento = e.message ?: "Erro ao salvar"
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    salvamentoEstado = SalvamentoEstado.ERRO,
+                    erroSalvamento = e.message ?: "Erro inesperado"
+                )
+            }
+        }
+    }
+
+    /**
+     * Faz upload do GPX já salvo para o Intervals.icu.
+     * Só disponível após [salvarCorrida] ter concluído com sucesso.
+     */
+    fun uploadParaIntervals() {
+        val arquivo = arquivoGpxSalvo ?: run {
+            _uiState.value = _uiState.value.copy(
+                uploadEstado = UploadEstado.ERRO,
+                erroSalvamento = "Salve a corrida primeiro"
+            )
+            return
+        }
+
+        if (_uiState.value.uploadEstado == UploadEstado.ENVIANDO) return
+
+        _uiState.value = _uiState.value.copy(
+            uploadEstado = UploadEstado.ENVIANDO,
+            erroSalvamento = null
+        )
+
+        viewModelScope.launch {
+            try {
+                val apiKey    = container.preferencesRepository.apiKey.first()
+                val athleteId = container.preferencesRepository.athleteId.first()
+
+                if (apiKey == null || athleteId == null) {
+                    _uiState.value = _uiState.value.copy(
+                        uploadEstado = UploadEstado.ERRO,
+                        erroSalvamento = "API Key ou Athlete ID não configurados"
+                    )
+                    return@launch
+                }
+
+                val repo = workoutRepo
+                    ?: container.createWorkoutRepository(apiKey).also { workoutRepo = it }
+
+                repo.uploadParaIntervals(athleteId, arquivo).fold(
+                    onSuccess = {
+                        _uiState.value = _uiState.value.copy(uploadEstado = UploadEstado.ENVIADO)
+                        android.util.Log.d("CorridaVM", "✅ Upload concluído: id=${it.id}")
+                    },
+                    onFailure = { e ->
+                        _uiState.value = _uiState.value.copy(
+                            uploadEstado = UploadEstado.ERRO,
+                            erroSalvamento = "Erro no upload: ${e.message}"
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    uploadEstado = UploadEstado.ERRO,
+                    erroSalvamento = e.message ?: "Erro inesperado"
+                )
+            }
+        }
     }
 
     fun pausar() {
@@ -380,6 +541,11 @@ class CorridaViewModel(
         // Reseta o Kalman ao pausar para não criar saltos quando retomar
         kalmanFilter.reset()
         speedWindow.clear()
+        speedAboveResumeCount = 0
+        // Invalida última posição Kalman: ao retomar, o primeiro ponto
+        // não vai criar uma distância espúria do ponto anterior à pausa
+        ultimaKalmanLat = Double.NaN
+        ultimaKalmanLng = Double.NaN
     }
 
     fun retomar() {
@@ -393,21 +559,51 @@ class CorridaViewModel(
     }
 
     companion object {
-        /** Precisão máxima aceita (2ª linha de defesa após RunningService). */
-        private const val MAX_ACCURACY_METERS = 15f
+        /**
+         * Hard cutoff de precisão GPS.
+         * Elevado de 15m para 50m: leituras entre 15-50m não são descartadas,
+         * apenas recebem menor peso no Kalman (measurementNoise ∝ accuracy²).
+         * Isso evita "buracos" no trajeto em canyons urbanos com prédios altos.
+         * Leituras piores que 50m são genuinamente inúteis e descartadas.
+         */
+        private const val MAX_ACCURACY_HARD_CUTOFF = 50f
 
         /**
-         * Velocidade mínima em m/s para considerar que o usuário está correndo.
-         * 0.8 m/s ≈ 3 km/h (caminhada bem lenta / parado no semáforo).
+         * Velocidade máxima razoável para um corredor em m/s.
+         * 10 m/s ≈ 36 km/h — se passar disso, é erro de GPS (multipath/salto).
+         */
+        private const val MAX_RUNNING_SPEED_MS = 10f
+
+        /**
+         * Velocidade mínima para considerar que o usuário está correndo.
+         * Abaixo → entra em auto-pause imediatamente.
+         * 0.8 m/s ≈ 3 km/h (caminhada muito lenta / parado no semáforo).
          */
         private const val AUTO_PAUSE_SPEED_MS = 0.8f
 
         /**
-         * Número de amostras na janela de Média Móvel Simples para o pace.
-         * 10 amostras × 1s = média dos últimos ~10 segundos.
-         * Aumentar suaviza mais, mas deixa o pace "lento" para reagir a mudanças.
+         * Velocidade para SAIR do auto-pause.
+         * Maior que AUTO_PAUSE_SPEED_MS para criar histerese:
+         * o app não fica alternando pause/play por oscilações de sinal.
+         * 1.2 m/s ≈ 4.3 km/h.
          */
-        private const val SPEED_WINDOW_SIZE = 10
+        private const val RESUME_SPEED_MS = 1.2f
+
+        /**
+         * Quantas leituras consecutivas acima de RESUME_SPEED_MS são
+         * necessárias para sair do auto-pause. Com intervalo de 1s, isso
+         * significa esperar pelo menos 2 segundos antes de retomar.
+         */
+        private const val RESUME_READINGS_NEEDED = 2
+
+        /**
+         * Número de amostras na SMA para o pace exibido.
+         * 5 amostras × 1s = média dos últimos ~5 segundos.
+         * Reduzido de 10 para 5: o Kalman já suaviza as coordenadas, então
+         * uma janela menor aqui garante que o pace reage ao sprint em ~5s
+         * em vez de 10-15s.
+         */
+        private const val SPEED_WINDOW_SIZE = 5
 
         val Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")

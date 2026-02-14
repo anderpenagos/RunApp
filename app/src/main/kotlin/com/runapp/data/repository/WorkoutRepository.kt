@@ -357,9 +357,17 @@ class WorkoutRepository(private val api: IntervalsApi) {
     }
 
     /**
-     * Salva a atividade concluída (gera arquivo GPX e salva localmente)
+     * Gera e salva o arquivo GPX da corrida no armazenamento do app.
+     *
+     * @param context     contexto Android (necessário para getExternalFilesDir)
+     * @param nomeAtividade nome legível da corrida
+     * @param rota        lista de pontos GPS gravados durante a corrida
+     * @param tempoSegundos duração total da corrida
+     * @param dataHora    data/hora de início (ISO 8601), opcional
+     * @return Result com o File gerado em caso de sucesso
      */
     suspend fun salvarAtividade(
+        context: android.content.Context,
         athleteId: String,
         nomeAtividade: String,
         distanciaMetros: Double,
@@ -367,41 +375,78 @@ class WorkoutRepository(private val api: IntervalsApi) {
         paceMedia: String,
         rota: List<com.runapp.data.model.LatLngPonto>,
         dataHora: String = java.time.LocalDateTime.now().toString()
-    ): Result<String> {
+    ): Result<java.io.File> {
         return try {
             Log.d(TAG, "=== SALVANDO ATIVIDADE ===")
-            Log.d(TAG, "Nome: $nomeAtividade")
-            Log.d(TAG, "Distância: ${distanciaMetros/1000} km")
-            Log.d(TAG, "Tempo: $tempoSegundos s")
-            Log.d(TAG, "Pontos GPS: ${rota.size}")
-            
+            Log.d(TAG, "Distância: ${"%.2f".format(distanciaMetros / 1000)} km | Pontos GPS: ${rota.size}")
+
             if (rota.isEmpty()) {
-                Log.w(TAG, "⚠️ Nenhum ponto GPS gravado!")
                 return Result.failure(Exception("Nenhum dado GPS para salvar"))
             }
-            
-            // Gerar conteúdo GPX
+
             val dataHoraInicio = try {
                 java.time.LocalDateTime.parse(dataHora)
             } catch (e: Exception) {
                 java.time.LocalDateTime.now()
             }
-            
+
+            // Gera conteúdo GPX
             val gpxContent = com.runapp.util.GpxGenerator.gerarGpx(
                 nomeAtividade = nomeAtividade,
                 pontos = rota,
                 tempoSegundos = tempoSegundos,
                 dataHoraInicio = dataHoraInicio
             )
-            
-            // TODO: Salvar em arquivo e fazer upload para Intervals.icu
-            // Por enquanto, apenas logando
-            Log.d(TAG, "📄 GPX gerado com ${rota.size} pontos")
-            Log.d(TAG, "✅ Atividade processada")
-            
-            Result.success("Atividade salva! ${rota.size} pontos GPS, ${String.format("%.2f", distanciaMetros/1000)} km")
+
+            // Salva em arquivo na pasta pública do app (não precisa de permissão extra)
+            val pastaGpx = java.io.File(context.getExternalFilesDir(null), "gpx").also { it.mkdirs() }
+            val timestamp = java.time.format.DateTimeFormatter
+                .ofPattern("yyyyMMdd_HHmmss")
+                .format(dataHoraInicio)
+            val arquivo = java.io.File(pastaGpx, "corrida_$timestamp.gpx")
+            arquivo.writeText(gpxContent)
+
+            Log.d(TAG, "✅ GPX salvo em: ${arquivo.absolutePath}")
+            Result.success(arquivo)
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao salvar atividade", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Faz upload de um arquivo GPX para o Intervals.icu.
+     *
+     * O endpoint aceita multipart/form-data com o arquivo no campo "file".
+     * A resposta contém o id e o nome da atividade criada no servidor.
+     *
+     * @param athleteId   ID do atleta no intervals.icu (ex: "i12345")
+     * @param arquivo     arquivo .gpx gerado por [salvarAtividade]
+     * @return Result com a resposta do servidor
+     */
+    suspend fun uploadParaIntervals(
+        athleteId: String,
+        arquivo: java.io.File
+    ): Result<ActivityUploadResponse> {
+        return try {
+            Log.d(TAG, "=== UPLOAD INTERVALS.ICU ===")
+            Log.d(TAG, "Arquivo: ${arquivo.name} (${arquivo.length()} bytes)")
+
+            val requestBody = okhttp3.RequestBody.create(
+                okhttp3.MediaType.parse("application/gpx+xml"),
+                arquivo
+            )
+            val part = okhttp3.MultipartBody.Part.createFormData(
+                name = "file",
+                filename = arquivo.name,
+                body = requestBody
+            )
+
+            val resposta = api.uploadActivity(athleteId, part)
+            Log.d(TAG, "✅ Upload concluído: id=${resposta.id}, name=${resposta.name}")
+            Result.success(resposta)
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro no upload", e)
             Result.failure(e)
         }
     }
