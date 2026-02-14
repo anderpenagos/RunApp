@@ -6,6 +6,8 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import android.util.Log
 import com.google.gson.Gson
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.asRequestBody
 import kotlin.math.abs
 
 class WorkoutRepository(private val api: IntervalsApi) {
@@ -455,10 +457,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             Log.d(TAG, "=== UPLOAD INTERVALS.ICU ===")
             Log.d(TAG, "Arquivo: ${arquivo.name} (${arquivo.length()} bytes)")
 
-            val requestBody = okhttp3.RequestBody.create(
-                okhttp3.MediaType.parse("application/gpx+xml"),
-                arquivo
-            )
+            val requestBody = arquivo.asRequestBody("application/gpx+xml".toMediaType())
             val part = okhttp3.MultipartBody.Part.createFormData(
                 name = "file",
                 filename = arquivo.name,

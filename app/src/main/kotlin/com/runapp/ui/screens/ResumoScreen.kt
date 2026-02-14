@@ -159,9 +159,10 @@ fun ResumoScreen(
                             ) {
                                 Text("⚠️ Tentar salvar novamente")
                             }
-                            if (state.erroSalvamento != null) {
+                            val erroSalvar = state.erroSalvamento
+                            if (erroSalvar != null) {
                                 Text(
-                                    text = state.erroSalvamento,
+                                    text = erroSalvar,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.error,
                                     modifier = Modifier.padding(top = 4.dp)
@@ -231,9 +232,10 @@ fun ResumoScreen(
                                 ) {
                                     Text("⚠️ Tentar upload novamente")
                                 }
-                                if (state.erroSalvamento != null) {
+                                val erroUpload = state.erroSalvamento
+                                if (erroUpload != null) {
                                     Text(
-                                        text = state.erroSalvamento,
+                                        text = erroUpload,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.error,
                                         modifier = Modifier.padding(top = 4.dp)
