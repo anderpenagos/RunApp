@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!--
+        Mapeia getExternalFilesDir(null)/gpx/ para o conteúdo compartilhável.
+        Usado pelo FileProvider ao gerar URIs para Intent.ACTION_SEND (compartilhar GPX).
+    -->
+    <external-files-path name="gpx" path="gpx/" />
+</paths>

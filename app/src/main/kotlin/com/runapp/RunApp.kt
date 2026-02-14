@@ -3,6 +3,7 @@ package com.runapp
 import android.app.Application
 import com.runapp.data.api.IntervalsClient
 import com.runapp.data.datastore.PreferencesRepository
+import com.runapp.data.repository.HistoricoRepository
 import com.runapp.data.repository.WorkoutRepository
 
 /**
@@ -28,6 +29,14 @@ class AppContainer(private val application: Application) {
 
     val preferencesRepository by lazy {
         PreferencesRepository(application)
+    }
+
+    /**
+     * Repositório local para histórico de corridas.
+     * Não precisa de API Key — opera apenas em arquivos locais.
+     */
+    val historicoRepository by lazy {
+        HistoricoRepository(application)
     }
 
     /**

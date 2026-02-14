@@ -50,6 +50,23 @@
             android:exported="false"
             android:foregroundServiceType="location" />
 
+        <!--
+            FileProvider — necessário para compartilhar arquivos GPX com outros apps
+            (Strava, WhatsApp, email, etc.) sem expor o caminho real do arquivo.
+
+            A authority deve ser única por app. Aqui usamos "com.runapp.fileprovider".
+            O arquivo @xml/file_paths define quais pastas podem ser compartilhadas.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.runapp.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
     </application>
 
 </manifest>

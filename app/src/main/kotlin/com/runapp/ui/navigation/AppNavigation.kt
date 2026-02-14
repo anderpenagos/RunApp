@@ -13,9 +13,10 @@ import com.runapp.ui.screens.*
 import com.runapp.ui.viewmodel.ConfigViewModel
 
 sealed class Screen(val route: String) {
-    object Config : Screen("config")
-    object Home : Screen("home")
-    object Treinos : Screen("treinos")
+    object Config      : Screen("config")
+    object Home        : Screen("home")
+    object Treinos     : Screen("treinos")
+    object Historico   : Screen("historico")
     object DetalheTreino : Screen("detalhe/{eventId}") {
         fun criarRota(eventId: Long) = "detalhe/$eventId"
     }
@@ -49,8 +50,9 @@ fun AppNavigation() {
 
         composable(Screen.Home.route) {
             HomeScreen(
-                onVerTreinos = { navController.navigate(Screen.Treinos.route) },
-                onConfigurar = { navController.navigate(Screen.Config.route) }
+                onVerTreinos  = { navController.navigate(Screen.Treinos.route) },
+                onVerHistorico = { navController.navigate(Screen.Historico.route) },
+                onConfigurar  = { navController.navigate(Screen.Config.route) }
             )
         }
 
@@ -59,6 +61,12 @@ fun AppNavigation() {
                 onTreinoSelecionado = { eventId ->
                     navController.navigate(Screen.DetalheTreino.criarRota(eventId))
                 },
+                onVoltar = { navController.popBackStack() }
+            )
+        }
+
+        composable(Screen.Historico.route) {
+            HistoricoScreen(
                 onVoltar = { navController.popBackStack() }
             )
         }

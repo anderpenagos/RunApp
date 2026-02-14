@@ -5,6 +5,7 @@ import com.runapp.data.model.*
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import android.util.Log
+import com.google.gson.Gson
 import kotlin.math.abs
 
 class WorkoutRepository(private val api: IntervalsApi) {
@@ -406,7 +407,29 @@ class WorkoutRepository(private val api: IntervalsApi) {
             val arquivo = java.io.File(pastaGpx, "corrida_$timestamp.gpx")
             arquivo.writeText(gpxContent)
 
-            Log.d(TAG, "✅ GPX salvo em: ${arquivo.absolutePath}")
+            // ── Metadados JSON ────────────────────────────────────────────
+            // Salva um .json com o mesmo prefixo de nome do GPX.
+            // O HistoricoViewModel lê esses arquivos para montar a lista de corridas.
+            val tempoH = tempoSegundos / 3600
+            val tempoM = (tempoSegundos % 3600) / 60
+            val tempoS = tempoSegundos % 60
+            val tempoStr = if (tempoH > 0) "%d:%02d:%02d".format(tempoH, tempoM, tempoS)
+                           else "%02d:%02d".format(tempoM, tempoS)
+
+            val meta = CorridaHistorico(
+                nome           = nomeAtividade,
+                data           = dataHoraInicio.toString(),
+                distanciaKm    = distanciaMetros / 1000.0,
+                tempoFormatado = tempoStr,
+                paceMedia      = paceMedia,
+                pontosGps      = rota.size,
+                arquivoGpx     = arquivo.name
+            )
+            val jsonFile = java.io.File(pastaGpx, "corrida_$timestamp.json")
+            jsonFile.writeText(Gson().toJson(meta))
+
+            Log.d(TAG, "✅ GPX salvo: ${arquivo.absolutePath}")
+            Log.d(TAG, "✅ JSON meta: ${jsonFile.absolutePath}")
             Result.success(arquivo)
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao salvar atividade", e)
@@ -449,5 +472,39 @@ class WorkoutRepository(private val api: IntervalsApi) {
             Log.e(TAG, "Erro no upload", e)
             Result.failure(e)
         }
+    }
+
+    /**
+     * Lê todos os arquivos .json de metadados da pasta gpx/ e retorna
+     * a lista de corridas salvas, ordenadas da mais recente para a mais antiga.
+     */
+    fun listarCorridas(context: android.content.Context): List<CorridaHistorico> {
+        val pastaGpx = java.io.File(context.getExternalFilesDir(null), "gpx")
+        if (!pastaGpx.exists()) return emptyList()
+
+        return pastaGpx.listFiles { f -> f.extension == "json" }
+            ?.mapNotNull { json ->
+                runCatching { Gson().fromJson(json.readText(), CorridaHistorico::class.java) }
+                    .getOrNull()
+            }
+            ?.sortedByDescending { it.data }
+            ?: emptyList()
+    }
+
+    /**
+     * Deleta o arquivo GPX e o arquivo JSON de metadados de uma corrida.
+     *
+     * @return true se ambos foram deletados (ou não existiam)
+     */
+    fun deletarCorrida(context: android.content.Context, corrida: CorridaHistorico): Boolean {
+        val pastaGpx = java.io.File(context.getExternalFilesDir(null), "gpx")
+        val gpx  = java.io.File(pastaGpx, corrida.arquivoGpx)
+        val json = java.io.File(pastaGpx, corrida.arquivoGpx.replace(".gpx", ".json"))
+
+        val gpxOk  = if (gpx.exists())  gpx.delete()  else true
+        val jsonOk = if (json.exists()) json.delete() else true
+
+        Log.d(TAG, "Deletar ${corrida.nome}: gpx=$gpxOk, json=$jsonOk")
+        return gpxOk && jsonOk
     }
 }
