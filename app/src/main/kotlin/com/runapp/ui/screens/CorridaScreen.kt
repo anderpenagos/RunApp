@@ -1,397 +1,148 @@
-package com.runapp.ui.screens
+// CorridaScreen.kt - MODIFICAÇÕES NECESSÁRIAS
+// Adicione estas importações no topo do arquivo:
 
-import android.Manifest
-import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.google.android.gms.location.LocationCallback
-import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationResult
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
-import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.maps.android.compose.*
-import com.runapp.data.model.LatLngPonto
-import com.runapp.ui.theme.corZona
-import com.runapp.ui.viewmodel.CorridaViewModel
-import com.runapp.ui.viewmodel.FaseCorrida
-import android.os.Looper
-import androidx.compose.runtime.DisposableEffect
+import com.runapp.util.PermissionHelper
+import android.widget.Toast
 
-@Composable
-fun CorridaScreen(
-    eventId: Long,
-    onFinalizar: () -> Unit,
-    viewModel: CorridaViewModel = viewModel(factory = CorridaViewModel.Factory)
-) {
-    val context = LocalContext.current
-    val state by viewModel.uiState.collectAsState()
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MODIFICAÇÃO 1: Adicione estas variáveis no início da função CorridaScreen,
+// logo após a linha: val context = LocalContext.current
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    // Permissões
-    var permissaoGps by remember { mutableStateOf(
-        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED
-    )}
-    val launcher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted -> permissaoGps = granted }
+var permissaoGps by remember { 
+    mutableStateOf(PermissionHelper.hasLocationPermissions(context)) 
+}
 
-    // Carregar treino ao entrar na tela
-    LaunchedEffect(eventId) {
-        viewModel.carregarTreino(eventId)
-    }
+var statusGps by remember { mutableStateOf("Buscando GPS...") }
+var pontosColetados by remember { mutableStateOf(0) }
 
-    // Iniciar GPS quando permissão concedida e corrida iniciada
-    val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
-    val locationCallback = remember {
-        object : LocationCallback() {
-            override fun onLocationResult(result: LocationResult) {
-                result.lastLocation?.let { viewModel.onNovaLocalizacao(it) }
-            }
-        }
-    }
-
-    DisposableEffect(state.fase) {
-        if (state.fase == FaseCorrida.CORRENDO && permissaoGps) {
-            val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
-                // ✅ FIX: setMinUpdateDistanceMeters(0f) — sem filtro de distância mínima.
-                // O valor anterior (2f) fazia o GPS "comer" trechos em curvas fechadas,
-                // o que encurtava a distância real e inflava o pace artificialmente.
-                .setMinUpdateDistanceMeters(0f)
-                .build()
-            try {
-                fusedLocationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
-            } catch (e: SecurityException) { /* permissão negada */ }
-        } else {
-            fusedLocationClient.removeLocationUpdates(locationCallback)
-        }
-        onDispose {
-            fusedLocationClient.removeLocationUpdates(locationCallback)
-        }
-    }
-
-    // Navegar ao finalizar
-    LaunchedEffect(state.fase) {
-        if (state.fase == FaseCorrida.FINALIZADO) onFinalizar()
-    }
-
-    // Câmera do mapa
-    val cameraPositionState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(LatLng(-23.55, -46.63), 15f)
-    }
-    LaunchedEffect(state.posicaoAtual) {
-        state.posicaoAtual?.let { pos ->
-            cameraPositionState.animate(
-                CameraUpdateFactory.newLatLngZoom(LatLng(pos.lat, pos.lng), 16f)
-            )
-        }
-    }
-
-    // Tela de permissão
+// Launcher para solicitar permissões
+val permissionLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestMultiplePermissions()
+) { permissions ->
+    permissaoGps = permissions.values.all { it }
     if (!permissaoGps) {
-        PermissaoGpsScreen { launcher.launch(Manifest.permission.ACCESS_FINE_LOCATION) }
-        return
+        Toast.makeText(
+            context,
+            "⚠️ Permissões de GPS são necessárias para rastrear sua corrida",
+            Toast.LENGTH_LONG
+        ).show()
+    } else {
+        Toast.makeText(
+            context,
+            "✅ Permissões concedidas! Aguarde o sinal GPS...",
+            Toast.LENGTH_SHORT
+        ).show()
     }
+}
 
-    // Tela de preparação
-    if (state.fase == FaseCorrida.PREPARANDO) {
-        PreparaCorrida(
-            nomeTreino = state.passos.firstOrNull()?.nome ?: "Treino",
-            totalPassos = state.passos.size,
-            duracao = state.passos.sumOf { it.duracao },
-            onIniciar = { viewModel.iniciarCorrida() }
-        )
-        return
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MODIFICAÇÃO 2: Adicione este LaunchedEffect para solicitar permissões
+// Coloque logo após o LaunchedEffect(eventId) existente
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Solicitar permissões ao iniciar a tela
+LaunchedEffect(Unit) {
+    if (!permissaoGps) {
+        permissionLauncher.launch(PermissionHelper.LOCATION_PERMISSIONS)
     }
+}
 
-    // Tela principal de corrida
-    Column(modifier = Modifier.fillMaxSize()) {
+// Atualizar status do GPS baseado nos pontos coletados
+LaunchedEffect(state.rota.size) {
+    pontosColetados = state.rota.size
+    statusGps = when {
+        !permissaoGps -> "⚠️ Sem permissão GPS"
+        pontosColetados == 0 -> "🔍 Buscando sinal GPS..."
+        pontosColetados < 10 -> "📡 Sinal GPS fraco (${pontosColetados} pontos)"
+        else -> "✅ GPS OK (${pontosColetados} pontos)"
+    }
+}
 
-        // MAPA (metade superior)
-        GoogleMap(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            cameraPositionState = cameraPositionState,
-            uiSettings = MapUiSettings(zoomControlsEnabled = false, myLocationButtonEnabled = false),
-            properties = MapProperties(isMyLocationEnabled = permissaoGps)
-        ) {
-            // Rota percorrida
-            if (state.rota.size > 1) {
-                Polyline(
-                    points = state.rota.map { LatLng(it.lat, it.lng) },
-                    color = Color(0xFF2196F3),
-                    width = 10f
-                )
-            }
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MODIFICAÇÃO 3: Adicione este indicador de status no topo da UI
+// Substitua a primeira Box/Column pelo código abaixo
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Column(modifier = Modifier.fillMaxSize()) {
+    // ✨ NOVO: Indicador de status GPS no topo
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = when {
+            !permissaoGps -> Color(0xFFFF6B6B)  // Vermelho - sem permissão
+            pontosColetados < 10 -> Color(0xFFFFBE0B)  // Amarelo - sinal fraco
+            else -> Color(0xFF4ECDC4)  // Verde - GPS OK
         }
-
-        // PAINEL DE CORRIDA (metade inferior)
-        Column(
+    ) {
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f)
-                .background(MaterialTheme.colorScheme.background)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-
-            // ✅ Banner de Auto-Pause — aparece quando o usuário está parado
-            AnimatedVisibility(
-                visible = state.autoPausado && state.fase == FaseCorrida.CORRENDO,
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer
-                    )
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Text("⏸", fontSize = 16.sp)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Auto-pause • Aguardando movimento...",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                    }
-                }
-            }
-
-            // Passo atual com barra de progresso e cor de zona
-            state.passoAtual?.let { passo ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = corZona(passo.zona).copy(alpha = 0.15f)),
-                    border = CardDefaults.outlinedCardBorder()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(
-                                    text = passo.nome,
-                                    fontWeight = FontWeight.Bold,
-                                    style = MaterialTheme.typography.titleMedium
-                                )
-                                val paceTexto = if (passo.paceAlvoMin != "--:--")
-                                    "🎯 ${passo.paceAlvoMin}–${passo.paceAlvoMax}/km"
-                                else "Sem pace alvo"
-                                Text(text = paceTexto, style = MaterialTheme.typography.bodySmall)
-                            }
-                            // Contador regressivo do passo
-                            Box(
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .clip(CircleShape)
-                                    .background(corZona(passo.zona)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = formatarTempoCompacto(state.tempoPassoRestante),
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        LinearProgressIndicator(
-                            progress = { state.progressoPasso },
-                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)),
-                            color = corZona(passo.zona),
-                            trackColor = corZona(passo.zona).copy(alpha = 0.2f)
-                        )
-                        Text(
-                            text = "Passo ${state.passoAtualIndex + 1} de ${state.passos.size}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
-                    }
-                }
-            }
-
-            // Métricas principais — grid 2×2
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                )
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp)) {
-                    // Linha 1: pace atual | pace médio
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        MetricaItem("PACE\nATUAL", state.paceAtual + "\n/km")
-                        VerticalDivider(modifier = Modifier.height(50.dp))
-                        MetricaItem("PACE\nMÉDIO", state.paceMedia + "\n/km")
-                    }
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                    // Linha 2: distância | tempo
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        MetricaItem("DISTÂNCIA", "%.2f\nkm".format(state.distanciaMetros / 1000.0))
-                        VerticalDivider(modifier = Modifier.height(50.dp))
-                        MetricaItem("TEMPO", state.tempoFormatado + "\n")
-                    }
-                }
-            }
-
-            // Botões de controle
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                // Pausar / Retomar
-                OutlinedButton(
-                    onClick = {
-                        if (state.fase == FaseCorrida.CORRENDO) viewModel.pausar()
-                        else viewModel.retomar()
+            Text(
+                text = statusGps,
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                textAlign = TextAlign.Center
+            )
+            
+            // Mostrar botão para reabrir permissões se negadas
+            if (!permissaoGps) {
+                Spacer(modifier = Modifier.width(8.dp))
+                TextButton(
+                    onClick = { 
+                        permissionLauncher.launch(PermissionHelper.LOCATION_PERMISSIONS)
                     },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        if (state.fase == FaseCorrida.CORRENDO) Icons.Default.Pause
-                        else Icons.Default.PlayArrow,
-                        contentDescription = null
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = Color.White
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(if (state.fase == FaseCorrida.CORRENDO) "Pausar" else "Retomar")
-                }
-
-                // Finalizar
-                var confirmarFim by remember { mutableStateOf(false) }
-                Button(
-                    onClick = { confirmarFim = true },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Icon(Icons.Default.Stop, contentDescription = null)
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Finalizar")
-                }
-
-                if (confirmarFim) {
-                    AlertDialog(
-                        onDismissRequest = { confirmarFim = false },
-                        title = { Text("Finalizar Corrida?") },
-                        text = { Text("Tem certeza que quer encerrar a corrida agora?") },
-                        confirmButton = {
-                            Button(onClick = { viewModel.finalizarCorrida() }) { Text("Finalizar") }
-                        },
-                        dismissButton = {
-                            OutlinedButton(onClick = { confirmarFim = false }) { Text("Continuar") }
-                        }
-                    )
+                    Text("PERMITIR", fontWeight = FontWeight.Bold)
                 }
             }
         }
     }
+    
+    // ... resto do conteúdo da tela (Box com mapa, etc)
 }
 
-@Composable
-fun MetricaItem(label: String, value: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = value,
-            fontWeight = FontWeight.Bold,
-            fontSize = 20.sp,
-            style = MaterialTheme.typography.headlineSmall
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-            lineHeight = 14.sp
-        )
-    }
-}
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MODIFICAÇÃO 4: Atualize a condição do DisposableEffect
+// Encontre o DisposableEffect(state.fase) e modifique a condição:
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-@Composable
-fun PermissaoGpsScreen(onSolicitar: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text("📍", fontSize = 64.sp)
-        Spacer(modifier = Modifier.height(16.dp))
-        Text("Permissão de GPS necessária", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(8.dp))
-        Text("O RunApp precisa de acesso à sua localização para rastrear sua corrida.",
-            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onSolicitar, modifier = Modifier.fillMaxWidth()) {
-            Text("Conceder Permissão")
+DisposableEffect(state.fase, permissaoGps) {  // ← Adicione permissaoGps aqui
+    if (state.fase == FaseCorrida.CORRENDO && permissaoGps) {
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
+            .setMinUpdateDistanceMeters(0f)
+            .build()
+        try {
+            fusedLocationClient.requestLocationUpdates(
+                request, 
+                locationCallback, 
+                Looper.getMainLooper()
+            )
+            android.util.Log.d("CorridaScreen", "✅ GPS iniciado com sucesso")
+        } catch (e: SecurityException) {
+            android.util.Log.e("CorridaScreen", "❌ Erro GPS: ${e.message}")
+            Toast.makeText(
+                context,
+                "Erro ao acessar GPS. Verifique as permissões.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    } else {
+        fusedLocationClient.removeLocationUpdates(locationCallback)
+        if (!permissaoGps && state.fase == FaseCorrida.CORRENDO) {
+            android.util.Log.w("CorridaScreen", "⚠️ GPS não iniciado - sem permissão")
         }
     }
-}
-
-@Composable
-fun PreparaCorrida(nomeTreino: String, totalPassos: Int, duracao: Int, onIniciar: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text("🏃", fontSize = 80.sp)
-        Spacer(modifier = Modifier.height(24.dp))
-        Text("Pronto para correr?", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(nomeTreino, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-        Spacer(modifier = Modifier.height(4.dp))
-        Text("$totalPassos passos • ${duracao / 60} minutos", style = MaterialTheme.typography.bodyMedium)
-        Spacer(modifier = Modifier.height(32.dp))
-        Button(onClick = onIniciar, modifier = Modifier.fillMaxWidth().height(60.dp)) {
-            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(28.dp))
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Iniciar Corrida", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-        }
+    onDispose {
+        fusedLocationClient.removeLocationUpdates(locationCallback)
     }
-}
-
-private fun formatarTempoCompacto(segundos: Int): String {
-    return if (segundos >= 60) "${segundos / 60}:${"%02d".format(segundos % 60)}"
-    else "${segundos}s"
 }
