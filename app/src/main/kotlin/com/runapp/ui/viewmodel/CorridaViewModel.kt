@@ -442,7 +442,10 @@ class CorridaViewModel(
             android.util.Log.d("GPS_DEBUG", "📏 Distância incremental: +${"%.2f".format(distanciaIncremental)}m → Total: ${"%.2f".format(novaDistancia)}m")
         }
 
-        // Auto-pause: detectar se está parado
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // Auto-pause: TEMPORARIAMENTE DESATIVADO para debug
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        /*
         val estaParado = verificarSeEstaParado(location)
         val deveAutoPausar = estaParado && !state.autoPausado
 
@@ -452,6 +455,8 @@ class CorridaViewModel(
             _uiState.value = _uiState.value.copy(autoPausado = true)
             return
         }
+        */
+        android.util.Log.d("GPS_DEBUG", "⏭️ Auto-pause desativado para debug")
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // Calcular Pace Atual usando Rolling Window (Média Móvel dos últimos 15s)
