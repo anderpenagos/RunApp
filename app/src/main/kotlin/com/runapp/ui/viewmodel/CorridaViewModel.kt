@@ -142,76 +142,51 @@ class CorridaViewModel(
         viewModelScope.launch {
             try {
                 val apiKey = container.preferencesRepository.apiKey.first()
+                val athleteId = container.preferencesRepository.athleteId.first()
+                
+                if (athleteId == null) {
+                    _uiState.value = _uiState.value.copy(
+                        erro = "ID do atleta não configurado"
+                    )
+                    return@launch
+                }
+                
                 val repo = container.createWorkoutRepository(apiKey ?: "")
                 workoutRepo = repo
                 
-                val evento = repo.buscarEvento(eventId)
-                val passosProcessados = evento.workoutDoc?.steps?.flatMap { processarPasso(it) } ?: emptyList()
-                
-                _uiState.value = _uiState.value.copy(
-                    treino = evento,
-                    passos = passosProcessados,
-                    passoAtual = passosProcessados.firstOrNull()
+                val resultado = repo.getTreinoDetalhe(athleteId, eventId)
+                resultado.fold(
+                    onSuccess = { evento ->
+                        // Buscar zonas para processar os passos
+                        val zonasResult = repo.getZonas(athleteId)
+                        val paceZones = zonasResult.fold(
+                            onSuccess = { zonesResponse -> repo.processarZonas(zonesResponse) },
+                            onFailure = { emptyList() }
+                        )
+                        
+                        val passosProcessados = repo.converterParaPassos(evento, paceZones)
+                        
+                        _uiState.value = _uiState.value.copy(
+                            treino = evento,
+                            passos = passosProcessados,
+                            passoAtual = passosProcessados.firstOrNull()
+                        )
+                        
+                        android.util.Log.d("CorridaVM", "✅ Treino carregado: ${evento.name} (${passosProcessados.size} passos)")
+                    },
+                    onFailure = { e ->
+                        android.util.Log.e("CorridaVM", "❌ Erro ao carregar treino", e)
+                        _uiState.value = _uiState.value.copy(
+                            erro = "Erro ao carregar treino: ${e.message}"
+                        )
+                    }
                 )
-                
-                android.util.Log.d("CorridaVM", "✅ Treino carregado: ${evento.name} (${passosProcessados.size} passos)")
             } catch (e: Exception) {
                 android.util.Log.e("CorridaVM", "❌ Erro ao carregar treino", e)
                 _uiState.value = _uiState.value.copy(
                     erro = "Erro ao carregar treino: ${e.message}"
                 )
             }
-        }
-    }
-
-    private fun processarPasso(step: com.runapp.data.model.WorkoutStep): List<PassoExecucao> {
-        return when (step.type) {
-            "IntervalsT" -> {
-                val subPassos = step.steps?.flatMap { processarPasso(it) } ?: emptyList()
-                List(step.reps ?: 1) { subPassos }.flatten()
-            }
-            else -> {
-                val isDescanso = step.type == "Rest"
-                val zona = step.pace?.value?.toInt() ?: 3
-                val (min, max) = calcularPaceLimites(step)
-                
-                listOf(
-                    PassoExecucao(
-                        nome = step.text ?: step.type,
-                        duracao = step.duration,
-                        paceAlvoMin = min,
-                        paceAlvoMax = max,
-                        zona = zona,
-                        instrucao = step.text ?: "",
-                        isDescanso = isDescanso
-                    )
-                )
-            }
-        }
-    }
-
-    private fun calcularPaceLimites(step: com.runapp.data.model.WorkoutStep): Pair<String, String> {
-        val paceTarget = step.pace ?: return "--:--" to "--:--"
-        
-        return when (paceTarget.type) {
-            "zone" -> {
-                val zona = paceTarget.value.toInt()
-                val limites = mapOf(
-                    1 to (360.0 to 420.0),  // Z1: 6:00-7:00
-                    2 to (300.0 to 360.0),  // Z2: 5:00-6:00
-                    3 to (270.0 to 300.0),  // Z3: 4:30-5:00
-                    4 to (240.0 to 270.0),  // Z4: 4:00-4:30
-                    5 to (180.0 to 240.0)   // Z5: 3:00-4:00
-                )
-                val (min, max) = limites[zona] ?: (300.0 to 360.0)
-                formatarPace(min) to formatarPace(max)
-            }
-            "pace" -> {
-                val segPorMetro = paceTarget.value
-                val segPorMetro2 = paceTarget.value2 ?: segPorMetro
-                formatarPace(segPorMetro * 1000) to formatarPace(segPorMetro2 * 1000)
-            }
-            else -> "--:--" to "--:--"
         }
     }
 
@@ -636,7 +611,7 @@ class CorridaViewModel(
                 val repo = workoutRepo ?: container.createWorkoutRepository(apiKey ?: "")
                 workoutRepo = repo
 
-                val result = repo.uploadAtividade(athleteId, arquivo)
+                val result = repo.uploadParaIntervals(athleteId, arquivo)
                 result.fold(
                     onSuccess = {
                         _uiState.value = _uiState.value.copy(
