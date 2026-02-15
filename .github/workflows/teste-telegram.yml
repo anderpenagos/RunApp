@@ -1,0 +1,33 @@
+name: Teste Telegram
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Testar envio para Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "Bot Token: ${TELEGRAM_BOT_TOKEN:0:10}... (primeiros 10 chars)"
+          echo "Chat ID: $TELEGRAM_CHAT_ID"
+          
+          # Testa envio de mensagem
+          RESPONSE=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\": \"$TELEGRAM_CHAT_ID\", \"text\": \"✅ Teste do bot RunApp - funcionando!\"}" \
+            "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage")
+          
+          echo "Resposta da API:"
+          echo "$RESPONSE"
+          
+          # Verifica se teve erro
+          if echo "$RESPONSE" | grep -q '"ok":true'; then
+            echo "✅ SUCESSO! Mensagem enviada!"
+          else
+            echo "❌ ERRO! Verifique os secrets."
+            echo "$RESPONSE" | grep -o '"description":"[^"]*"'
+          fi
