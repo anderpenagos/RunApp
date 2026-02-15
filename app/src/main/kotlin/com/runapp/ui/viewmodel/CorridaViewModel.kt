@@ -195,7 +195,14 @@ class CorridaViewModel(
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     fun iniciarCorrida() {
-        android.util.Log.d("CorridaVM", "▶️ Iniciando corrida")
+        android.util.Log.d("CorridaVM", """
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            ▶️ INICIANDO CORRIDA
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            Treino: ${_uiState.value.treino?.name ?: "Sem treino"}
+            Passos: ${_uiState.value.passos.size}
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        """.trimIndent())
         
         timestampInicio = System.currentTimeMillis()
         timestampPassoAtual = timestampInicio
@@ -207,6 +214,8 @@ class CorridaViewModel(
         
         iniciarTimer()
         iniciarGPS()
+        
+        android.util.Log.d("CorridaVM", "✅ Corrida iniciada - aguardando pontos GPS...")
     }
 
     fun pausar() {
@@ -252,6 +261,7 @@ class CorridaViewModel(
 
     private fun iniciarTimer() {
         timerJob?.cancel()
+        android.util.Log.d("CorridaVM", "⏰ Timer iniciado")
         timerJob = viewModelScope.launch {
             while (isActive) {
                 delay(1000)
@@ -267,6 +277,16 @@ class CorridaViewModel(
         
         val state = _uiState.value
         val passoAtual = state.passoAtual
+        
+        // Log a cada 10 segundos
+        if (tempoTotal % 10 == 0L) {
+            android.util.Log.d("CorridaVM", """
+                ⏱️ Timer: ${formatarTempo(tempoTotal)}
+                   Pontos GPS: ${state.rota.size}
+                   Distância: ${"%.3f".format(state.distanciaMetros / 1000)} km
+                   Fase: ${state.fase}
+            """.trimIndent())
+        }
         
         // Atualizar progresso do passo
         val progresso = if (passoAtual != null && passoAtual.duracao > 0) {
@@ -363,29 +383,38 @@ class CorridaViewModel(
 
     fun onNovaLocalizacao(location: Location) {
         val state = _uiState.value
-        if (state.fase != FaseCorrida.CORRENDO) return
-
-        // Log detalhado a cada 10 pontos
-        if (state.rota.size % 10 == 0) {
-            android.util.Log.d("GPS_DEBUG", """
-                ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                📍 Ponto GPS #${state.rota.size}
-                ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                Lat: ${location.latitude}
-                Lng: ${location.longitude}
-                Accuracy: ${location.accuracy}m
-                Speed: ${if (location.hasSpeed()) "${location.speed} m/s" else "N/A"}
-                Time: ${Date(location.time)}
-                Distância total: ${"%.2f".format(state.distanciaMetros / 1000)} km
-                ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            """.trimIndent())
-        }
-
-        // Filtrar pontos com accuracy ruim
-        if (location.accuracy > 30) {
-            android.util.Log.w("GPS_DEBUG", "⚠️ Ponto descartado - accuracy muito baixa: ${location.accuracy}m")
+        
+        // Log SEMPRE no início para debug
+        android.util.Log.d("GPS_DEBUG", """
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            📍 Nova localização recebida
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            Fase: ${state.fase}
+            Lat: ${location.latitude}
+            Lng: ${location.longitude}
+            Accuracy: ${location.accuracy}m
+            Speed: ${if (location.hasSpeed()) "${location.speed} m/s" else "N/A"}
+            Pontos coletados: ${state.rota.size}
+            Distância atual: ${"%.2f".format(state.distanciaMetros / 1000)} km
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        """.trimIndent())
+        
+        if (state.fase != FaseCorrida.CORRENDO) {
+            android.util.Log.w("GPS_DEBUG", "⚠️ Localização ignorada - fase: ${state.fase}")
             return
         }
+
+        // Filtrar pontos com accuracy muito ruim
+        // Primeiros 5 pontos: aceita até 50m
+        // Depois: apenas 30m
+        val limiteAccuracy = if (state.rota.size < 5) 50f else 30f
+        
+        if (location.accuracy > limiteAccuracy) {
+            android.util.Log.w("GPS_DEBUG", "⚠️ Ponto descartado - accuracy ${location.accuracy}m > limite $limiteAccuracy m (${state.rota.size} pontos coletados)")
+            return
+        }
+
+        android.util.Log.i("GPS_DEBUG", "✅ Ponto ACEITO - accuracy OK (${location.accuracy}m)")
 
         val novoPonto = LatLngPonto(location.latitude, location.longitude)
         val novaRota = state.rota + novoPonto
@@ -399,6 +428,7 @@ class CorridaViewModel(
                 novoPonto.lat, novoPonto.lng
             )
             novaDistancia += distanciaIncremental
+            android.util.Log.d("GPS_DEBUG", "📏 Distância incremental: +${"%.2f".format(distanciaIncremental)}m → Total: ${"%.2f".format(novaDistancia)}m")
         }
 
         // Auto-pause: detectar se está parado
@@ -424,6 +454,8 @@ class CorridaViewModel(
             distanciaMetros = novaDistancia,
             paceAtual = paceAtual
         )
+        
+        android.util.Log.d("GPS_DEBUG", "💾 Estado atualizado: ${novaRota.size} pontos, ${"%.3f".format(novaDistancia / 1000)} km")
     }
 
     private fun verificarSeEstaParado(location: Location): Boolean {
