@@ -108,6 +108,12 @@ class CorridaViewModel(
     private var workoutRepo: WorkoutRepository? = null
     private var arquivoGpxSalvo: File? = null
     
+    // Audio Coach para alertas de voz
+    private val audioCoach = com.runapp.service.AudioCoach(context)
+    private var ultimoKmAnunciado = 0
+    private var ultimoAlertaPace = 0L
+    private val INTERVALO_ALERTA_PACE_MS = 15000L  // Alerta de pace a cada 15s
+    
     // Timestamps
     private var timestampInicio: Long = 0
     private var timestampPassoAtual: Long = 0
@@ -135,7 +141,8 @@ class CorridaViewModel(
     override fun onCleared() {
         super.onCleared()
         timerJob?.cancel()
-        android.util.Log.d("CorridaVM", "🧹 ViewModel limpo")
+        audioCoach.shutdown()
+        android.util.Log.d("CorridaVM", "🧹 ViewModel limpo (AudioCoach desligado)")
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -211,6 +218,7 @@ class CorridaViewModel(
         timestampInicio = System.currentTimeMillis()
         timestampPassoAtual = timestampInicio
         tempoPausadoTotal = 0
+        ultimoKmAnunciado = 0
         
         // Limpar rolling window ao iniciar nova corrida
         ultimasLocalizacoes.clear()
@@ -221,6 +229,9 @@ class CorridaViewModel(
         
         iniciarTimer()
         iniciarGPS()
+        
+        // 🔊 Anunciar início
+        audioCoach.anunciarInicioCorrida()
         
         android.util.Log.d("CorridaVM", "✅ Corrida iniciada - aguardando pontos GPS...")
     }
@@ -261,8 +272,16 @@ class CorridaViewModel(
         
         timerJob?.cancel()
         
-        _uiState.value = _uiState.value.copy(
+        val state = _uiState.value
+        _uiState.value = state.copy(
             fase = FaseCorrida.FINALIZADO
+        )
+        
+        // 🔊 Anunciar fim
+        audioCoach.anunciarFimCorrida(
+            distanciaKm = state.distanciaMetros / 1000.0,
+            tempoTotal = state.tempoFormatado,
+            paceMedia = state.paceMedia
         )
     }
 
@@ -308,6 +327,11 @@ class CorridaViewModel(
             (passoAtual.duracao - tempoPasso).coerceAtLeast(0)
         } else 0
         
+        // 🔊 Anunciar últimos segundos do passo
+        if (passoAtual != null && tempoRestante in 3..10) {
+            audioCoach.anunciarUltimosSegundos(tempoRestante.toInt())
+        }
+        
         // Verificar se deve avançar para próximo passo
         if (passoAtual != null && tempoPasso >= passoAtual.duracao) {
             avancarPasso()
@@ -319,6 +343,26 @@ class CorridaViewModel(
             val segPorKm = (state.tempoCorridaSegundos.toDouble() / (state.distanciaMetros / 1000.0))
             formatarPace(segPorKm)
         } else "--:--"
+        
+        // 🔊 Anunciar cada km completo
+        val kmAtual = (state.distanciaMetros / 1000).toInt()
+        if (kmAtual > ultimoKmAnunciado && kmAtual > 0) {
+            audioCoach.anunciarKm(kmAtual.toDouble(), paceMedia)
+            ultimoKmAnunciado = kmAtual
+        }
+        
+        // 🔊 Verificar pace vs alvo (a cada 15 segundos)
+        if (passoAtual != null && !passoAtual.isDescanso && 
+            state.paceAtual != "--:--" &&
+            agora - ultimoAlertaPace >= INTERVALO_ALERTA_PACE_MS) {
+            
+            audioCoach.anunciarPaceFeedback(
+                paceAtual = state.paceAtual,
+                paceAlvoMin = passoAtual.paceAlvoMin,
+                paceAlvoMax = passoAtual.paceAlvoMax
+            )
+            ultimoAlertaPace = agora
+        }
         
         _uiState.value = state.copy(
             tempoTotalSegundos = tempoTotal,
@@ -338,14 +382,27 @@ class CorridaViewModel(
         if (proximoIndex < state.passos.size) {
             timestampPassoAtual = System.currentTimeMillis()
             
+            val proximoPasso = state.passos[proximoIndex]
+            
             _uiState.value = state.copy(
                 passoAtualIndex = proximoIndex,
-                passoAtual = state.passos[proximoIndex],
+                passoAtual = proximoPasso,
                 tempoPassoAtualSegundos = 0,
                 progressoPasso = 0f
             )
             
             android.util.Log.d("CorridaVM", "➡️ Avançou para passo ${proximoIndex + 1}/${state.passos.size}")
+            
+            // 🔊 Anunciar novo passo
+            if (proximoPasso.isDescanso) {
+                audioCoach.anunciarDescanso()
+            } else {
+                audioCoach.anunciarPasso(
+                    nomePasso = proximoPasso.nome,
+                    paceAlvo = "${proximoPasso.paceAlvoMin} a ${proximoPasso.paceAlvoMax}",
+                    duracao = proximoPasso.duracao
+                )
+            }
         } else {
             android.util.Log.d("CorridaVM", "🏁 Todos os passos completados")
             finalizarCorrida()
