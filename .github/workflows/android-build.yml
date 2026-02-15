@@ -26,7 +26,7 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
           cache: gradle
-          
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
@@ -125,7 +125,7 @@ jobs:
             echo "## ❌ Build Falhou!" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📱 Informações do Build" >> $GITHUB_STEP_SUMMARY
+          echo "###  Informações do Build" >> $GITHUB_STEP_SUMMARY
           echo "- **Versão:** ${{ steps.version.outputs.name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Version Code:** ${{ steps.version.outputs.code }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch:** ${{ steps.version.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
