@@ -132,7 +132,7 @@ jobs:
           echo "💡 **Dica:** Copie o SHA-1 acima e cole no Google Cloud Console!" >> $GITHUB_STEP_SUMMARY
       
       - name: 💬 Enviar SHA-1 para Telegram (Opcional)
-        if: ${{ secrets.TELEGRAM_BOT_TOKEN != '' && secrets.TELEGRAM_CHAT_ID != '' }}
+        continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
