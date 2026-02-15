@@ -1,15 +1,19 @@
-name: Android Build
+name: Build e Enviar para Telegram
 
 on:
   push:
     branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:  # Permite execução manual
+  workflow_dispatch:
+    inputs:
+      send_to_telegram:
+        description: 'Enviar para Telegram?'
+        required: false
+        default: 'true'
+        type: boolean
 
 jobs:
   build:
-    name: Build APK
+    name: Build e Enviar APK
     runs-on: ubuntu-latest
     
     steps:
@@ -42,43 +46,98 @@ jobs:
         env:
           MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
       
-      - name: Build Release APK
-        run: ./gradlew assembleRelease --stacktrace
-      
-      - name: Get version name
+      - name: Get version info
         id: version
         run: |
           VERSION_NAME=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           VERSION_CODE=$(grep -oP 'versionCode = \K[0-9]+' app/build.gradle.kts)
           echo "name=$VERSION_NAME" >> $GITHUB_OUTPUT
           echo "code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          
+          # Pega informação do commit
+          COMMIT_MSG=$(git log -1 --pretty=%B | head -1)
+          echo "commit_msg=$COMMIT_MSG" >> $GITHUB_OUTPUT
+          
+          COMMIT_AUTHOR=$(git log -1 --pretty=format:'%an')
+          echo "commit_author=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
+          
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
       
-      - name: Upload Debug APK
+      - name: Rename APK
+        run: |
+          mkdir -p output
+          cp app/build/outputs/apk/debug/app-debug.apk output/RunApp-v${{ steps.version.outputs.name }}-build${{ steps.version.outputs.code }}.apk
+      
+      - name: Enviar APK para Telegram
+        if: success() && (github.event.inputs.send_to_telegram != 'false')
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # Nome do arquivo
+          APK_FILE="output/RunApp-v${{ steps.version.outputs.name }}-build${{ steps.version.outputs.code }}.apk"
+          
+          # Mensagem formatada
+          MESSAGE="🚀 *RunApp - Nova Build*%0A%0A"
+          MESSAGE="${MESSAGE}📱 *Versão:* ${{ steps.version.outputs.name }} (Build ${{ steps.version.outputs.code }})%0A"
+          MESSAGE="${MESSAGE}🌿 *Branch:* \`${{ steps.version.outputs.branch }}\`%0A"
+          MESSAGE="${MESSAGE}👤 *Autor:* ${{ steps.version.outputs.commit_author }}%0A"
+          MESSAGE="${MESSAGE}💬 *Commit:* ${{ steps.version.outputs.commit_msg }}%0A"
+          MESSAGE="${MESSAGE}📅 *Data:* $(date '+%d/%m/%Y %H:%M')%0A"
+          MESSAGE="${MESSAGE}🔗 *SHA:* \`$(echo ${{ github.sha }} | cut -c1-7)\`%0A%0A"
+          MESSAGE="${MESSAGE}✅ Build compilado com sucesso!"
+          
+          # Envia o arquivo para o Telegram
+          curl -F "chat_id=$TELEGRAM_CHAT_ID" \
+               -F "document=@$APK_FILE" \
+               -F "caption=$MESSAGE" \
+               -F "parse_mode=Markdown" \
+               "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument"
+      
+      - name: Notificar erro no Telegram
+        if: failure() && (github.event.inputs.send_to_telegram != 'false')
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MESSAGE="❌ *RunApp - Build Falhou*%0A%0A"
+          MESSAGE="${MESSAGE}🌿 *Branch:* \`${{ steps.version.outputs.branch }}\`%0A"
+          MESSAGE="${MESSAGE}👤 *Autor:* ${{ steps.version.outputs.commit_author }}%0A"
+          MESSAGE="${MESSAGE}💬 *Commit:* ${{ steps.version.outputs.commit_msg }}%0A"
+          MESSAGE="${MESSAGE}📅 *Data:* $(date '+%d/%m/%Y %H:%M')%0A%0A"
+          MESSAGE="${MESSAGE}🔍 Verifique os logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          
+          curl -X POST \
+               -H "Content-Type: application/json" \
+               -d "{\"chat_id\": \"$TELEGRAM_CHAT_ID\", \"text\": \"$MESSAGE\", \"parse_mode\": \"Markdown\"}" \
+               "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage"
+      
+      # Opcional: Ainda salvar no GitHub (com retenção curta) como backup
+      - name: Upload APK as Artifact (Backup)
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: RunApp-debug-v${{ steps.version.outputs.name }}
-          path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 30
-      
-      - name: Upload Release APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: RunApp-release-v${{ steps.version.outputs.name }}
-          path: app/build/outputs/apk/release/app-release-unsigned.apk
-          retention-days: 90
+          path: output/*.apk
+          retention-days: 7  # Apenas 7 dias, pois o principal é o Telegram
       
       - name: Create Build Summary
+        if: always()
         run: |
-          echo "## 🚀 Build Completo!" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "## ✅ Build Completo!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Build Falhou!" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📱 Informações do Build" >> $GITHUB_STEP_SUMMARY
           echo "- **Versão:** ${{ steps.version.outputs.name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Version Code:** ${{ steps.version.outputs.code }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ steps.version.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ steps.version.outputs.commit_msg }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Autor:** ${{ steps.version.outputs.commit_author }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 Artefatos Gerados" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ APK Debug" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ APK Release (não assinado)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "💡 **Dica:** Baixe os APKs na aba 'Artifacts' acima!" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "📲 **APK enviado para o Telegram!**" >> $GITHUB_STEP_SUMMARY
+          fi

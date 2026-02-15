@@ -1,4 +1,4 @@
-name: Release Build
+name: Release Build e Telegram
 
 on:
   push:
@@ -12,7 +12,7 @@ on:
 
 jobs:
   release:
-    name: Create Signed Release
+    name: Build Release e Enviar
     runs-on: ubuntu-latest
     
     steps:
@@ -43,6 +43,7 @@ jobs:
       - name: Build Release APK
         run: ./gradlew assembleRelease --stacktrace
         env:
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -59,29 +60,66 @@ jobs:
           
           VERSION_CODE=$(grep -oP 'versionCode = \K[0-9]+' app/build.gradle.kts)
           echo "code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          
+          # Informações do release
+          if [ "${{ github.event_name }}" == "push" ]; then
+            TAG_MSG=$(git tag -l --format='%(contents)' ${{ github.ref_name }})
+            echo "tag_msg=$TAG_MSG" >> $GITHUB_OUTPUT
+          fi
       
       - name: Rename APK
         run: |
           mkdir -p release
           if [ -f "app/build/outputs/apk/release/app-release.apk" ]; then
             cp app/build/outputs/apk/release/app-release.apk release/RunApp-v${{ steps.version.outputs.name }}-signed.apk
+            echo "APK_TYPE=signed" >> $GITHUB_ENV
           elif [ -f "app/build/outputs/apk/release/app-release-unsigned.apk" ]; then
             cp app/build/outputs/apk/release/app-release-unsigned.apk release/RunApp-v${{ steps.version.outputs.name }}-unsigned.apk
+            echo "APK_TYPE=unsigned" >> $GITHUB_ENV
           else
             echo "APK file not found!"
             ls -la app/build/outputs/apk/release/
             exit 1
           fi
       
-      - name: Upload Release Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: RunApp-release-v${{ steps.version.outputs.name }}
-          path: release/*.apk
-          retention-days: 365
+      - name: Enviar Release para Telegram
+        if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # Nome do arquivo
+          if [ "$APK_TYPE" == "signed" ]; then
+            APK_FILE="release/RunApp-v${{ steps.version.outputs.name }}-signed.apk"
+            APK_STATUS="✅ Assinado"
+          else
+            APK_FILE="release/RunApp-v${{ steps.version.outputs.name }}-unsigned.apk"
+            APK_STATUS="⚠️ Não assinado"
+          fi
+          
+          # Mensagem formatada para release
+          MESSAGE="🎉 *RunApp - Nova Release*%0A%0A"
+          MESSAGE="${MESSAGE}📱 *Versão:* ${{ steps.version.outputs.name }}%0A"
+          MESSAGE="${MESSAGE}🔢 *Build:* ${{ steps.version.outputs.code }}%0A"
+          MESSAGE="${MESSAGE}📦 *Status:* $APK_STATUS%0A"
+          MESSAGE="${MESSAGE}📅 *Data:* $(date '+%d/%m/%Y %H:%M')%0A"
+          MESSAGE="${MESSAGE}🔗 *Tag:* \`${{ github.ref_name }}\`%0A%0A"
+          
+          if [ ! -z "${{ steps.version.outputs.tag_msg }}" ]; then
+            MESSAGE="${MESSAGE}📝 *Release Notes:*%0A${{ steps.version.outputs.tag_msg }}%0A%0A"
+          fi
+          
+          MESSAGE="${MESSAGE}⬇️ *Baixe o APK acima para instalar*"
+          
+          # Envia o arquivo para o Telegram
+          curl -F "chat_id=$TELEGRAM_CHAT_ID" \
+               -F "document=@$APK_FILE" \
+               -F "caption=$MESSAGE" \
+               -F "parse_mode=Markdown" \
+               "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument"
       
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: success() && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
           files: release/*.apk
@@ -94,24 +132,46 @@ jobs:
             3. Execute o APK baixado
             
             ### 📝 Changelog
-            <!-- Adicione as mudanças desta versão aqui -->
+            ${{ steps.version.outputs.tag_msg }}
             
             ### ℹ️ Informações
             - **Version Code:** ${{ steps.version.outputs.code }}
-            - **Build Date:** ${{ github.event.head_commit.timestamp }}
+            - **Build Date:** $(date '+%d/%m/%Y %H:%M')
             - **Commit:** ${{ github.sha }}
+            - **Status:** ${{ env.APK_TYPE == 'signed' && 'Assinado ✅' || 'Não assinado ⚠️' }}
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Create Summary
+      - name: Notificar erro no Telegram
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "## 🎉 Release Build Completo!" >> $GITHUB_STEP_SUMMARY
+          MESSAGE="❌ *RunApp - Release Falhou*%0A%0A"
+          MESSAGE="${MESSAGE}📱 *Versão:* ${{ steps.version.outputs.name }}%0A"
+          MESSAGE="${MESSAGE}📅 *Data:* $(date '+%d/%m/%Y %H:%M')%0A%0A"
+          MESSAGE="${MESSAGE}🔍 Verifique os logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          
+          curl -X POST \
+               -H "Content-Type: application/json" \
+               -d "{\"chat_id\": \"$TELEGRAM_CHAT_ID\", \"text\": \"$MESSAGE\", \"parse_mode\": \"Markdown\"}" \
+               "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage"
+      
+      - name: Create Summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "## 🎉 Release Build Completo!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **APK enviado para o Telegram!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Release Build Falhou!" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📱 Informações da Release" >> $GITHUB_STEP_SUMMARY
           echo "- **Versão:** ${{ steps.version.outputs.name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Version Code:** ${{ steps.version.outputs.code }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ **APK gerado com sucesso!**" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** $APK_TYPE" >> $GITHUB_STEP_SUMMARY
