@@ -234,113 +234,144 @@ fun CorridaScreen(
                 }
             }
 
-            // Painel de informações
+            // Informações no topo (apenas passo atual)
+            state.passoAtual?.let { passo ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .padding(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = corZona(passo.zona).copy(alpha = 0.9f)
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = passo.nome,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        if (!passo.isDescanso) {
+                            Text(
+                                text = "🎯 ${passo.paceAlvoMin}—${passo.paceAlvoMax}/km",
+                                fontSize = 14.sp,
+                                color = Color.White.copy(alpha = 0.9f)
+                            )
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        // Barra de progresso
+                        LinearProgressIndicator(
+                            progress = { state.progressoPasso },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp)),
+                            color = Color.White,
+                            trackColor = Color.White.copy(alpha = 0.3f)
+                        )
+                        
+                        Text(
+                            text = "${state.tempoPassoRestante}s restantes",
+                            fontSize = 12.sp,
+                            color = Color.White.copy(alpha = 0.9f),
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
+            }
+            
+            // Indicador de auto-pause no topo (se ativo)
+            if (state.autoPausado) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .padding(horizontal = 16.dp, vertical = if (state.passoAtual != null) 100.dp else 16.dp),
+                    color = Color(0xFFFFBE0B).copy(alpha = 0.95f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "⏸️ Auto-pause • Aguardando movimento...",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+            }
+
+            // Painel de métricas EMBAIXO (card preto)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .align(Alignment.TopCenter)
+                    .align(Alignment.BottomCenter)
                     .padding(16.dp)
+                    .padding(bottom = 80.dp) // Espaço para os botões
             ) {
-                // Card de métricas
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.95f)),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFF2C2C2C).copy(alpha = 0.95f)
+                    ),
                     shape = RoundedCornerShape(16.dp)
                 ) {
                     Column(
                         modifier = Modifier.padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Distância
-                        MetricaRow(
-                            label = "Distância",
-                            value = "%.2f km".format(state.distanciaMetros / 1000),
-                            icon = "🏃"
-                        )
-                        
-                        // Tempo
-                        MetricaRow(
-                            label = "Tempo",
-                            value = state.tempoFormatado,
-                            icon = "⏱️"
-                        )
-                        
-                        // Pace atual
-                        MetricaRow(
-                            label = "Pace Atual",
-                            value = state.paceAtual,
-                            icon = "📊"
-                        )
-                        
-                        // Pace médio
-                        MetricaRow(
-                            label = "Pace Médio",
-                            value = state.paceMedia,
-                            icon = "📈"
-                        )
-
-                        // Indicador de auto-pause
-                        if (state.autoPausado) {
-                            Divider(modifier = Modifier.padding(vertical = 4.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                Text(
-                                    text = "⏸️ Pausado Automaticamente",
-                                    color = Color(0xFFFFBE0B),
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                )
-                            }
+                        // Grid 2x2 com métricas
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            // Distância
+                            MetricaCompacta(
+                                label = "DISTÂNCIA",
+                                value = "%.2f".format(state.distanciaMetros / 1000),
+                                unit = "km",
+                                modifier = Modifier.weight(1f)
+                            )
+                            
+                            // Tempo
+                            MetricaCompacta(
+                                label = "TEMPO",
+                                value = state.tempoFormatado,
+                                unit = "",
+                                modifier = Modifier.weight(1f)
+                            )
                         }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Passo atual
-                state.passoAtual?.let { passo ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = corZona(passo.zona).copy(alpha = 0.9f)
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                text = passo.nome,
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                            if (!passo.isDescanso) {
-                                Text(
-                                    text = "Pace alvo: ${passo.paceAlvoMin} - ${passo.paceAlvoMax}",
-                                    fontSize = 14.sp,
-                                    color = Color.White.copy(alpha = 0.9f)
-                                )
-                            }
-                            
-                            Spacer(modifier = Modifier.height(8.dp))
-                            
-                            // Barra de progresso
-                            LinearProgressIndicator(
-                                progress = { state.progressoPasso },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(8.dp)
-                                    .clip(RoundedCornerShape(4.dp)),
-                                color = Color.White,
-                                trackColor = Color.White.copy(alpha = 0.3f)
+                        
+                        Divider(color = Color.White.copy(alpha = 0.2f))
+                        
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            // Pace atual
+                            MetricaCompacta(
+                                label = "PACE ATUAL",
+                                value = state.paceAtual,
+                                unit = "/km",
+                                modifier = Modifier.weight(1f)
                             )
                             
-                            Text(
-                                text = "${state.tempoPassoRestante}s restantes",
-                                fontSize = 12.sp,
-                                color = Color.White.copy(alpha = 0.9f),
-                                modifier = Modifier.padding(top = 4.dp)
+                            // Pace médio
+                            MetricaCompacta(
+                                label = "PACE MÉDIO",
+                                value = state.paceMedia,
+                                unit = "/km",
+                                modifier = Modifier.weight(1f)
                             )
                         }
                     }
@@ -448,29 +479,42 @@ fun CorridaScreen(
 }
 
 @Composable
-private fun MetricaRow(
+private fun MetricaCompacta(
     label: String,
     value: String,
-    icon: String
+    unit: String,
+    modifier: Modifier = Modifier
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(text = icon, fontSize = 20.sp)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = label,
-                fontSize = 14.sp,
-                color = Color.Gray
-            )
-        }
         Text(
-            text = value,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold
+            text = label,
+            fontSize = 11.sp,
+            color = Color.White.copy(alpha = 0.6f),
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 0.5.sp
         )
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = value,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+            if (unit.isNotEmpty()) {
+                Text(
+                    text = unit,
+                    fontSize = 14.sp,
+                    color = Color.White.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(start = 2.dp, bottom = 2.dp)
+                )
+            }
+        }
     }
 }
