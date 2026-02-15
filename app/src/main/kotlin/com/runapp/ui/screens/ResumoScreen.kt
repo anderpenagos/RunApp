@@ -103,7 +103,7 @@ fun ResumoScreen(
                     label = "botao_salvar"
                 ) { estadoSalvar ->
                     when (estadoSalvar) {
-                        SalvamentoEstado.PRONTO -> Button(
+                        SalvamentoEstado.NAO_SALVO -> Button(
                             onClick = { viewModel.salvarCorrida() },
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(
@@ -180,7 +180,7 @@ fun ResumoScreen(
                         label = "botao_upload"
                     ) { estadoUpload ->
                         when (estadoUpload) {
-                            UploadEstado.PRONTO -> OutlinedButton(
+                            UploadEstado.NAO_ENVIADO -> OutlinedButton(
                                 onClick = { viewModel.uploadParaIntervals() },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -247,7 +247,7 @@ fun ResumoScreen(
                 }
 
                 // ── Descartar ─────────────────────────────────────────────
-                if (state.salvamentoEstado == SalvamentoEstado.PRONTO ||
+                if (state.salvamentoEstado == SalvamentoEstado.NAO_SALVO ||
                     state.salvamentoEstado == SalvamentoEstado.ERRO
                 ) {
                     TextButton(

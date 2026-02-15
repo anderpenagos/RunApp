@@ -9,7 +9,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.google.android.gms.location.LocationServices
 import com.runapp.RunApp
-import com.runapp.data.AppContainer
+import com.runapp.AppContainer
 import com.runapp.data.model.LatLngPonto
 import com.runapp.data.model.PassoExecucao
 import com.runapp.data.model.WorkoutEvent
@@ -560,8 +560,8 @@ class CorridaViewModel(
                     return@launch
                 }
 
-                val repo = workoutRepo
-                    ?: container.createWorkoutRepository(apiKey ?: "").also { workoutRepo = it }
+                val repo = workoutRepo ?: container.createWorkoutRepository(apiKey ?: "")
+                workoutRepo = repo
 
                 val nomeAtividade = "Corrida RunApp - ${
                     java.time.LocalDateTime.now().format(
@@ -569,7 +569,7 @@ class CorridaViewModel(
                     )
                 }"
 
-                repo.salvarAtividade(
+                val result = repo.salvarAtividade(
                     context = context,
                     athleteId = athleteId,
                     nomeAtividade = nomeAtividade,
@@ -577,7 +577,9 @@ class CorridaViewModel(
                     tempoSegundos = state.tempoTotalSegundos,
                     paceMedia = state.paceMedia,
                     rota = state.rota
-                ).fold(
+                )
+                
+                result.fold(
                     onSuccess = { arquivo ->
                         arquivoGpxSalvo = arquivo
                         _uiState.value = _uiState.value.copy(
@@ -631,10 +633,11 @@ class CorridaViewModel(
                     return@launch
                 }
 
-                val repo = workoutRepo
-                    ?: container.createWorkoutRepository(apiKey ?: "").also { workoutRepo = it }
+                val repo = workoutRepo ?: container.createWorkoutRepository(apiKey ?: "")
+                workoutRepo = repo
 
-                repo.uploadAtividade(athleteId, arquivo).fold(
+                val result = repo.uploadAtividade(athleteId, arquivo)
+                result.fold(
                     onSuccess = {
                         _uiState.value = _uiState.value.copy(
                             uploadEstado = UploadEstado.ENVIADO
