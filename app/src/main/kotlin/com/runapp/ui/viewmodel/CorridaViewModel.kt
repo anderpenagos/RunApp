@@ -119,6 +119,10 @@ class CorridaViewModel(
     private var contadorSemMovimento = 0
     private val LIMITE_SEM_MOVIMENTO = 5  // 5 atualizações sem movimento
     private val DISTANCIA_MINIMA_MOVIMENTO = 5.0  // metros
+    
+    // Rolling Window para Pace Atual Suavizado
+    private val ultimasLocalizacoes = mutableListOf<Location>()
+    private val JANELA_PACE_SEGUNDOS = 15  // Média dos últimos 15 segundos
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Lifecycle
@@ -208,6 +212,9 @@ class CorridaViewModel(
         timestampPassoAtual = timestampInicio
         tempoPausadoTotal = 0
         
+        // Limpar rolling window ao iniciar nova corrida
+        ultimasLocalizacoes.clear()
+        
         _uiState.value = _uiState.value.copy(
             fase = FaseCorrida.CORRENDO
         )
@@ -229,6 +236,10 @@ class CorridaViewModel(
         )
         
         timerJob?.cancel()
+        
+        // Limpar rolling window do pace ao pausar
+        ultimasLocalizacoes.clear()
+        android.util.Log.d("CorridaVM", "🧹 Rolling window do pace limpo")
     }
 
     fun retomar() {
@@ -442,11 +453,21 @@ class CorridaViewModel(
             return
         }
 
-        // Calcular pace atual
-        val paceAtual = if (location.hasSpeed() && location.speed > 0.5) {
-            val segPorKm = 1000.0 / location.speed
-            formatarPace(segPorKm)
-        } else "--:--"
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // Calcular Pace Atual usando Rolling Window (Média Móvel dos últimos 15s)
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        
+        // 1. Adiciona a localização atual à janela de tempo
+        ultimasLocalizacoes.add(location)
+        
+        // 2. Remove pontos mais velhos que a janela (15 segundos)
+        val tempoCorte = location.time - (JANELA_PACE_SEGUNDOS * 1000)
+        ultimasLocalizacoes.removeAll { it.time < tempoCorte }
+        
+        // 3. Calcula o Pace baseado na janela de tempo
+        val paceAtual = calcularPaceNaJanela(ultimasLocalizacoes)
+        
+        android.util.Log.d("GPS_DEBUG", "📊 Pace Atual (Rolling Window ${ultimasLocalizacoes.size} pontos): $paceAtual")
 
         _uiState.value = state.copy(
             rota = novaRota,
@@ -456,6 +477,61 @@ class CorridaViewModel(
         )
         
         android.util.Log.d("GPS_DEBUG", "💾 Estado atualizado: ${novaRota.size} pontos, ${"%.3f".format(novaDistancia / 1000)} km")
+    }
+    
+    /**
+     * Calcula o pace atual baseado na média móvel dos últimos X segundos.
+     * 
+     * Este método implementa um "Rolling Window" que:
+     * - Soma a distância percorrida entre todos os pontos na janela
+     * - Divide pelo tempo real decorrido
+     * - Converte para pace (min/km)
+     * 
+     * Esta é a mesma técnica usada por relógios esportivos profissionais
+     * (Garmin, Apple Watch, etc) para suavizar o pace e evitar oscilações.
+     */
+    private fun calcularPaceNaJanela(pontos: List<Location>): String {
+        // Precisa de pelo menos 3 pontos para calcular
+        if (pontos.size < 3) {
+            android.util.Log.d("GPS_DEBUG", "⚠️ Pace: aguardando mais pontos (${pontos.size}/3)")
+            return "--:--"
+        }
+
+        // Soma a distância entre todos os pontos consecutivos na janela
+        var distanciaJanelaMetros = 0.0
+        for (i in 0 until pontos.size - 1) {
+            distanciaJanelaMetros += pontos[i].distanceTo(pontos[i + 1])
+        }
+
+        // Tempo real decorrido na janela
+        val tempoJanelaSegundos = (pontos.last().time - pontos.first().time) / 1000.0
+
+        // Validações: movimento muito pequeno ou tempo muito curto
+        if (distanciaJanelaMetros < 5.0) {
+            android.util.Log.d("GPS_DEBUG", "⚠️ Pace: movimento muito pequeno (${"%.1f".format(distanciaJanelaMetros)}m)")
+            return "--:--"
+        }
+        
+        if (tempoJanelaSegundos < 1) {
+            android.util.Log.d("GPS_DEBUG", "⚠️ Pace: janela de tempo muito curta (${"%.1f".format(tempoJanelaSegundos)}s)")
+            return "--:--"
+        }
+
+        // Velocidade média na janela (m/s)
+        val velocidadeMetrosPorSegundo = distanciaJanelaMetros / tempoJanelaSegundos
+        
+        // Converter para segundos por quilômetro (pace)
+        val segundosPorKm = 1000.0 / velocidadeMetrosPorSegundo
+        
+        android.util.Log.d("GPS_DEBUG", """
+            📊 Cálculo Pace:
+               Janela: ${pontos.size} pontos em ${"%.1f".format(tempoJanelaSegundos)}s
+               Distância: ${"%.1f".format(distanciaJanelaMetros)}m
+               Velocidade: ${"%.2f".format(velocidadeMetrosPorSegundo)} m/s
+               Pace: ${formatarPace(segundosPorKm)}
+        """.trimIndent())
+        
+        return formatarPace(segundosPorKm)
     }
 
     private fun verificarSeEstaParado(location: Location): Boolean {
