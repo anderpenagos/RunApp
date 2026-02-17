@@ -57,16 +57,27 @@ fun CorridaScreen(
     val state by viewModel.uiState.collectAsState()
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // ✨ NOVO: Gerenciamento de Permissões GPS
+    // Gerenciamento de Permissões
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    var permissaoGps by remember { 
-        mutableStateOf(PermissionHelper.hasLocationPermissions(context)) 
+    var permissaoGps by remember {
+        mutableStateOf(PermissionHelper.hasLocationPermissions(context))
+    }
+    var permissaoBackground by remember {
+        mutableStateOf(PermissionHelper.hasBackgroundLocationPermission(context))
     }
 
     var statusGps by remember { mutableStateOf("Buscando GPS...") }
     var pontosColetados by remember { mutableStateOf(0) }
 
-    // Launcher para solicitar permissões
+    // Passo 3: pedir localização em background (após ter localização em primeiro plano)
+    val backgroundLocationLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        permissaoBackground = permissions.values.all { it }
+        // Não bloqueia o app se negar — apenas GPS com tela bloqueada não vai funcionar
+    }
+
+    // Passo 2: pedir localização em primeiro plano
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -78,18 +89,40 @@ fun CorridaScreen(
                 Toast.LENGTH_LONG
             ).show()
         } else {
-            Toast.makeText(
-                context,
-                "✅ Permissões concedidas! Aguarde o sinal GPS...",
-                Toast.LENGTH_SHORT
-            ).show()
+            // Só pede background location DEPOIS de ter a localização em primeiro plano
+            // Android exige essa ordem
+            if (!permissaoBackground && PermissionHelper.BACKGROUND_LOCATION_PERMISSION.isNotEmpty()) {
+                backgroundLocationLauncher.launch(PermissionHelper.BACKGROUND_LOCATION_PERMISSION)
+            }
         }
     }
 
-    // Solicitar permissões ao iniciar a tela
-    LaunchedEffect(Unit) {
+    // Passo 1: pedir notificação (Android 13+), depois localização
+    val notificationLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        // Independente da resposta, segue pedindo localização
         if (!permissaoGps) {
             permissionLauncher.launch(PermissionHelper.LOCATION_PERMISSIONS)
+        }
+    }
+
+    // Solicitar permissões ao entrar na tela, na ordem correta
+    LaunchedEffect(Unit) {
+        when {
+            // Primeiro notificação (Android 13+)
+            !PermissionHelper.hasNotificationPermission(context) &&
+            PermissionHelper.NOTIFICATION_PERMISSION.isNotEmpty() -> {
+                notificationLauncher.launch(PermissionHelper.NOTIFICATION_PERMISSION)
+            }
+            // Depois localização em primeiro plano
+            !permissaoGps -> {
+                permissionLauncher.launch(PermissionHelper.LOCATION_PERMISSIONS)
+            }
+            // Por último, localização em background
+            !permissaoBackground && PermissionHelper.BACKGROUND_LOCATION_PERMISSION.isNotEmpty() -> {
+                backgroundLocationLauncher.launch(PermissionHelper.BACKGROUND_LOCATION_PERMISSION)
+            }
         }
     }
 
