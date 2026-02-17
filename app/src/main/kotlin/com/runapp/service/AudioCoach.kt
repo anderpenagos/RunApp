@@ -65,7 +65,7 @@ class AudioCoach(private val context: Context) {
         falar("$km quilômetros. Pace médio: $paceTexto.", respeitarIntervalo = false)
     }
 
-    fun anunciarPaceFeedback(paceAtual: String, paceAlvoMin: String, paceAlvoMax: String) {
+    fun anunciarPaceFeedback(paceAtual: String, paceAlvoMin: String, paceAlvoMax: String): Boolean {
         val atualSecs = paceParaSegundos(paceAtual)
         val minSecs = paceParaSegundos(paceAlvoMin)
         val maxSecs = paceParaSegundos(paceAlvoMax)
@@ -75,20 +75,17 @@ class AudioCoach(private val context: Context) {
         android.util.Log.d("AudioCoach", "Alvo min: $paceAlvoMin ($minSecs s/km)")
         android.util.Log.d("AudioCoach", "Alvo max: $paceAlvoMax ($maxSecs s/km)")
 
-        // Se não tem pace alvo definido, não dá feedback
         if (paceAlvoMin == "--:--") {
             android.util.Log.d("AudioCoach", "❌ Sem pace alvo definido")
-            return
+            return false
         }
 
-        // Se minSecs é 0, o alvo está inválido
         if (minSecs <= 0) {
             android.util.Log.d("AudioCoach", "❌ Pace alvo inválido")
-            return
+            return false
         }
 
         val mensagem = when {
-            // IMPORTANTE: Se pace atual é --:-- (parado/muito lento), considera como MUITO DEVAGAR
             paceAtual == "--:--" || atualSecs <= 0 -> {
                 android.util.Log.d("AudioCoach", "⚠️ PARADO OU MUITO DEVAGAR (pace --:--)")
                 "Você está parado ou muito devagar. Acelere para ${formatarPaceParaFala(paceAlvoMax)}."
@@ -102,14 +99,14 @@ class AudioCoach(private val context: Context) {
                 "Você está devagar demais. Acelere para ${formatarPaceParaFala(paceAlvoMax)}."
             }
             else -> {
-                android.util.Log.d("AudioCoach", "✅ Dentro do alvo, não vai avisar")
-                return // Dentro do alvo, não fala
+                android.util.Log.d("AudioCoach", "✅ Dentro do alvo")
+                return false  // Dentro do alvo, não fala e retorna false
             }
         }
-        
+
         android.util.Log.d("AudioCoach", "🔊 Vai falar: $mensagem")
-        // Não respeita intervalo mínimo pois já é controlado no ViewModel (5s)
         falar(mensagem, respeitarIntervalo = false)
+        return true
     }
 
     fun anunciarUltimosSegundos(segundos: Int) {
