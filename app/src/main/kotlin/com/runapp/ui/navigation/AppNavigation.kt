@@ -1,10 +1,10 @@
 package com.runapp.ui.navigation
 
-import androidx.activity.compose.LocalActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -37,7 +37,7 @@ fun AppNavigation() {
     val configState by configViewModel.uiState.collectAsState()
 
     // CorridaViewModel vive no escopo da Activity — sobrevive à navegação
-    val activity = LocalActivity.current!!
+    val activity = LocalContext.current as androidx.activity.ComponentActivity
     val corridaViewModel: CorridaViewModel = viewModel(
         viewModelStoreOwner = activity,
         factory = CorridaViewModel.Factory
