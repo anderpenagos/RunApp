@@ -448,6 +448,44 @@ class CorridaViewModel(
     fun salvarCorrida() = salvarAtividade()
 
     /**
+     * Reseta completamente o estado para permitir iniciar uma nova corrida
+     * sem precisar fechar o app. Deve ser chamado ao descartar ou ao voltar
+     * ao início após concluir/salvar.
+     */
+    fun resetarCorrida() {
+        android.util.Log.d("CorridaVM", "🔄 Resetando estado da corrida")
+
+        // Garantir que o service está parado
+        try {
+            val intent = Intent(context, RunningService::class.java).apply {
+                action = RunningService.ACTION_STOP
+            }
+            context.startService(intent)
+        } catch (e: Exception) { /* service pode já ter parado */ }
+
+        if (serviceBound) {
+            try {
+                context.unbindService(serviceConnection)
+                serviceBound = false
+            } catch (e: Exception) { /* ignorar */ }
+        }
+        runningService = null
+
+        // Resetar contadores internos
+        ultimoKmAnunciado = 0
+        ultimoPaceFeedback = 0L
+        indexPassoAnunciado = -1
+
+        // Voltar ao estado inicial — preservando apenas treino e passos carregados
+        val state = _uiState.value
+        _uiState.value = CorridaUiState(
+            treino = state.treino,
+            passos = state.passos,
+            passoAtual = state.passos.firstOrNull()
+        )
+    }
+
+    /**
      * Recebe uma nova localização do GPS gerenciado pela própria tela (legado).
      * Com o RunningService ativo o GPS é gerenciado pelo service; este método
      * existe para manter compatibilidade com código da UI que ainda o chama.

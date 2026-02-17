@@ -269,7 +269,10 @@ fun ResumoScreen(
 
         // Botão Voltar — sempre disponível
         OutlinedButton(
-            onClick = onVoltarHome,
+            onClick = {
+                viewModel.resetarCorrida()
+                onVoltarHome()
+            },
             modifier = Modifier.fillMaxWidth().height(52.dp)
         ) {
             Text("← Voltar ao Início", fontSize = 16.sp)
@@ -293,6 +296,7 @@ fun ResumoScreen(
                 Button(
                     onClick = {
                         mostrarConfirmarDescarte = false
+                        viewModel.resetarCorrida()
                         onVoltarHome()
                     },
                     colors = ButtonDefaults.buttonColors(
