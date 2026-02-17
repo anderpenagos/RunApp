@@ -211,7 +211,7 @@ class CorridaViewModel(
     private fun verificarAnuncioDistancia(distanciaMetros: Double) {
         val kmPercorridos = (distanciaMetros / 1000).toInt()
         if (kmPercorridos > ultimoKmAnunciado && kmPercorridos > 0) {
-            audioCoach.anunciarKm(kmPercorridos)
+            audioCoach.anunciarKm(kmPercorridos.toDouble(), _uiState.value.paceMedia)
             ultimoKmAnunciado = kmPercorridos
         }
     }
