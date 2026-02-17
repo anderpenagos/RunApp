@@ -50,6 +50,7 @@ import com.runapp.util.PermissionHelper
 fun CorridaScreen(
     eventId: Long,
     onFinalizar: () -> Unit,
+    onSair: () -> Unit = {},
     viewModel: CorridaViewModel = viewModel(factory = CorridaViewModel.Factory)
 ) {
     val context = LocalContext.current
@@ -177,8 +178,8 @@ fun CorridaScreen(
             dismissButton = {
                 TextButton(onClick = {
                     mostrarDialogoSair = false
-                    // Pausa a corrida mas não finaliza — service continua ativo
                     viewModel.pausar()
+                    onSair()
                 }) {
                     Text("Sair (pausar)", color = MaterialTheme.colorScheme.error)
                 }

@@ -120,6 +120,7 @@ fun AppNavigation() {
             CorridaScreen(
                 eventId = eventId,
                 viewModel = corridaViewModel,
+                onSair = { navController.popBackStack() },
                 onFinalizar = {
                     navController.navigate(Screen.Resumo.route) {
                         popUpTo(Screen.Corrida.route) { inclusive = true }
