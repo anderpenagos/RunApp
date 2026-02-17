@@ -72,6 +72,10 @@ data class CorridaUiState(
     val posicaoAtual: LatLngPonto? = null,
     val autoPausado: Boolean = false,
     
+    // Progresso do passo atual
+    val progressoPasso: Float = 0f,
+    val tempoPassoRestante: Int = 0,
+    
     // Salvamento e upload
     val salvamentoEstado: SalvamentoEstado = SalvamentoEstado.NAO_SALVO,
     val uploadEstado: UploadEstado = UploadEstado.NAO_ENVIADO,
@@ -319,6 +323,30 @@ class CorridaViewModel(
         context.startService(intent)
         
         _uiState.value = _uiState.value.copy(fase = FaseCorrida.FINALIZADO)
+    }
+
+    // Aliases para compatibilidade com CorridaScreen e ResumoScreen
+    fun pausar() = pausarCorrida()
+    fun retomar() = retomarCorrida()
+    fun salvarCorrida() = salvarAtividade()
+
+    /**
+     * Recebe uma nova localização do GPS gerenciado pela própria tela (legado).
+     * Com o RunningService ativo o GPS é gerenciado pelo service; este método
+     * existe para manter compatibilidade com código da UI que ainda o chama.
+     */
+    fun onNovaLocalizacao(location: android.location.Location) {
+        // O RunningService já processa a localização via seu próprio callback.
+        // Aqui apenas atualizamos a posição visível na UI caso o service
+        // ainda não tenha enviado o update.
+        val ponto = LatLngPonto(
+            lat = location.latitude,
+            lng = location.longitude,
+            alt = location.altitude,
+            tempo = location.time,
+            accuracy = location.accuracy
+        )
+        _uiState.value = _uiState.value.copy(posicaoAtual = ponto)
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

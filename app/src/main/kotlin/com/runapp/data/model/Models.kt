@@ -95,7 +95,10 @@ data class CorridaSnapshot(
 
 data class LatLngPonto(
     val lat: Double,
-    val lng: Double
+    val lng: Double,
+    val alt: Double = 0.0,
+    val tempo: Long = 0L,
+    val accuracy: Float = 0f
 )
 
 data class ResumoFinal(
