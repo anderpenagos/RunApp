@@ -403,13 +403,43 @@ class CorridaViewModel(
 
     fun finalizarCorrida() {
         android.util.Log.d("CorridaVM", "⏹️ Finalizando corrida")
-        
+
+        // ⚠️ CRÍTICO: capturar os dados ANTES de parar o service
+        // Quando o service para, os StateFlows são destruídos e os dados somem
+        val service = runningService
+        val distanciaFinal   = service?.distanciaMetros?.value  ?: _uiState.value.distanciaMetros
+        val tempoFinal       = service?.tempoTotalSegundos?.value ?: _uiState.value.tempoTotalSegundos
+        val paceAtualFinal   = service?.paceAtual?.value         ?: _uiState.value.paceAtual
+        val paceMediaFinal   = service?.paceMedia?.value         ?: _uiState.value.paceMedia
+        val rotaFinal        = service?.rotaAtual?.value         ?: _uiState.value.rota
+
+        // Gravar snapshot no uiState ANTES de parar tudo
+        _uiState.value = _uiState.value.copy(
+            distanciaMetros   = distanciaFinal,
+            tempoTotalSegundos = tempoFinal,
+            tempoFormatado    = formatarTempo(tempoFinal),
+            paceAtual         = paceAtualFinal,
+            paceMedia         = paceMediaFinal,
+            rota              = rotaFinal,
+            fase              = FaseCorrida.FINALIZADO
+        )
+
+        // Agora sim pode parar o service
         val intent = Intent(context, RunningService::class.java).apply {
             action = RunningService.ACTION_STOP
         }
         context.startService(intent)
-        
-        _uiState.value = _uiState.value.copy(fase = FaseCorrida.FINALIZADO)
+
+        // Desvincular do service
+        if (serviceBound) {
+            try {
+                context.unbindService(serviceConnection)
+                serviceBound = false
+            } catch (e: Exception) {
+                android.util.Log.e("CorridaVM", "Erro ao unbind service", e)
+            }
+        }
+        runningService = null
     }
 
     // Aliases para compatibilidade com CorridaScreen e ResumoScreen
