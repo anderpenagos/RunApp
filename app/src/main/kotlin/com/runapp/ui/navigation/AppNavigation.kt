@@ -1,6 +1,8 @@
 package com.runapp.ui.navigation
 
+import androidx.activity.compose.LocalActivity
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -11,6 +13,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.runapp.ui.screens.*
 import com.runapp.ui.viewmodel.ConfigViewModel
+import com.runapp.ui.viewmodel.CorridaViewModel
+import com.runapp.ui.viewmodel.FaseCorrida
 
 sealed class Screen(val route: String) {
     object Config      : Screen("config")
@@ -32,8 +36,33 @@ fun AppNavigation() {
     val configViewModel: ConfigViewModel = viewModel(factory = ConfigViewModel.Factory)
     val configState by configViewModel.uiState.collectAsState()
 
-    // Tela inicial depende se já está configurado
+    // CorridaViewModel vive no escopo da Activity — sobrevive à navegação
+    val activity = LocalActivity.current!!
+    val corridaViewModel: CorridaViewModel = viewModel(
+        viewModelStoreOwner = activity,
+        factory = CorridaViewModel.Factory
+    )
+
+    val corridaState by corridaViewModel.uiState.collectAsState()
+
     val startDestination = if (configState.isConfigured) Screen.Home.route else Screen.Config.route
+
+    // Se a corrida ainda está ativa e o usuário navegou para fora, redireciona de volta
+    val corridaAtiva = corridaState.fase == FaseCorrida.CORRENDO || corridaState.fase == FaseCorrida.PAUSADO
+    val eventoId = corridaState.treino?.id
+
+    // Se corrida ativa e usuário está em outra tela, redireciona de volta
+    LaunchedEffect(corridaAtiva) {
+        if (corridaAtiva && eventoId != null) {
+            val rotaAtual = navController.currentDestination?.route
+            val naTelaCorreta = rotaAtual?.startsWith("corrida/") == true
+            if (!naTelaCorreta) {
+                navController.navigate(Screen.Corrida.criarRota(eventoId)) {
+                    launchSingleTop = true
+                }
+            }
+        }
+    }
 
     NavHost(navController = navController, startDestination = startDestination) {
 
@@ -90,6 +119,7 @@ fun AppNavigation() {
             val eventId = backStackEntry.arguments?.getLong("eventId") ?: return@composable
             CorridaScreen(
                 eventId = eventId,
+                viewModel = corridaViewModel,
                 onFinalizar = {
                     navController.navigate(Screen.Resumo.route) {
                         popUpTo(Screen.Corrida.route) { inclusive = true }
@@ -100,6 +130,7 @@ fun AppNavigation() {
 
         composable(Screen.Resumo.route) {
             ResumoScreen(
+                viewModel = corridaViewModel,
                 onVoltarHome = {
                     navController.navigate(Screen.Home.route) {
                         popUpTo(0) { inclusive = true }

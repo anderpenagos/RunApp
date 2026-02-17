@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Looper
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -152,6 +153,37 @@ fun CorridaScreen(
     // Navegar ao finalizar
     LaunchedEffect(state.fase) {
         if (state.fase == FaseCorrida.FINALIZADO) onFinalizar()
+    }
+
+    // Diálogo de confirmação ao tentar sair durante a corrida
+    var mostrarDialogoSair by remember { mutableStateOf(false) }
+
+    // Interceptar botão voltar enquanto corrida ativa
+    BackHandler(enabled = state.fase == FaseCorrida.CORRENDO || state.fase == FaseCorrida.PAUSADO) {
+        mostrarDialogoSair = true
+    }
+
+    // Diálogo de confirmação
+    if (mostrarDialogoSair) {
+        AlertDialog(
+            onDismissRequest = { mostrarDialogoSair = false },
+            title = { Text("Corrida em andamento") },
+            text = { Text("A corrida continua rodando em segundo plano. Deseja mesmo sair sem finalizar?") },
+            confirmButton = {
+                TextButton(onClick = { mostrarDialogoSair = false }) {
+                    Text("Continuar correndo")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    mostrarDialogoSair = false
+                    // Pausa a corrida mas não finaliza — service continua ativo
+                    viewModel.pausar()
+                }) {
+                    Text("Sair (pausar)", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        )
     }
 
     // Câmera do mapa
