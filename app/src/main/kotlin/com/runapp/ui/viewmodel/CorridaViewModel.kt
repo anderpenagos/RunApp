@@ -106,6 +106,8 @@ class CorridaViewModel(
     // Audio Coach para alertas de voz
     private val audioCoach = AudioCoach(context)
     private var ultimoKmAnunciado = 0
+    private var ultimoPaceFeedback = 0L
+    private val INTERVALO_PACE_FEEDBACK_MS = 20_000L  // no máximo 1 aviso a cada 20s
     
     // Service
     private var runningService: RunningService? = null
@@ -180,6 +182,7 @@ class CorridaViewModel(
         viewModelScope.launch {
             service.paceAtual.collect { pace ->
                 _uiState.value = _uiState.value.copy(paceAtual = pace)
+                verificarFeedbackPace(pace)
             }
         }
         
@@ -214,6 +217,28 @@ class CorridaViewModel(
             audioCoach.anunciarKm(kmPercorridos.toDouble(), _uiState.value.paceMedia)
             ultimoKmAnunciado = kmPercorridos
         }
+    }
+
+    private fun verificarFeedbackPace(paceAtual: String) {
+        val state = _uiState.value
+        if (state.fase != FaseCorrida.CORRENDO) return
+        if (state.autoPausado) return
+
+        // Sem pace real ainda (início da corrida), não avisa
+        if (paceAtual == "--:--") return
+
+        val passo = state.passoAtual ?: return
+        if (passo.paceAlvoMin == "--:--" || passo.paceAlvoMax == "--:--") return
+
+        // Respeita intervalo mínimo entre avisos consecutivos
+        val agora = System.currentTimeMillis()
+        if (agora - ultimoPaceFeedback < INTERVALO_PACE_FEEDBACK_MS) return
+
+        // Avisa se fora do alvo — enquanto continuar fora, avisa a cada 20s
+        val avisouFora = audioCoach.anunciarPaceFeedback(paceAtual, passo.paceAlvoMin, passo.paceAlvoMax)
+        if (avisouFora) ultimoPaceFeedback = agora
+        // Se está dentro do alvo, ultimoPaceFeedback não é atualizado,
+        // então na próxima verificação entra aqui sem esperar os 20s
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -69,8 +69,10 @@ class RunningService : Service() {
     // Auto-pause
     private var ultimaLocalizacaoSignificativa: Location? = null
     private var contadorSemMovimento = 0
-    private val LIMITE_SEM_MOVIMENTO = 5
-    private val DISTANCIA_MINIMA_MOVIMENTO = 5.0
+    private var contadorEmMovimento = 0
+    private val LIMITE_SEM_MOVIMENTO = 3          // 3s parado → pausa
+    private val LIMITE_RETOMAR_MOVIMENTO = 2      // 2 updates em movimento → retoma
+    private val DISTANCIA_MINIMA_MOVIMENTO = 4.0  // metros por update (1s)
     
     // Estados
     private var estaPausado = false
@@ -360,20 +362,26 @@ class RunningService : Service() {
         )
 
         if (distanciaDesdeUltima < DISTANCIA_MINIMA_MOVIMENTO) {
+            // Sem movimento suficiente
             contadorSemMovimento++
-            
+            contadorEmMovimento = 0  // reseta contador de movimento
+
             if (contadorSemMovimento >= LIMITE_SEM_MOVIMENTO && !_autoPausado.value) {
-                Log.d(TAG, "⏸️ Auto-pause ativado")
+                Log.d(TAG, "⏸️ Auto-pause ativado (${contadorSemMovimento}s sem movimento)")
                 _autoPausado.value = true
                 atualizarNotificacao("Auto-pausado (sem movimento)")
             }
         } else {
+            // Em movimento
+            contadorEmMovimento++
             contadorSemMovimento = 0
             ultimaLocalizacaoSignificativa = location
-            
-            if (_autoPausado.value) {
-                Log.d(TAG, "▶️ Auto-pause desativado")
+
+            // Só retoma após confirmação de movimento por N updates seguidos
+            if (_autoPausado.value && contadorEmMovimento >= LIMITE_RETOMAR_MOVIMENTO) {
+                Log.d(TAG, "▶️ Auto-pause desativado (movimento confirmado)")
                 _autoPausado.value = false
+                contadorEmMovimento = 0
                 atualizarNotificacao("Corrida em andamento")
             }
         }
