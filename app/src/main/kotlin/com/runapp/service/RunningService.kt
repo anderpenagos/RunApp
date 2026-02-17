@@ -473,7 +473,11 @@ class RunningService : Service() {
     }
 
     private fun criarNotificacao(texto: String? = null): Notification {
-        val intent = Intent(this, MainActivity::class.java)
+        // FLAG_ACTIVITY_SINGLE_TOP — reutiliza a Activity existente em vez de criar nova
+        // FLAG_ACTIVITY_CLEAR_TOP — garante que não empilha Activities duplicadas
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
         val pendingIntent = PendingIntent.getActivity(
             this, 0, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -489,6 +493,19 @@ class RunningService : Service() {
             .setOngoing(true)
             .setSilent(true)
             .build()
+    }
+
+    // Chamado quando o usuário fecha o app pelo botão recents (X no multitarefa)
+    // Se não há corrida ativa, para o service e remove a notificação
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.d(TAG, "📱 App removido da lista de recentes")
+        if (!estaCorrendo) {
+            Log.d(TAG, "⏹️ Sem corrida ativa — parando service")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+        // Se corrida ativa: service continua rodando em background (comportamento correto)
     }
 
     private fun atualizarNotificacao(textoCustomizado: String? = null) {
