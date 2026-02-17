@@ -107,7 +107,9 @@ class CorridaViewModel(
     private val audioCoach = AudioCoach(context)
     private var ultimoKmAnunciado = 0
     private var ultimoPaceFeedback = 0L
-    private val INTERVALO_PACE_FEEDBACK_MS = 20_000L  // no máximo 1 aviso a cada 20s
+    private val INTERVALO_PACE_FEEDBACK_MS = 20_000L
+    private var tempoInicioPassoAtual = 0L   // tempo (segundos) em que o passo atual começou
+    private var indexPassoAnunciado = -1     // evita reanunciar o mesmo passo
     
     // Service
     private var runningService: RunningService? = null
@@ -176,6 +178,7 @@ class CorridaViewModel(
                     tempoTotalSegundos = tempo,
                     tempoFormatado = formatarTempo(tempo)
                 )
+                atualizarProgressoPasso(tempo)
             }
         }
         
@@ -241,6 +244,49 @@ class CorridaViewModel(
         // então na próxima verificação entra aqui sem esperar os 20s
     }
 
+    private fun atualizarProgressoPasso(tempoTotal: Long) {
+        val state = _uiState.value
+        val passos = state.passos
+        if (passos.isEmpty()) return
+
+        // Descobrir qual passo está ativo com base no tempo acumulado
+        var tempoAcumulado = 0L
+        var indexAtivo = passos.lastIndex
+        for (i in passos.indices) {
+            val fim = tempoAcumulado + passos[i].duracao.toLong()
+            if (tempoTotal < fim) {
+                indexAtivo = i
+                break
+            }
+            tempoAcumulado += passos[i].duracao.toLong()
+        }
+
+        val passo = passos[indexAtivo]
+        val tempoInicioEstePasso = run {
+            var acc = 0L
+            for (i in 0 until indexAtivo) acc += passos[i].duracao.toLong()
+            acc
+        }
+        val tempoNoPasso = (tempoTotal - tempoInicioEstePasso).coerceAtLeast(0)
+        val duracao = passo.duracao.coerceAtLeast(1)
+        val progresso = (tempoNoPasso.toFloat() / duracao).coerceIn(0f, 1f)
+        val restante = (duracao - tempoNoPasso).coerceAtLeast(0).toInt()
+
+        // Anunciar passo novo via áudio quando muda de passo
+        if (indexAtivo != indexPassoAnunciado) {
+            indexPassoAnunciado = indexAtivo
+            ultimoPaceFeedback = 0L  // reseta aviso de pace ao mudar de passo
+            audioCoach.anunciarPasso(passo.nome, passo.paceAlvoMax, passo.duracao)
+        }
+
+        _uiState.value = state.copy(
+            passoAtualIndex = indexAtivo,
+            passoAtual = passo,
+            progressoPasso = progresso,
+            tempoPassoRestante = restante
+        )
+    }
+
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Carregar Treino
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -302,19 +348,35 @@ class CorridaViewModel(
 
     fun iniciarCorrida() {
         android.util.Log.d("CorridaVM", "▶️ Iniciando corrida")
-        
+
+        // Resetar controle de passos
+        indexPassoAnunciado = -1
+        ultimoKmAnunciado = 0
+        ultimoPaceFeedback = 0L
+
         // Iniciar o service
         val intent = Intent(context, RunningService::class.java).apply {
             action = RunningService.ACTION_START
         }
         context.startForegroundService(intent)
-        
+
         // Bind ao service para receber atualizações
         Intent(context, RunningService::class.java).also { bindIntent ->
             context.bindService(bindIntent, serviceConnection, Context.BIND_AUTO_CREATE)
         }
-        
+
         _uiState.value = _uiState.value.copy(fase = FaseCorrida.CORRENDO)
+
+        // Anunciar início e primeiro passo
+        audioCoach.anunciarInicioCorrida()
+        val primeiroPasso = _uiState.value.passos.firstOrNull()
+        if (primeiroPasso != null) {
+            viewModelScope.launch {
+                kotlinx.coroutines.delay(2000) // espera o anúncio de início terminar
+                audioCoach.anunciarPasso(primeiroPasso.nome, primeiroPasso.paceAlvoMax, primeiroPasso.duracao)
+                indexPassoAnunciado = 0
+            }
+        }
     }
 
     fun pausarCorrida() {

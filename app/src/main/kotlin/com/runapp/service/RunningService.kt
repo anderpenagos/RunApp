@@ -356,30 +356,33 @@ class RunningService : Service() {
             return
         }
 
+        // Com sinal fraco, a margem de erro do GPS já cobre vários metros
+        // Usar accuracy para definir limiar dinâmico — evita auto-pause por jitter
+        val limiarMovimento = maxOf(DISTANCIA_MINIMA_MOVIMENTO, location.accuracy.toDouble())
+
         val distanciaDesdeUltima = calcularDistancia(
             ultimaLoc.latitude, ultimaLoc.longitude,
             location.latitude, location.longitude
         )
 
-        if (distanciaDesdeUltima < DISTANCIA_MINIMA_MOVIMENTO) {
+        if (distanciaDesdeUltima < limiarMovimento) {
             // Sem movimento suficiente
             contadorSemMovimento++
-            contadorEmMovimento = 0  // reseta contador de movimento
+            contadorEmMovimento = 0
 
             if (contadorSemMovimento >= LIMITE_SEM_MOVIMENTO && !_autoPausado.value) {
-                Log.d(TAG, "⏸️ Auto-pause ativado (${contadorSemMovimento}s sem movimento)")
+                Log.d(TAG, "⏸️ Auto-pause ativado (${contadorSemMovimento}s sem movimento, accuracy=${location.accuracy}m)")
                 _autoPausado.value = true
                 atualizarNotificacao("Auto-pausado (sem movimento)")
             }
         } else {
-            // Em movimento
+            // Em movimento real
             contadorEmMovimento++
             contadorSemMovimento = 0
             ultimaLocalizacaoSignificativa = location
 
-            // Só retoma após confirmação de movimento por N updates seguidos
             if (_autoPausado.value && contadorEmMovimento >= LIMITE_RETOMAR_MOVIMENTO) {
-                Log.d(TAG, "▶️ Auto-pause desativado (movimento confirmado)")
+                Log.d(TAG, "▶️ Auto-pause desativado (movimento confirmado, ${contadorEmMovimento} updates)")
                 _autoPausado.value = false
                 contadorEmMovimento = 0
                 atualizarNotificacao("Corrida em andamento")
