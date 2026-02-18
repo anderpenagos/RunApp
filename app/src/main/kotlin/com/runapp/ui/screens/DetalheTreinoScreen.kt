@@ -194,14 +194,9 @@ fun GraficoTreino(passos: List<PassoExecucao>) {
             }
             Spacer(modifier = Modifier.height(8.dp))
             // Legenda
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                listOf(
-                    "Z1" to com.runapp.ui.theme.ZonaColors[0],
-                    "Z2" to com.runapp.ui.theme.ZonaColors[1],
-                    "Z3" to com.runapp.ui.theme.ZonaColors[2],
-                    "Z4" to com.runapp.ui.theme.ZonaColors[3],
-                    "Z5" to com.runapp.ui.theme.ZonaColors[4]
-                ).forEach { (label, cor) ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("Z1", "Z2", "Z3", "Z4", "Z5", "Z6", "Z7").forEachIndexed { index, label ->
+                    val cor = com.runapp.ui.theme.corZona(index + 1)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(modifier = Modifier.size(10.dp).background(cor, RoundedCornerShape(2.dp)))
                         Spacer(modifier = Modifier.width(4.dp))
