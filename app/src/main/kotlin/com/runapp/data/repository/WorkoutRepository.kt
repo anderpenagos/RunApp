@@ -238,12 +238,8 @@ class WorkoutRepository(private val api: IntervalsApi) {
 
             // CASO 1: type="zone" ou valor pequeno (1-10)
             (paceTarget?.type == "zone" || (paceTarget != null && paceTarget.value in 0.5..10.0)) -> {
-                zona = if (paceZones.isNotEmpty()) {
-                    paceTarget.value.toInt().coerceIn(1, paceZones.size)
-                } else {
-                    paceTarget.value.toInt().coerceIn(1, 5)  // Fallback para zonas 1-5
-                }
-                Log.d(TAG, "✓ Detectado zona: Z$zona")
+                zona = paceTarget.value.toInt().coerceAtLeast(1)
+                Log.d(TAG, "✓ Detectado zona: Z$zona (paceZones.size=${paceZones.size})")
                 
                 val zonaConfig = paceZones.getOrNull(zona - 1)
                 if (zonaConfig != null) {
@@ -251,7 +247,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
                     paceMaxStr = formatarPace(zonaConfig.max)
                     Log.d(TAG, "✓ Pace: $paceMinStr - $paceMaxStr")
                 } else {
-                    Log.w(TAG, "Zona não encontrada, usando fallback")
+                    Log.w(TAG, "Zona $zona não encontrada na lista (size=${paceZones.size}), usando fallback")
                     val (min, max) = getPaceFallback(zona)
                     paceMinStr = min
                     paceMaxStr = max
@@ -301,12 +297,10 @@ class WorkoutRepository(private val api: IntervalsApi) {
             "Cooldown" -> "Desaceleração"
             "Rest" -> if (repAtual != null) "Recuperação $repAtual/$repsTotal" else "Descanso"
             "SteadyState" -> {
-                if (repAtual != null) {
-                    if (isDescanso || paceMinStr == "--:--") {
-                        "Recuperação $repAtual/$repsTotal"
-                    } else {
-                        "Esforço $repAtual/$repsTotal"
-                    }
+                if (isDescanso) {
+                    if (repAtual != null) "Recuperação $repAtual/$repsTotal" else "Descanso"
+                } else if (repAtual != null) {
+                    "Esforço $repAtual/$repsTotal"
                 } else {
                     "Ritmo Constante"
                 }
@@ -329,12 +323,14 @@ class WorkoutRepository(private val api: IntervalsApi) {
 
     private fun getPaceFallback(zona: Int): Pair<String, String> {
         return when (zona) {
-            1 -> Pair("6:30", "7:30")
-            2 -> Pair("5:30", "6:30")
-            3 -> Pair("5:00", "5:30")
-            4 -> Pair("4:30", "5:00")
-            5 -> Pair("4:00", "4:30")
-            else -> Pair("5:30", "6:30")
+            1 -> Pair("6:05", "7:36")
+            2 -> Pair("5:23", "6:05")
+            3 -> Pair("5:03", "5:23")
+            4 -> Pair("4:43", "5:03")
+            5 -> Pair("4:34", "4:43")
+            6 -> Pair("4:14", "4:34")
+            7 -> Pair("3:51", "4:14")
+            else -> Pair("4:34", "4:43")
         }
     }
 
