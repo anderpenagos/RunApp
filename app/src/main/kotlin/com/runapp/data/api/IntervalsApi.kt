@@ -4,14 +4,11 @@ import com.runapp.data.model.ActivityUploadResponse
 import com.runapp.data.model.WorkoutEvent
 import com.runapp.data.model.ZonesResponse
 import okhttp3.MultipartBody
+import okhttp3.ResponseBody
 import retrofit2.http.*
 
 interface IntervalsApi {
 
-    /**
-     * Busca eventos/treinos planejados para um período.
-     * Exemplo de datas: "2024-05-01", "2024-05-31"
-     */
     @GET("athlete/{id}/events")
     suspend fun getEvents(
         @Path("id") athleteId: String,
@@ -21,25 +18,21 @@ interface IntervalsApi {
     ): List<WorkoutEvent>
 
     /**
-     * Detalhe completo de um treino (com workout_doc e steps).
+     * Retorna o JSON bruto do evento para que o WorkoutRepository
+     * possa parsear os steps manualmente (evitando bugs do Gson com
+     * campos "start"/"end"/"units" em StepTarget).
      */
     @GET("athlete/{id}/events/{eventId}")
-    suspend fun getEventDetail(
+    suspend fun getEventDetailRaw(
         @Path("id") athleteId: String,
         @Path("eventId") eventId: Long
-    ): WorkoutEvent
+    ): ResponseBody
 
-    /**
-     * Zonas do atleta (pace, FC, potência).
-     */
     @GET("athlete/{id}/zones")
     suspend fun getZones(
         @Path("id") athleteId: String
     ): ZonesResponse
 
-    /**
-     * Upload de atividade finalizada (.fit file).
-     */
     @POST("athlete/{id}/activities")
     @Multipart
     suspend fun uploadActivity(

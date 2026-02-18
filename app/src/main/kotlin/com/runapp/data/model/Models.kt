@@ -50,8 +50,8 @@ data class StepTarget(
     val value2: Double? = null,
     val type: String = "pace",
     val units: String? = null,
-    val start: Double? = null,
-    val end: Double? = null
+    @SerializedName("start") val start: Double? = null,
+    @SerializedName("end")   val end: Double? = null
 ) {
     /** Zona efetiva: usa 'value' se preenchido, senão 'start' (início do range) */
     val effectiveValue: Double get() = if (value > 0.0) value else (start ?: 0.0)
