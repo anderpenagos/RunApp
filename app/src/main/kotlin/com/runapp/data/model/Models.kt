@@ -32,24 +32,37 @@ data class WorkoutStep(
     val steps: List<WorkoutStep>? = null  // sub-passos em intervalos
 )
 
+/**
+ * Alvo de pace de um step do treino.
+ *
+ * A API do intervals.icu usa dois formatos:
+ *
+ *   Zona única:   {"value": 6,  "units": "pace_zone"}
+ *   Range zonas:  {"start": 5, "end": 6, "units": "pace_zone"}
+ *   Descanso:     {"value": 0,  "units": "%pace"}
+ *
+ * Esta classe é desserializada por StepTargetDeserializer em IntervalsClient,
+ * que lê o JsonObject manualmente para garantir que todos os campos — incluindo
+ * "end" (palavra reservada no JVM) e "start" — sejam mapeados corretamente.
+ */
 data class StepTarget(
     val value: Double = 0.0,
     val value2: Double? = null,
-    val type: String = "pace",                      // "zone", "pace", "heart_rate", "power"
-    @SerializedName("units") val units: String? = null,   // "pace_zone", "%pace", "power_zone"
-    @SerializedName("start") val start: Double? = null,   // range início: {"start":5,"end":6,"units":"pace_zone"}
-    @SerializedName("end")   val end: Double? = null      // range fim — @SerializedName obrigatório: 'end' é palavra reservada no Kotlin/JVM
+    val type: String = "pace",
+    val units: String? = null,
+    val start: Double? = null,
+    val end: Double? = null
 ) {
-    /** Zona efetiva: prioriza 'value' se preenchido, senão usa 'start' (início do range) */
+    /** Zona efetiva: usa 'value' se preenchido, senão 'start' (início do range) */
     val effectiveValue: Double get() = if (value > 0.0) value else (start ?: 0.0)
 
-    /** Zona final do range (para ranges como Z5-Z6) */
+    /** Zona final do range (ex: Z6 em Z5-Z6) */
     val effectiveEnd: Double? get() = end ?: if (value2 != null && value2 > 0.0) value2 else null
 
-    /** true se o target representa uma pace zone (não % de pace) */
+    /** true se é uma zona de pace (não % de pace) */
     val isPaceZone: Boolean get() = units == "pace_zone" || type == "zone" || type == "pace_zone"
 
-    /** true se é recuperação/descanso (0% de pace) */
+    /** true se é descanso (0% de pace) */
     val isRest: Boolean get() = (units == "%pace" && value == 0.0) || (type == "pace" && value == 0.0 && start == null)
 }
 
@@ -73,8 +86,8 @@ data class SportSetting(
 data class PaceZone(
     val id: Int = 0,
     val name: String = "",
-    val min: Double? = null,   // segundos por metro
-    val max: Double? = null,
+    val min: Double? = null,   // segundos por metro (pace mais RÁPIDO da zona)
+    val max: Double? = null,   // segundos por metro (pace mais LENTO da zona)
     val color: String? = null
 )
 
@@ -92,7 +105,7 @@ data class PassoExecucao(
     val duracao: Int,           // segundos
     val paceAlvoMin: String,    // ex: "5:00" min/km
     val paceAlvoMax: String,    // ex: "5:30" min/km
-    val zona: Int,              // 1-5 para colorir
+    val zona: Int,              // 1-7 para colorir
     val instrucao: String,
     val isDescanso: Boolean = false
 )
