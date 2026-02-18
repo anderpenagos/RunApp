@@ -164,61 +164,21 @@ class WorkoutRepository(private val api: IntervalsApi) {
     fun converterParaPassos(evento: WorkoutEvent, paceZones: List<PaceZone>): List<PassoExecucao> {
         Log.d(TAG, "=== CONVERSÃO DE TREINO ===")
         Log.d(TAG, "Evento: ${evento.name}")
-
-        val rawDoc = evento.workoutDocRaw ?: return listOf(
+        Log.d(TAG, "Zonas processadas: ${paceZones.size}")
+        
+        val doc = evento.workoutDoc ?: return listOf(
             PassoExecucao(
-                nome = evento.name, duracao = 1800,
-                paceAlvoMin = "--:--", paceAlvoMax = "--:--",
-                zona = 2, instrucao = evento.description ?: "Siga seu ritmo confortável"
+                nome = evento.name,
+                duracao = 1800,
+                paceAlvoMin = "--:--",
+                paceAlvoMax = "--:--",
+                zona = 2,
+                instrucao = evento.description ?: "Siga seu ritmo confortável"
             )
         )
-
-        return try {
-            val stepsArray = rawDoc.asJsonObject.getAsJsonArray("steps")
-            val steps = stepsArray.map { parseStep(it) }
-            Log.d(TAG, "Steps parseados: ${steps.size}")
-            expandirPassos(steps, paceZones)
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao parsear workout_doc", e)
-            listOf(PassoExecucao(
-                nome = evento.name, duracao = 1800,
-                paceAlvoMin = "--:--", paceAlvoMax = "--:--",
-                zona = 2, instrucao = evento.description ?: "Siga seu ritmo confortável"
-            ))
-        }
-    }
-
-    /**
-     * Parseia um step do JSON bruto manualmente.
-     * Isso garante que campos como "start", "end", "units" sejam lidos
-     * corretamente, independente do comportamento do Gson com Kotlin nullable types.
-     */
-    private fun parseStep(el: com.google.gson.JsonElement): WorkoutStep {
-        val obj = el.asJsonObject
-        val duration = obj.get("duration")?.asInt ?: 0
-        val text     = obj.get("text")?.asString
-        val reps     = obj.get("reps")?.asInt
-        val isRamp   = obj.get("ramp")?.asBoolean ?: false
-
-        val pace = obj.get("pace")?.asJsonObject?.let { p ->
-            StepTarget(
-                units = p.get("units")?.asString,
-                value = p.get("value")?.asDouble,
-                start = p.get("start")?.asDouble,
-                end   = p.get("end")?.asDouble
-            )
-        }
-
-        val subSteps = obj.getAsJsonArray("steps")?.map { parseStep(it) }
-
-        return WorkoutStep(
-            duration = duration,
-            pace     = pace,
-            text     = text,
-            reps     = reps,
-            steps    = subSteps,
-            isRamp   = isRamp
-        )
+        
+        Log.d(TAG, "Steps no workout: ${doc.steps.size}")
+        return expandirPassos(doc.steps, paceZones)
     }
 
     private fun expandirPassos(
@@ -228,19 +188,23 @@ class WorkoutRepository(private val api: IntervalsApi) {
         val resultado = mutableListOf<PassoExecucao>()
 
         for (step in steps) {
-            if (step.reps != null && step.reps > 1 && !step.steps.isNullOrEmpty()) {
-                Log.d(TAG, "🔁 Bloco repetição: ${step.reps}x com ${step.steps.size} sub-passos")
+            // DETECTA INTERVALO: se tem reps E steps (sub-passos)
+            if (step.reps != null && step.reps > 1 && step.steps != null && step.steps.isNotEmpty()) {
+                Log.d(TAG, "🔁 Detectado bloco de repetição: ${step.reps}x com ${step.steps.size} sub-passos")
+                
+                // Expandir cada repetição
                 repeat(step.reps) { i ->
                     step.steps.forEach { subPasso ->
                         resultado.add(converterStep(subPasso, paceZones, i + 1, step.reps))
                     }
                 }
             } else {
+                // Passo comum (aquecimento, desaquecimento, etc)
                 resultado.add(converterStep(step, paceZones))
             }
         }
 
-        Log.d(TAG, "✅ Total de passos: ${resultado.size}")
+        Log.d(TAG, "✅ Total de passos após expansão: ${resultado.size}")
         return resultado
     }
 
@@ -250,71 +214,116 @@ class WorkoutRepository(private val api: IntervalsApi) {
         repAtual: Int? = null,
         repsTotal: Int? = null
     ): PassoExecucao {
-        val pace = step.pace
-        Log.d(TAG, "Step: units=${pace?.units}, value=${pace?.value}, start=${pace?.start}, end=${pace?.end}, ramp=${step.isRamp}")
-
-        val isDescanso = pace?.isDescanso == true
+        Log.d(TAG, "--- Step: ${step.type} ---")
+        Log.d(TAG, "Text: ${step.text}")
+        
+        val paceTarget = step.pace ?: step.target
+        Log.d(TAG, "Target: value=${paceTarget?.value}, type=${paceTarget?.type}")
+        
+        val isDescanso = step.type == "Rest" ||
+            (paceTarget?.value == 0.0 && paceTarget.type == "pace")
 
         var zona = 2
         var paceMinStr = "--:--"
         var paceMaxStr = "--:--"
 
         when {
+            // CASO 0: Descanso/recuperação — não mostrar pace
             isDescanso -> {
-                Log.d(TAG, "✓ Descanso")
+                Log.d(TAG, "✓ Descanso/recuperação")
                 zona = 1
+                paceMinStr = "--:--"
+                paceMaxStr = "--:--"
             }
 
-            // Range de zonas: {"start":5,"end":6,"units":"pace_zone"}
-            pace != null && pace.zonaStart != null && pace.zonaEnd != null -> {
-                val zMin = pace.zonaStart!!.coerceIn(1, paceZones.size.coerceAtLeast(1))
-                val zMax = pace.zonaEnd!!.coerceIn(1, paceZones.size.coerceAtLeast(1))
-                zona = zMax
-                Log.d(TAG, "✓ Range Z$zMin-Z$zMax")
-                val cfgMin = paceZones.getOrNull(zMin - 1)
-                val cfgMax = paceZones.getOrNull(zMax - 1)
-                paceMinStr = if (cfgMax != null) formatarPace(cfgMax.min) else getPaceFallback(zMax).first
-                paceMaxStr = if (cfgMin != null) formatarPace(cfgMin.max) else getPaceFallback(zMin).second
-            }
-
-            // Zona única: {"value":5,"units":"pace_zone"}
-            pace != null && pace.zonaUnica != null -> {
-                zona = pace.zonaUnica!!.coerceIn(1, paceZones.size.coerceAtLeast(1))
-                Log.d(TAG, "✓ Zona única Z$zona")
-                val cfg = paceZones.getOrNull(zona - 1)
-                if (cfg != null) {
-                    paceMinStr = formatarPace(cfg.min)
-                    paceMaxStr = formatarPace(cfg.max)
+            // CASO 1: type="zone" ou valor pequeno (1-10)
+            (paceTarget?.type == "zone" || (paceTarget != null && paceTarget.value in 0.5..10.0)) -> {
+                zona = if (paceZones.isNotEmpty()) {
+                    paceTarget.value.toInt().coerceIn(1, paceZones.size)
                 } else {
-                    val (mn, mx) = getPaceFallback(zona); paceMinStr = mn; paceMaxStr = mx
+                    paceTarget.value.toInt().coerceIn(1, 5)  // Fallback para zonas 1-5
+                }
+                Log.d(TAG, "✓ Detectado zona: Z$zona")
+                
+                val zonaConfig = paceZones.getOrNull(zona - 1)
+                if (zonaConfig != null) {
+                    paceMinStr = formatarPace(zonaConfig.min)
+                    paceMaxStr = formatarPace(zonaConfig.max)
+                    Log.d(TAG, "✓ Pace: $paceMinStr - $paceMaxStr")
+                } else {
+                    Log.w(TAG, "Zona não encontrada, usando fallback")
+                    val (min, max) = getPaceFallback(zona)
+                    paceMinStr = min
+                    paceMaxStr = max
                 }
             }
-
+            
+            // CASO 2: Texto com Z1, Z2, etc
+            step.text?.contains(Regex("[zZ](\\d)")) == true -> {
+                val regex = Regex("[zZ](\\d)")
+                zona = regex.find(step.text!!)?.groupValues?.get(1)?.toIntOrNull() ?: 2
+                Log.d(TAG, "✓ Zona do texto: Z$zona")
+                
+                val zonaConfig = paceZones.getOrNull(zona - 1)
+                if (zonaConfig != null) {
+                    paceMinStr = formatarPace(zonaConfig.min)
+                    paceMaxStr = formatarPace(zonaConfig.max)
+                    Log.d(TAG, "✓ Pace: $paceMinStr - $paceMaxStr")
+                } else {
+                    val (min, max) = getPaceFallback(zona)
+                    paceMinStr = min
+                    paceMaxStr = max
+                }
+            }
+            
+            // CASO 3: Pace absoluto (valor > 10)
+            paceTarget != null && paceTarget.value > 10.0 -> {
+                paceMinStr = formatarPace(paceTarget.value)
+                paceMaxStr = formatarPace(paceTarget.value2 ?: paceTarget.value)
+                zona = detectarZonaPorPace(paceTarget.value, paceZones)
+                Log.d(TAG, "Pace absoluto: $paceMinStr, zona=$zona")
+            }
+            
+            // CASO 4: Sem info, usar Z2 padrão
             else -> {
-                Log.w(TAG, "Sem info de pace reconhecível")
-                val (mn, mx) = getPaceFallback(2); paceMinStr = mn; paceMaxStr = mx
+                Log.w(TAG, "Sem info, usando Z2 padrão")
+                val (min, max) = getPaceFallback(2)
+                paceMinStr = min
+                paceMaxStr = max
                 zona = 2
             }
         }
 
-        Log.d(TAG, "→ Z$zona $paceMinStr-$paceMaxStr")
+        Log.d(TAG, "→ Final: Z$zona, $paceMinStr-$paceMaxStr")
 
-        val nomePasso = when {
-            isDescanso && repAtual != null -> "Recuperação $repAtual/$repsTotal"
-            isDescanso                    -> "Descanso"
-            step.isRamp                   -> "Aquecimento Progressivo"
-            repAtual != null              -> "Esforço $repAtual/$repsTotal"
-            else                          -> "Ritmo Constante"
+        val nomePasso = when (step.type) {
+            "Warmup" -> "Aquecimento"
+            "Cooldown" -> "Desaceleração"
+            "Rest" -> if (repAtual != null) "Recuperação $repAtual/$repsTotal" else "Descanso"
+            "SteadyState" -> {
+                if (repAtual != null) {
+                    if (isDescanso || paceMinStr == "--:--") {
+                        "Recuperação $repAtual/$repsTotal"
+                    } else {
+                        "Esforço $repAtual/$repsTotal"
+                    }
+                } else {
+                    "Ritmo Constante"
+                }
+            }
+            "IntervalsT" -> "Intervalo"
+            "Ramp" -> "RAMP (progressivo)"
+            else -> step.text ?: step.type
         }
 
         return PassoExecucao(
-            nome        = nomePasso,
-            duracao     = step.duration,
+            nome = nomePasso,
+            duracao = step.duration,
             paceAlvoMin = paceMinStr,
             paceAlvoMax = paceMaxStr,
-            zona        = zona,
-            instrucao   = step.text ?: gerarInstrucao(isDescanso, paceMinStr, paceMaxStr),
-            isDescanso  = isDescanso
+            zona = zona,
+            instrucao = step.text ?: gerarInstrucao(step.type, paceMinStr, paceMaxStr),
+            isDescanso = isDescanso
         )
     }
 
@@ -348,10 +357,15 @@ class WorkoutRepository(private val api: IntervalsApi) {
         return 2
     }
 
-    private fun gerarInstrucao(isDescanso: Boolean, paceMin: String, paceMax: String): String {
-        return if (isDescanso) "Caminhada ou trote leve."
-        else if (paceMin != "--:--") "Mantenha pace entre $paceMin e $paceMax."
-        else "Siga o ritmo indicado."
+    private fun gerarInstrucao(tipo: String, paceMin: String, paceMax: String): String {
+        return when (tipo) {
+            "Warmup" -> "Aquecimento suave de $paceMin a $paceMax."
+            "Cooldown" -> "Desacelere gradualmente."
+            "Rest" -> "Caminhada ou trote leve."
+            "SteadyState" -> "Mantenha pace entre $paceMin e $paceMax."
+            "Ramp" -> "Aumente progressivamente o ritmo."
+            else -> if (paceMin != "--:--") "Pace: $paceMin a $paceMax/km" else "Siga o ritmo indicado"
+        }
     }
 
     /**
