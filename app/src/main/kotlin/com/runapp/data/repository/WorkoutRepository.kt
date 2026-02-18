@@ -267,8 +267,8 @@ class WorkoutRepository(private val api: IntervalsApi) {
 
             // Range de zonas: {"start":5,"end":6,"units":"pace_zone"}
             pace != null && pace.zonaStart != null && pace.zonaEnd != null -> {
-                val zMin = pace.zonaStart.coerceIn(1, paceZones.size.coerceAtLeast(1))
-                val zMax = pace.zonaEnd.coerceIn(1, paceZones.size.coerceAtLeast(1))
+                val zMin = pace.zonaStart!!.coerceIn(1, paceZones.size.coerceAtLeast(1))
+                val zMax = pace.zonaEnd!!.coerceIn(1, paceZones.size.coerceAtLeast(1))
                 zona = zMax
                 Log.d(TAG, "✓ Range Z$zMin-Z$zMax")
                 val cfgMin = paceZones.getOrNull(zMin - 1)

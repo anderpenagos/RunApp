@@ -26,58 +26,43 @@ class StepTargetDeserializer : JsonDeserializer<StepTarget> {
     override fun deserialize(json: JsonElement, typeOfT: Type, ctx: JsonDeserializationContext): StepTarget {
         val obj = json.asJsonObject
         val units  = obj.get("units")?.asString
-        val value  = obj.get("value")?.asDouble  ?: 0.0
-        val value2 = obj.get("value2")?.asDouble
+        val value  = obj.get("value")?.asDouble
         val start  = obj.get("start")?.asDouble
         val end    = obj.get("end")?.asDouble
-        val type   = obj.get("type")?.asString   ?: "pace"
 
         return StepTarget(
-            value  = value,
-            value2 = value2,
-            type   = type,
             units  = units,
+            value  = value,
             start  = start,
             end    = end
         )
     }
 }
 
-/**
- * Deserializador customizado para WorkoutStep.
- *
- * Necessário porque o Gson padrão sem KotlinJsonAdapterFactory não respeita
- * default values de campos nullable em data classes Kotlin — campos ausentes
- * no JSON ficam null em vez de usar o default declarado.
- */
 class WorkoutStepDeserializer : JsonDeserializer<WorkoutStep> {
     private val stepTargetDeserializer = StepTargetDeserializer()
 
     override fun deserialize(json: JsonElement, typeOfT: Type, ctx: JsonDeserializationContext): WorkoutStep {
         val obj = json.asJsonObject
 
-        val type     = obj.get("type")?.asString ?: "SteadyState"
         val duration = obj.get("duration")?.asInt ?: 0
         val text     = obj.get("text")?.asString
         val reps     = obj.get("reps")?.asInt
+        val isRamp   = obj.get("ramp")?.asBoolean ?: false
 
-        // Parsear pace usando o deserializador customizado
         val pace = obj.get("pace")?.let { stepTargetDeserializer.deserialize(it, StepTarget::class.java, ctx) }
-        val target = obj.get("power")?.let { stepTargetDeserializer.deserialize(it, StepTarget::class.java, ctx) }
 
-        // Parsear sub-steps recursivamente
         val subSteps = obj.getAsJsonArray("steps")?.map { el ->
             deserialize(el, typeOfT, ctx)
         }
 
         return WorkoutStep(
-            type     = type,
             duration = duration,
-            target   = target,
             pace     = pace,
             text     = text,
             reps     = reps,
-            steps    = subSteps
+            steps    = subSteps,
+            isRamp   = isRamp
         )
     }
 }
