@@ -218,92 +218,109 @@ class WorkoutRepository(private val api: IntervalsApi) {
         Log.d(TAG, "Text: ${step.text}")
         
         val paceTarget = step.pace ?: step.target
-        Log.d(TAG, "Target: value=${paceTarget?.value}, type=${paceTarget?.type}")
-        
-        val isDescanso = step.type == "Rest"
+        Log.d(TAG, "Target: value=${paceTarget?.value}, units=${paceTarget?.units}, start=${paceTarget?.start}, end=${paceTarget?.end}")
+
+        // CASO DESCANSO: units="%pace" com value=0  →  sem pace alvo
+        val isDescanso = step.type == "Rest" ||
+            (paceTarget?.units == "%pace" && paceTarget.value == 0.0)
 
         var zona = 2
         var paceMinStr = "--:--"
         var paceMaxStr = "--:--"
 
         when {
-            // CASO 1: type="zone" ou valor pequeno (1-10)
-            (paceTarget?.type == "zone" || (paceTarget != null && paceTarget.value in 0.5..10.0)) -> {
-                zona = if (paceZones.isNotEmpty()) {
-                    paceTarget.value.toInt().coerceIn(1, paceZones.size)
-                } else {
-                    paceTarget.value.toInt().coerceIn(1, 5)  // Fallback para zonas 1-5
-                }
-                Log.d(TAG, "✓ Detectado zona: Z$zona")
-                
+            // Descanso explícito: não mostrar pace
+            isDescanso -> {
+                Log.d(TAG, "✓ Passo de descanso/recuperação")
+                zona = 1
+                paceMinStr = "--:--"
+                paceMaxStr = "--:--"
+            }
+
+            // CASO 1: units="pace_zone" com start+end  →  range de zonas (ex: Z5-Z6)
+            paceTarget?.units == "pace_zone" && paceTarget.start != null && paceTarget.end != null -> {
+                val zonaMin = paceTarget.start.toInt().coerceIn(1, paceZones.size.coerceAtLeast(1))
+                val zonaMax = paceTarget.end.toInt().coerceIn(1, paceZones.size.coerceAtLeast(1))
+                zona = zonaMin  // usa a zona mais baixa como referência de cor
+                Log.d(TAG, "✓ Range de zonas: Z$zonaMin-Z$zonaMax")
+
+                val zonaMinConfig = paceZones.getOrNull(zonaMin - 1)
+                val zonaMaxConfig = paceZones.getOrNull(zonaMax - 1)
+
+                // paceAlvoMax = limite lento da zona menor (mais fácil)
+                // paceAlvoMin = limite rápido da zona maior (mais exigente)
+                paceMaxStr = if (zonaMinConfig != null) formatarPace(zonaMinConfig.max) else getPaceFallback(zonaMin).second
+                paceMinStr = if (zonaMaxConfig != null) formatarPace(zonaMaxConfig.min) else getPaceFallback(zonaMax).first
+                Log.d(TAG, "✓ Pace range: $paceMinStr - $paceMaxStr")
+            }
+
+            // CASO 2: units="pace_zone" com value simples  →  zona única
+            paceTarget?.units == "pace_zone" && paceTarget.value in 0.5..10.0 -> {
+                zona = paceTarget.value.toInt().coerceIn(1, paceZones.size.coerceAtLeast(1))
+                Log.d(TAG, "✓ Zona única: Z$zona")
                 val zonaConfig = paceZones.getOrNull(zona - 1)
                 if (zonaConfig != null) {
                     paceMinStr = formatarPace(zonaConfig.min)
                     paceMaxStr = formatarPace(zonaConfig.max)
-                    Log.d(TAG, "✓ Pace: $paceMinStr - $paceMaxStr")
                 } else {
-                    Log.w(TAG, "Zona não encontrada, usando fallback")
-                    val (min, max) = getPaceFallback(zona)
-                    paceMinStr = min
-                    paceMaxStr = max
+                    val (mn, mx) = getPaceFallback(zona); paceMinStr = mn; paceMaxStr = mx
                 }
             }
-            
-            // CASO 2: Texto com Z1, Z2, etc
+
+            // CASO 3: sem units mas valor pequeno (legado / fallback)
+            paceTarget != null && paceTarget.value in 0.5..10.0 -> {
+                zona = paceTarget.value.toInt().coerceIn(1, paceZones.size.coerceAtLeast(1))
+                Log.d(TAG, "✓ Zona (legado): Z$zona")
+                val zonaConfig = paceZones.getOrNull(zona - 1)
+                if (zonaConfig != null) {
+                    paceMinStr = formatarPace(zonaConfig.min)
+                    paceMaxStr = formatarPace(zonaConfig.max)
+                } else {
+                    val (mn, mx) = getPaceFallback(zona); paceMinStr = mn; paceMaxStr = mx
+                }
+            }
+
+            // CASO 4: Texto com Z1, Z2, etc
             step.text?.contains(Regex("[zZ](\\d)")) == true -> {
                 val regex = Regex("[zZ](\\d)")
                 zona = regex.find(step.text!!)?.groupValues?.get(1)?.toIntOrNull() ?: 2
                 Log.d(TAG, "✓ Zona do texto: Z$zona")
-                
                 val zonaConfig = paceZones.getOrNull(zona - 1)
                 if (zonaConfig != null) {
                     paceMinStr = formatarPace(zonaConfig.min)
                     paceMaxStr = formatarPace(zonaConfig.max)
-                    Log.d(TAG, "✓ Pace: $paceMinStr - $paceMaxStr")
                 } else {
-                    val (min, max) = getPaceFallback(zona)
-                    paceMinStr = min
-                    paceMaxStr = max
+                    val (mn, mx) = getPaceFallback(zona); paceMinStr = mn; paceMaxStr = mx
                 }
             }
-            
-            // CASO 3: Pace absoluto (valor > 10)
+
+            // CASO 5: Pace absoluto em s/m (valor > 10)
             paceTarget != null && paceTarget.value > 10.0 -> {
                 paceMinStr = formatarPace(paceTarget.value)
                 paceMaxStr = formatarPace(paceTarget.value2 ?: paceTarget.value)
                 zona = detectarZonaPorPace(paceTarget.value, paceZones)
                 Log.d(TAG, "Pace absoluto: $paceMinStr, zona=$zona")
             }
-            
-            // CASO 4: Sem info, usar Z2 padrão
+
+            // CASO 6: Sem info alguma — Z2 padrão
             else -> {
-                Log.w(TAG, "Sem info, usando Z2 padrão")
-                val (min, max) = getPaceFallback(2)
-                paceMinStr = min
-                paceMaxStr = max
+                Log.w(TAG, "Sem info de pace, usando Z2 padrão")
+                val (mn, mx) = getPaceFallback(2); paceMinStr = mn; paceMaxStr = mx
                 zona = 2
             }
         }
 
         Log.d(TAG, "→ Final: Z$zona, $paceMinStr-$paceMaxStr")
 
-        val nomePasso = when (step.type) {
-            "Warmup" -> "Aquecimento"
-            "Cooldown" -> "Desaceleração"
-            "Rest" -> if (repAtual != null) "Recuperação $repAtual/$repsTotal" else "Descanso"
-            "SteadyState" -> {
-                if (repAtual != null) {
-                    if (isDescanso || paceMinStr == "--:--") {
-                        "Recuperação $repAtual/$repsTotal"
-                    } else {
-                        "Esforço $repAtual/$repsTotal"
-                    }
-                } else {
-                    "Ritmo Constante"
-                }
-            }
-            "IntervalsT" -> "Intervalo"
-            "Ramp" -> "RAMP (progressivo)"
+        val nomePasso = when {
+            isDescanso && repAtual != null -> "Recuperação $repAtual/$repsTotal"
+            isDescanso -> "Descanso"
+            step.type == "Warmup" -> "Aquecimento"
+            step.type == "Cooldown" -> "Desaceleração"
+            step.type == "IntervalsT" -> "Intervalo"
+            step.type == "Ramp" -> "RAMP (progressivo)"
+            step.type == "SteadyState" && repAtual != null -> "Esforço $repAtual/$repsTotal"
+            step.type == "SteadyState" -> "Ritmo Constante"
             else -> step.text ?: step.type
         }
 
@@ -313,7 +330,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             paceAlvoMin = paceMinStr,
             paceAlvoMax = paceMaxStr,
             zona = zona,
-            instrucao = step.text ?: gerarInstrucao(step.type, paceMinStr, paceMaxStr),
+            instrucao = step.text ?: gerarInstrucao(if (isDescanso) "Rest" else step.type, paceMinStr, paceMaxStr),
             isDescanso = isDescanso
         )
     }

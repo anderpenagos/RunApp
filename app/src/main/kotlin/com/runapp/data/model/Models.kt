@@ -35,7 +35,10 @@ data class WorkoutStep(
 data class StepTarget(
     val value: Double = 0.0,
     val value2: Double? = null,
-    val type: String = "pace"  // "zone", "pace", "heart_rate", "power"
+    val type: String = "pace",   // legado
+    val units: String? = null,   // "pace_zone", "%pace", etc
+    val start: Double? = null,   // zona inicial quando é range (ex: 5 em Z5-Z6)
+    val end: Double? = null      // zona final quando é range   (ex: 6 em Z5-Z6)
 )
 
 // ---- Zonas (FORMATO CORRETO DA API) ----
