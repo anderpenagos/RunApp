@@ -290,12 +290,23 @@ fun CorridaScreen(
                     zoomControlsEnabled = false
                 )
             ) {
-                // Polilinha da rota
-                if (state.rota.isNotEmpty()) {
-                    Polyline(
-                        points = state.rota.map { LatLng(it.lat, it.lng) },
-                        color = Color(0xFF00BCD4),
-                        width = 10f
+                // Mapa de calor: segmentos coloridos por pace
+                // Verde (lento/Z1) -> Amarelo (moderado/Z3) -> Vermelho (rapido/Z6+)
+                if (state.rota.size >= 2) {
+                    val segmentos = calcularSegmentosHeatmap(state.rota)
+                    segmentos.forEach { seg ->
+                        Polyline(
+                            points = listOf(seg.inicio, seg.fim),
+                            color = seg.cor,
+                            width = 12f
+                        )
+                    }
+                } else if (state.rota.size == 1) {
+                    Circle(
+                        center = LatLng(state.rota[0].lat, state.rota[0].lng),
+                        radius = 5.0,
+                        fillColor = Color(0xFF00BCD4),
+                        strokeColor = Color(0xFF00BCD4)
                     )
                 }
             }
@@ -583,4 +594,115 @@ private fun MetricaCompacta(
             }
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mapa de Calor — Segmentos coloridos por pace
+// ─────────────────────────────────────────────────────────────────────────────
+
+private data class SegmentoHeatmap(
+    val inicio: LatLng,
+    val fim: LatLng,
+    val cor: Color
+)
+
+/**
+ * Divide a lista de pontos GPS em segmentos ponto-a-ponto e atribui uma cor
+ * baseada no pace instantâneo de cada segmento.
+ *
+ * Escala de cores (gradiente contínuo):
+ *   pace >= 7:00/km  → Verde    (Z1 — muito lento)
+ *   pace ~  5:30/km  → Amarelo  (Z2/Z3 — moderado)
+ *   pace ~  4:30/km  → Laranja  (Z4 — limiar)
+ *   pace <= 3:30/km  → Vermelho (Z6/Z7 — sprint)
+ *
+ * Pontos com timestamp idêntico ou distância < 1 m são ignorados para evitar
+ * divisão por zero e picos de pace irreais.
+ */
+private fun calcularSegmentosHeatmap(
+    rota: List<com.runapp.data.model.LatLngPonto>
+): List<SegmentoHeatmap> {
+    if (rota.size < 2) return emptyList()
+
+    // Limites da escala em s/km (pace mais lento → mais rápido)
+    val PACE_LENTO  = 7 * 60.0   // 7:00/km → cor verde
+    val PACE_RAPIDO = 3 * 60.0 + 30.0  // 3:30/km → cor vermelha
+
+    val resultado = mutableListOf<SegmentoHeatmap>()
+
+    for (i in 0 until rota.size - 1) {
+        val p1 = rota[i]
+        val p2 = rota[i + 1]
+
+        val dtMs = p2.tempo - p1.tempo
+        if (dtMs <= 0) continue  // timestamp igual ou invertido → pula
+
+        val distM = haversineMetros(p1.lat, p1.lng, p2.lat, p2.lng)
+        if (distM < 1.0) continue  // pontos praticamente iguais → pula
+
+        // Pace em s/km
+        val paceSkm = (dtMs / 1000.0) / distM * 1000.0
+
+        // Pace fora de faixa realista (< 2:00/km ou > 20:00/km) → ignora spike
+        if (paceSkm < 120.0 || paceSkm > 1200.0) continue
+
+        val cor = corPorPace(paceSkm, PACE_RAPIDO, PACE_LENTO)
+
+        resultado.add(
+            SegmentoHeatmap(
+                inicio = LatLng(p1.lat, p1.lng),
+                fim    = LatLng(p2.lat, p2.lng),
+                cor    = cor
+            )
+        )
+    }
+
+    return resultado
+}
+
+/**
+ * Interpola uma cor entre vermelho (pace rápido) e verde (pace lento).
+ * t=0 → vermelho (#F44336), t=0.5 → laranja/amarelo, t=1 → verde (#4CAF50)
+ */
+private fun corPorPace(paceSkm: Double, paceRapido: Double, paceLento: Double): Color {
+    // Normaliza: 0.0 = mais rápido (vermelho), 1.0 = mais lento (verde)
+    val t = ((paceSkm - paceRapido) / (paceLento - paceRapido)).coerceIn(0.0, 1.0).toFloat()
+
+    // Gradiente em 4 paradas: vermelho → laranja → amarelo → verde
+    return when {
+        t < 0.33f -> {
+            // Vermelho → Laranja
+            val local = t / 0.33f
+            lerp(Color(0xFFF44336), Color(0xFFFF9800), local)
+        }
+        t < 0.66f -> {
+            // Laranja → Amarelo
+            val local = (t - 0.33f) / 0.33f
+            lerp(Color(0xFFFF9800), Color(0xFFFFEB3B), local)
+        }
+        else -> {
+            // Amarelo → Verde
+            val local = (t - 0.66f) / 0.34f
+            lerp(Color(0xFFFFEB3B), Color(0xFF4CAF50), local)
+        }
+    }
+}
+
+/** Interpolação linear entre duas cores Compose */
+private fun lerp(a: Color, b: Color, t: Float): Color = Color(
+    red   = a.red   + (b.red   - a.red)   * t,
+    green = a.green + (b.green - a.green) * t,
+    blue  = a.blue  + (b.blue  - a.blue)  * t,
+    alpha = 1f
+)
+
+/** Distância entre dois pontos GPS em metros (fórmula de Haversine) */
+private fun haversineMetros(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val R = 6_371_000.0
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLon = Math.toRadians(lon2 - lon1)
+    val a = Math.sin(dLat / 2).let { it * it } +
+            Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+            Math.sin(dLon / 2).let { it * it }
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }

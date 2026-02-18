@@ -35,10 +35,10 @@ data class WorkoutStep(
 data class StepTarget(
     val value: Double = 0.0,
     val value2: Double? = null,
-    val type: String = "pace",   // "zone", "pace", "heart_rate", "power"
-    val units: String? = null,   // "pace_zone", "%pace", "power_zone", etc. (campo da API intervals.icu)
-    val start: Double? = null,   // usado quando pace é um range: {"start":5,"end":6,"units":"pace_zone"}
-    val end: Double? = null      // usado quando pace é um range
+    val type: String = "pace",                      // "zone", "pace", "heart_rate", "power"
+    @SerializedName("units") val units: String? = null,   // "pace_zone", "%pace", "power_zone"
+    @SerializedName("start") val start: Double? = null,   // range início: {"start":5,"end":6,"units":"pace_zone"}
+    @SerializedName("end")   val end: Double? = null      // range fim — @SerializedName obrigatório: 'end' é palavra reservada no Kotlin/JVM
 ) {
     /** Zona efetiva: prioriza 'value' se preenchido, senão usa 'start' (início do range) */
     val effectiveValue: Double get() = if (value > 0.0) value else (start ?: 0.0)
