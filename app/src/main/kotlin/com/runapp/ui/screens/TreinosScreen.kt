@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.runapp.data.model.WorkoutEvent
 import com.runapp.ui.viewmodel.TreinosViewModel
+import com.google.gson.JsonElement
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -122,7 +123,8 @@ fun TreinosScreen(
 @Composable
 fun TreinoCard(treino: WorkoutEvent, onClick: () -> Unit) {
     val data = parsearData(treino.startDateLocal)
-    val duracaoTexto = treino.workoutDoc?.let { formatarDuracao(it.duration) } ?: ""
+    val duracaoTexto = treino.workoutDocRaw?.asJsonObject?.get("duration")?.asInt
+        ?.let { formatarDuracao(it) } ?: ""
 
     Card(
         onClick = onClick,

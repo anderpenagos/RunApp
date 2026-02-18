@@ -1,5 +1,6 @@
 package com.runapp.data.model
 
+import com.google.gson.JsonElement
 import com.google.gson.annotations.SerializedName
 
 // ---- Treino / Evento ----
@@ -10,36 +11,37 @@ data class WorkoutEvent(
     @SerializedName("start_date_local") val startDateLocal: String = "",
     val type: String = "Run",
     val description: String? = null,
-    @SerializedName("workout_doc") val workoutDoc: WorkoutDoc? = null,
+    @SerializedName("workout_doc") val workoutDocRaw: JsonElement? = null,
     val color: String? = null,
     @SerializedName("athlete_id") val athleteId: String = ""
 )
 
+// WorkoutDoc e WorkoutStep são apenas usados internamente após parsing manual
 data class WorkoutDoc(
-    val type: String = "running",
     val duration: Int = 0,
     val steps: List<WorkoutStep> = emptyList()
 )
 
 data class WorkoutStep(
-    val type: String = "SteadyState",  // SteadyState, IntervalsT, Rest, Warmup, Cooldown, Ramp
-    val duration: Int = 0,             // segundos
-    @SerializedName("power") val target: StepTarget? = null,
+    val duration: Int = 0,
     val pace: StepTarget? = null,
-    @SerializedName("cadence") val cadence: StepTarget? = null,
     val text: String? = null,
     val reps: Int? = null,
-    val steps: List<WorkoutStep>? = null  // sub-passos em intervalos
+    val steps: List<WorkoutStep>? = null,
+    val isRamp: Boolean = false
 )
 
 data class StepTarget(
-    val value: Double = 0.0,
-    val value2: Double? = null,
-    val type: String = "pace",   // legado
-    val units: String? = null,   // "pace_zone", "%pace", etc
-    val start: Double? = null,   // zona inicial quando é range (ex: 5 em Z5-Z6)
-    val end: Double? = null      // zona final quando é range   (ex: 6 em Z5-Z6)
-)
+    val units: String? = null,   // "pace_zone", "%pace"
+    val value: Double? = null,   // zona única (ex: 1, 5, 6) ou 0 para descanso
+    val start: Double? = null,   // zona inicial do range (ex: 5 em Z5-Z6)
+    val end: Double? = null      // zona final do range   (ex: 6 em Z5-Z6)
+) {
+    val isDescanso: Boolean get() = units == "%pace" && (value == null || value == 0.0)
+    val zonaUnica: Int? get() = if (!isDescanso && start == null && value != null && value > 0) value.toInt() else null
+    val zonaStart: Int? get() = start?.toInt()
+    val zonaEnd: Int? get() = end?.toInt()
+}
 
 // ---- Zonas (FORMATO CORRETO DA API) ----
 
