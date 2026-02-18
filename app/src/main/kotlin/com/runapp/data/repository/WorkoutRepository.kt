@@ -218,10 +218,9 @@ class WorkoutRepository(private val api: IntervalsApi) {
         Log.d(TAG, "Text: ${step.text}")
         
         val paceTarget = step.pace ?: step.target
-        Log.d(TAG, "Target: value=${paceTarget?.value}, type=${paceTarget?.type}")
-        
-        val isDescanso = step.type == "Rest" ||
-            (paceTarget?.value == 0.0 && paceTarget.type == "pace")
+        Log.d(TAG, "Target: value=${paceTarget?.value}, start=${paceTarget?.start}, end=${paceTarget?.end}, type=${paceTarget?.type}, units=${paceTarget?.units}")
+
+        val isDescanso = step.type == "Rest" || paceTarget?.isRest == true
 
         var zona = 2
         var paceMinStr = "--:--"
@@ -236,18 +235,43 @@ class WorkoutRepository(private val api: IntervalsApi) {
                 paceMaxStr = "--:--"
             }
 
-            // CASO 1: type="zone" ou valor pequeno (1-10)
-            (paceTarget?.type == "zone" || (paceTarget != null && paceTarget.value in 0.5..10.0)) -> {
-                zona = paceTarget.value.toInt().coerceAtLeast(1)
-                Log.d(TAG, "✓ Detectado zona: Z$zona (paceZones.size=${paceZones.size})")
-                
+            // CASO 1: pace_zone (zona única ou range de zonas ex: Z5-Z6)
+            paceTarget?.isPaceZone == true -> {
+                val zonaInicio = paceTarget.effectiveValue.toInt().coerceAtLeast(1)
+                val zonaFim = paceTarget.effectiveEnd?.toInt() ?: zonaInicio
+                zona = zonaInicio
+                Log.d(TAG, "✓ Detectado pace_zone: Z$zonaInicio-Z$zonaFim (paceZones.size=${paceZones.size})")
+
+                val zonaConfigInicio = paceZones.getOrNull(zonaInicio - 1)
+                val zonaConfigFim = paceZones.getOrNull(zonaFim - 1)
+
+                if (zonaConfigInicio != null && zonaConfigFim != null && zonaFim != zonaInicio) {
+                    // Range Z5-Z6: paceMin = pace mais rápido (fim da zona maior), paceMax = pace mais lento (início da zona menor)
+                    paceMinStr = formatarPace(zonaConfigFim.min)
+                    paceMaxStr = formatarPace(zonaConfigInicio.max)
+                    Log.d(TAG, "✓ Pace range Z$zonaInicio-Z$zonaFim: $paceMinStr - $paceMaxStr")
+                } else if (zonaConfigInicio != null) {
+                    paceMinStr = formatarPace(zonaConfigInicio.min)
+                    paceMaxStr = formatarPace(zonaConfigInicio.max)
+                    Log.d(TAG, "✓ Pace: $paceMinStr - $paceMaxStr")
+                } else {
+                    Log.w(TAG, "Zona $zonaInicio não encontrada na lista (size=${paceZones.size}), usando fallback")
+                    val (min, max) = getPaceFallback(zonaInicio)
+                    paceMinStr = min
+                    paceMaxStr = max
+                }
+            }
+
+            // CASO 1b: valor pequeno (1-10) sem units — compatibilidade com formato antigo
+            paceTarget != null && paceTarget.effectiveValue in 0.5..10.0 -> {
+                zona = paceTarget.effectiveValue.toInt().coerceAtLeast(1)
+                Log.d(TAG, "✓ Zona por valor legado: Z$zona")
                 val zonaConfig = paceZones.getOrNull(zona - 1)
                 if (zonaConfig != null) {
                     paceMinStr = formatarPace(zonaConfig.min)
                     paceMaxStr = formatarPace(zonaConfig.max)
                     Log.d(TAG, "✓ Pace: $paceMinStr - $paceMaxStr")
                 } else {
-                    Log.w(TAG, "Zona $zona não encontrada na lista (size=${paceZones.size}), usando fallback")
                     val (min, max) = getPaceFallback(zona)
                     paceMinStr = min
                     paceMaxStr = max
@@ -273,10 +297,10 @@ class WorkoutRepository(private val api: IntervalsApi) {
             }
             
             // CASO 3: Pace absoluto (valor > 10)
-            paceTarget != null && paceTarget.value > 10.0 -> {
-                paceMinStr = formatarPace(paceTarget.value)
-                paceMaxStr = formatarPace(paceTarget.value2 ?: paceTarget.value)
-                zona = detectarZonaPorPace(paceTarget.value, paceZones)
+            paceTarget != null && paceTarget.effectiveValue > 10.0 -> {
+                paceMinStr = formatarPace(paceTarget.effectiveValue)
+                paceMaxStr = formatarPace(paceTarget.value2 ?: paceTarget.effectiveValue)
+                zona = detectarZonaPorPace(paceTarget.effectiveValue, paceZones)
                 Log.d(TAG, "Pace absoluto: $paceMinStr, zona=$zona")
             }
             

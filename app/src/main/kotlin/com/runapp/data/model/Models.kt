@@ -35,8 +35,23 @@ data class WorkoutStep(
 data class StepTarget(
     val value: Double = 0.0,
     val value2: Double? = null,
-    val type: String = "pace"  // "zone", "pace", "heart_rate", "power"
-)
+    val type: String = "pace",   // "zone", "pace", "heart_rate", "power"
+    val units: String? = null,   // "pace_zone", "%pace", "power_zone", etc. (campo da API intervals.icu)
+    val start: Double? = null,   // usado quando pace é um range: {"start":5,"end":6,"units":"pace_zone"}
+    val end: Double? = null      // usado quando pace é um range
+) {
+    /** Zona efetiva: prioriza 'value' se preenchido, senão usa 'start' (início do range) */
+    val effectiveValue: Double get() = if (value > 0.0) value else (start ?: 0.0)
+
+    /** Zona final do range (para ranges como Z5-Z6) */
+    val effectiveEnd: Double? get() = end ?: if (value2 != null && value2 > 0.0) value2 else null
+
+    /** true se o target representa uma pace zone (não % de pace) */
+    val isPaceZone: Boolean get() = units == "pace_zone" || type == "zone" || type == "pace_zone"
+
+    /** true se é recuperação/descanso (0% de pace) */
+    val isRest: Boolean get() = (units == "%pace" && value == 0.0) || (type == "pace" && value == 0.0 && start == null)
+}
 
 // ---- Zonas (FORMATO CORRETO DA API) ----
 
