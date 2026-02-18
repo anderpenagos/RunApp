@@ -14,16 +14,19 @@ val RunGreen = Color(0xFF4CAF50)
 val RunOrange = Color(0xFFFF9800)
 val RunRed = Color(0xFFF44336)
 
-// Cores das zonas de pace (Z1-Z5)
-val ZonaColors = listOf(
-    Color(0xFF4CAF50), // Z1 — Verde (muito fácil)
-    Color(0xFF8BC34A), // Z2 — Verde-claro (fácil)
-    Color(0xFFFFEB3B), // Z3 — Amarelo (moderado)
-    Color(0xFFFF9800), // Z4 — Laranja (difícil)
-    Color(0xFFF44336)  // Z5 — Vermelho (muito difícil)
-)
-
-fun corZona(zona: Int): Color = ZonaColors.getOrElse(zona - 1) { ZonaColors[1] }
+// Cores das zonas de pace (Z1-Z7) — padrão internacional de esforço
+fun corZona(zona: Int): Color {
+    return when (zona) {
+        1    -> Color(0xFF9E9E9E) // Cinza    — Recuperação
+        2    -> Color(0xFF2196F3) // Azul     — Leve
+        3    -> Color(0xFF4CAF50) // Verde    — Aeróbico
+        4    -> Color(0xFFFFEB3B) // Amarelo  — Limiar
+        5    -> Color(0xFFFF9800) // Laranja  — Esforço Forte
+        6    -> Color(0xFFF44336) // Vermelho — VO2 Máximo
+        7    -> Color(0xFF9C27B0) // Roxo     — Anaeróbico / Sprint
+        else -> Color(0xFF4CAF50) // Padrão Verde
+    }
+}
 
 private val DarkColorScheme = darkColorScheme(
     primary = RunAccent,
