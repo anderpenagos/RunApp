@@ -126,21 +126,33 @@ class WorkoutRepository(private val api: IntervalsApi) {
             
             // Converter porcentagens para pace em s/m
             // pace(s/m) = thresholdPace(s/m) / (porcentagem / 100)
-            
-            // Limite superior da zona (pace mais lento = menor porcentagem)
+            //
+            // As porcentagens representam % da VELOCIDADE do threshold (m/s).
+            // % MAIOR = velocidade MAIOR = pace MAIS RAPIDO (menos s/m)
+            //
+            // limitePercent  = teto de velocidade da zona -> pace MAIS RAPIDO (paceMin em s/m)
+            // limiteAnterior = piso de velocidade da zona -> pace MAIS LENTO  (paceMax em s/m)
+            //
+            // Exemplo Z5 (100% - 103.4%):
+            //   paceMax = threshold / 1.000 = 4:43/km  (velocidade minima da zona)
+            //   paceMin = threshold / 1.034 = 4:34/km  (velocidade maxima da zona)
+            // Exemplo Z6 (103.4% - 111.5%):
+            //   paceMax = threshold / 1.034 = 4:34/km
+            //   paceMin = threshold / 1.115 = 4:14/km
+            // Portanto Z5-Z6 = 4:14 - 4:43  (correto!)
+
+            // Pace mais lento da zona (piso de velocidade = limiteAnterior)
             val paceMaxSecsPerMeter = if (limiteAnterior > 0.0) {
                 thresholdSecsPerMeter / (limiteAnterior / 100.0)
             } else {
-                // Primeira zona: usar um pace muito lento como limite superior
-                thresholdSecsPerMeter * 2.0  // 2x mais lento que threshold
+                thresholdSecsPerMeter * 2.0  // Z1: sem limite inferior de velocidade
             }
-            
-            // Limite inferior da zona (pace mais rápido = maior porcentagem)
+
+            // Pace mais rapido da zona (teto de velocidade = limitePercent)
             val paceMinSecsPerMeter = if (limitePercent < 900) {
                 thresholdSecsPerMeter / (limitePercent / 100.0)
             } else {
-                // Última zona: pace muito rápido (sem limite inferior)
-                0.0
+                0.0  // Z7: sem limite superior de velocidade
             }
 
             zonasProcessadas.add(
