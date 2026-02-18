@@ -62,7 +62,17 @@ class RunningService : Service() {
     // Dados de rastreamento
     private val rota = mutableListOf<LatLngPonto>()
     private val ultimasLocalizacoes = mutableListOf<Location>()
-    private val JANELA_PACE_SEGUNDOS = 15
+
+    // Janela adaptativa: ajustada dinamicamente pelo ViewModel conforme duração do passo
+    // Passo curto (<60s) → 5s | Passo longo → 12s
+    private var janelaAtualSegundos = 12
+    fun setDuracaoPassoAtual(duracaoSegundos: Int) {
+        janelaAtualSegundos = if (duracaoSegundos < 60) 5 else 12
+        Log.d(TAG, "⚙️ Janela de pace ajustada para ${janelaAtualSegundos}s (passo=${duracaoSegundos}s)")
+    }
+
+    // EMA (Média Móvel Exponencial) — suaviza sem perder reatividade
+    private var ultimoPaceEma: Double? = null  // null = sem valor anterior ainda
     
     // Timestamps
     private var timestampInicio: Long = 0
@@ -169,6 +179,8 @@ class RunningService : Service() {
         // Resetar dados
         rota.clear()
         ultimasLocalizacoes.clear()
+        ultimoPaceEma = null
+        janelaAtualSegundos = 12
         timestampInicio = System.currentTimeMillis()
         tempoPausadoTotal = 0
         _distanciaMetros.value = 0.0
@@ -339,16 +351,17 @@ class RunningService : Service() {
         // Gerenciar janela móvel para pace atual
         ultimasLocalizacoes.add(location)
         
-        // Remover localizações antigas da janela (>15 segundos)
-        val tempoCorte = agora - (JANELA_PACE_SEGUNDOS * 1000)
+        // Remover localizações antigas da janela (janela adaptativa)
+        val tempoCorte = agora - (janelaAtualSegundos * 1000)
         ultimasLocalizacoes.removeAll { it.time < tempoCorte }
         
         // PROTEÇÃO CONTRA SPIKE: Se ficou muito tempo sem GPS, limpar janela
         if (ultimasLocalizacoes.size >= 2) {
             val tempoJanela = (ultimasLocalizacoes.last().time - ultimasLocalizacoes.first().time) / 1000.0
-            if (tempoJanela > (JANELA_PACE_SEGUNDOS * 2)) {
+            if (tempoJanela > (janelaAtualSegundos * 2)) {
                 Log.w(TAG, "⚠️ Gap temporal detectado (${tempoJanela}s), resetando janela de pace")
                 ultimasLocalizacoes.clear()
+                ultimoPaceEma = null
                 _paceAtual.value = "--:--"
                 return
             }
@@ -422,32 +435,63 @@ class RunningService : Service() {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     private fun calcularPaceAtual() {
-        if (ultimasLocalizacoes.size < 3) {
+        // Mínimo de 2 pontos (janelas curtas ficam responsivas mais rápido)
+        if (ultimasLocalizacoes.size < 2) {
             _paceAtual.value = "--:--"
             return
         }
 
-        // Calcular distância e tempo da janela
-        var distanciaJanela = 0.0
-        for (i in 1 until ultimasLocalizacoes.size) {
-            val loc1 = ultimasLocalizacoes[i - 1]
-            val loc2 = ultimasLocalizacoes[i]
-            distanciaJanela += calcularDistancia(
-                loc1.latitude, loc1.longitude,
-                loc2.latitude, loc2.longitude
-            )
+        // Ajuste fino da janela pela accuracy do último ponto:
+        // GPS ruim (>20m) → janela maior para estabilizar
+        // GPS excelente (<5m) → pode confiar numa janela mínima de 3s
+        val accuracyAtual = ultimasLocalizacoes.last().accuracy
+        val janelaEfetiva = when {
+            accuracyAtual > 20f -> (janelaAtualSegundos * 1.5).toInt().coerceAtMost(15)
+            accuracyAtual < 5f  -> janelaAtualSegundos.coerceAtLeast(3)
+            else                -> janelaAtualSegundos
+        }
+        val corte = System.currentTimeMillis() - (janelaEfetiva * 1000L)
+        val pontosJanela = ultimasLocalizacoes.filter { it.time >= corte }
+        if (pontosJanela.size < 2) {
+            _paceAtual.value = "--:--"
+            return
         }
 
-        val tempoJanelaSegundos = (ultimasLocalizacoes.last().time - ultimasLocalizacoes.first().time) / 1000.0
+        // Somar distância entre pontos consecutivos da janela
+        var distanciaJanela = 0.0
+        for (i in 1 until pontosJanela.size) {
+            val d = calcularDistancia(
+                pontosJanela[i - 1].latitude, pontosJanela[i - 1].longitude,
+                pontosJanela[i].latitude,     pontosJanela[i].longitude
+            )
+            // Filtro de threshold: ignora micro-deslocamentos (<0.5m) que são só ruído GPS
+            if (d > 0.5) distanciaJanela += d
+        }
+
+        val tempoJanelaSegundos = (pontosJanela.last().time - pontosJanela.first().time) / 1000.0
 
         if (distanciaJanela < 1.0 || tempoJanelaSegundos < 1.0) {
             _paceAtual.value = "--:--"
             return
         }
 
-        // Pace em segundos por quilômetro
-        val paceSegundos = (tempoJanelaSegundos / distanciaJanela) * 1000.0
-        _paceAtual.value = formatarPace(paceSegundos)
+        // Pace bruto em s/km
+        val paceBruto = (tempoJanelaSegundos / distanciaJanela) * 1000.0
+
+        // Sanidade: ignora valores impossíveis (< 1:30/km ou > 20:00/km)
+        if (paceBruto < 90.0 || paceBruto > 1200.0) {
+            _paceAtual.value = "--:--"
+            return
+        }
+
+        // EMA: alpha depende da janela — janela curta reage mais rápido
+        val alpha = if (janelaAtualSegundos <= 5) 0.4 else 0.25
+        val paceEma = ultimoPaceEma?.let { anterior ->
+            (paceBruto * alpha) + (anterior * (1.0 - alpha))
+        } ?: paceBruto  // primeiro valor: sem histórico, usa direto
+
+        ultimoPaceEma = paceEma
+        _paceAtual.value = formatarPace(paceEma)
     }
 
     private fun calcularPaceMedia() {
@@ -568,9 +612,10 @@ class RunningService : Service() {
             return "--:--"
         }
         
-        // Limitar pace máximo e mínimo para valores razoáveis
+        // Sanidade: apenas remove valores fisicamente impossíveis
+        // 90s/km = 1:30/km cobre até sprints de elite em Z7
         val pace = when {
-            segundosPorKm < 180 -> return "--:--"  // Muito rápido (< 3 min/km)
+            segundosPorKm < 90  -> return "--:--"  // Impossível (< 1:30/km)
             segundosPorKm > 1200 -> return "--:--"  // Muito lento (> 20 min/km)
             else -> segundosPorKm
         }

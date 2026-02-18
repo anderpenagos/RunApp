@@ -277,6 +277,8 @@ class CorridaViewModel(
             indexPassoAnunciado = indexAtivo
             ultimoPaceFeedback = 0L  // reseta aviso de pace ao mudar de passo
             audioCoach.anunciarPasso(passo.nome, passo.paceAlvoMax, passo.duracao)
+            // Informar o service da duração do novo passo para ajustar a janela de pace
+            runningService?.setDuracaoPassoAtual(passo.duracao)
         }
 
         _uiState.value = state.copy(
@@ -375,6 +377,9 @@ class CorridaViewModel(
                 kotlinx.coroutines.delay(2000) // espera o anúncio de início terminar
                 audioCoach.anunciarPasso(primeiroPasso.nome, primeiroPasso.paceAlvoMax, primeiroPasso.duracao)
                 indexPassoAnunciado = 0
+                // Configurar a janela de pace para o primeiro passo imediatamente
+                // (atualizarProgressoPasso só dispara na mudança de passo, não no início)
+                runningService?.setDuracaoPassoAtual(primeiroPasso.duracao)
             }
         }
     }
