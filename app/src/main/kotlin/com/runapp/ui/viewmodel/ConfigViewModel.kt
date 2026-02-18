@@ -16,7 +16,8 @@ data class ConfigUiState(
     val athleteId: String = "",
     val isSaving: Boolean = false,
     val error: String? = null,
-    val isConfigured: Boolean = false
+    val isConfigured: Boolean = false,
+    val autoPauseEnabled: Boolean = true
 )
 
 class ConfigViewModel(application: Application) : AndroidViewModel(application) {
@@ -30,13 +31,20 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             val apiKey = prefs.apiKey.first()
             val athleteId = prefs.athleteId.first()
-            if (!apiKey.isNullOrBlank() && !athleteId.isNullOrBlank()) {
-                _uiState.value = ConfigUiState(
-                    apiKey = apiKey,
-                    athleteId = athleteId,
-                    isConfigured = true
-                )
-            }
+            val autoPause = prefs.autoPauseEnabled.first()
+            _uiState.value = ConfigUiState(
+                apiKey = apiKey ?: "",
+                athleteId = athleteId ?: "",
+                isConfigured = !apiKey.isNullOrBlank() && !athleteId.isNullOrBlank(),
+                autoPauseEnabled = autoPause
+            )
+        }
+    }
+
+    fun onAutoPauseToggle(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(autoPauseEnabled = enabled)
+        viewModelScope.launch {
+            prefs.setAutoPauseEnabled(enabled)
         }
     }
 

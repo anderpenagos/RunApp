@@ -16,6 +16,8 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.location.*
 import com.runapp.MainActivity
+import com.runapp.data.datastore.PreferencesRepository
+import com.runapp.data.datastore.dataStore
 import com.runapp.data.model.LatLngPonto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +26,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.atan2
@@ -73,6 +76,7 @@ class RunningService : Service() {
     private val LIMITE_SEM_MOVIMENTO = 3          // 3s parado → pausa
     private val LIMITE_RETOMAR_MOVIMENTO = 2      // 2 updates em movimento → retoma
     private val DISTANCIA_MINIMA_MOVIMENTO = 4.0  // metros por update (1s)
+    private var autoPauseFuncaoAtiva = true       // lido das preferências ao iniciar
     
     // Estados
     private var estaPausado = false
@@ -154,6 +158,13 @@ class RunningService : Service() {
         
         // Adquirir WakeLock
         wakeLock?.acquire(10 * 60 * 1000L /*10 minutos*/)
+        
+        // Ler preferência de auto-pause antes de começar
+        serviceScope.launch {
+            val prefs = PreferencesRepository(applicationContext)
+            autoPauseFuncaoAtiva = prefs.autoPauseEnabled.first()
+            Log.d(TAG, "⚙️ Auto-pause ${if (autoPauseFuncaoAtiva) "ativado" else "desativado"}")
+        }
         
         // Resetar dados
         rota.clear()
@@ -301,8 +312,10 @@ class RunningService : Service() {
             return
         }
 
-        // Verificar movimento para auto-pause
-        verificarAutoPause(location)
+        // Verificar movimento para auto-pause (somente se a função estiver ativa)
+        if (autoPauseFuncaoAtiva) {
+            verificarAutoPause(location)
+        }
         
         // Se está em auto-pause, não adicionar pontos
         if (_autoPausado.value) {
