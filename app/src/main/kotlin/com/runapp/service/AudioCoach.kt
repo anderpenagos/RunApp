@@ -54,15 +54,22 @@ class AudioCoach(private val context: Context) {
     }
 
     fun anunciarPasso(nomePasso: String, paceAlvo: String, duracao: Int) {
-        val duracaoTexto = if (duracao >= 60) "${duracao / 60} minutos" else "$duracao segundos"
         val paceTexto = formatarPaceParaFala(paceAlvo)
-        falarUrgente("$nomePasso por $duracaoTexto. Pace alvo: $paceTexto por quilômetro.")
+        if (duracao < 45) {
+            // Tiro curto: frase seca e rápida — libera o canal de áudio antes do esforço começar
+            val duracaoTexto = if (duracao >= 60) "${duracao / 60} minutos" else "$duracao segundos"
+            falarUrgente("$nomePasso, $duracaoTexto. Alvo: $paceTexto!")
+        } else {
+            // Passo longo: anúncio completo com contexto
+            val duracaoTexto = if (duracao >= 60) "${duracao / 60} minutos" else "$duracao segundos"
+            falarUrgente("$nomePasso por $duracaoTexto. Ritmo alvo: $paceTexto por quilômetro.")
+        }
     }
 
     fun anunciarKm(distanciaKm: Double, paceMedia: String) {
         val km = "%.1f".format(distanciaKm)
         val paceTexto = formatarPaceParaFala(paceMedia)
-        falar("$km quilômetros. Pace médio: $paceTexto.", respeitarIntervalo = false)
+        falar("$km quilômetros. Ritmo médio: $paceTexto.", respeitarIntervalo = false)
     }
 
     fun anunciarPaceFeedback(paceAtual: String, paceAlvoMin: String, paceAlvoMax: String): Boolean {
@@ -109,9 +116,18 @@ class AudioCoach(private val context: Context) {
         return true
     }
 
-    fun anunciarUltimosSegundos(segundos: Int) {
-        if (segundos in listOf(10, 5, 3)) {
-            falar("$segundos segundos", respeitarIntervalo = false)
+    fun anunciarUltimosSegundos(segundos: Int, duracaoPasso: Int) {
+        // Hierarquia de countdown baseada na duração do passo:
+        // > 60s  → avisa em 30s, 10s, 5s, 3s, 2s, 1s
+        // 30–60s → avisa em 10s, 5s, 3s, 2s, 1s
+        // < 30s  → só 3s, 2s, 1s (corredor está em esforço máximo, silêncio é respeito)
+        val pontosAviso = when {
+            duracaoPasso > 60  -> setOf(30, 10, 5, 3, 2, 1)
+            duracaoPasso >= 30 -> setOf(10, 5, 3, 2, 1)
+            else               -> setOf(3, 2, 1)
+        }
+        if (segundos in pontosAviso) {
+            falar("$segundos", respeitarIntervalo = false)
         }
     }
 
@@ -120,7 +136,7 @@ class AudioCoach(private val context: Context) {
         falarUrgente(
             "Corrida finalizada! Parabéns! " +
             "Você correu $km quilômetros em $tempoTotal " +
-            "com pace médio de $paceMedia por quilômetro."
+            "com ritmo médio de $paceMedia por quilômetro."
         )
     }
 
@@ -134,7 +150,7 @@ class AudioCoach(private val context: Context) {
      * Converte pace de "5:30" para "cinco minutos e trinta segundos"
      */
     private fun formatarPaceParaFala(pace: String): String {
-        if (pace == "--:--") return "sem pace definido"
+        if (pace == "--:--") return "sem ritmo definido"
         val partes = pace.split(":")
         if (partes.size != 2) return pace
         

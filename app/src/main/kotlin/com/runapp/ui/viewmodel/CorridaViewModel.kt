@@ -233,6 +233,11 @@ class CorridaViewModel(
         val passo = state.passoAtual ?: return
         if (passo.paceAlvoMin == "--:--" || passo.paceAlvoMax == "--:--") return
 
+        // REGRA DE SILÊNCIO: Tiros curtos (<45s) não recebem feedback corretivo.
+        // Entre o GPS estabilizar (~5s) e o corredor reagir fisicamente (~3s),
+        // o tiro já passou da metade. O alerta só gera ruído e distração.
+        if (passo.duracao < 45) return
+
         // Respeita intervalo mínimo entre avisos consecutivos
         val agora = System.currentTimeMillis()
         if (agora - ultimoPaceFeedback < INTERVALO_PACE_FEEDBACK_MS) return
@@ -280,6 +285,9 @@ class CorridaViewModel(
             // Informar o service da duração do novo passo para ajustar a janela de pace
             runningService?.setDuracaoPassoAtual(passo.duracao)
         }
+
+        // Countdown adaptativo: hierarquia de alertas baseada na duração do passo
+        audioCoach.anunciarUltimosSegundos(restante, passo.duracao)
 
         _uiState.value = state.copy(
             passoAtualIndex = indexAtivo,
