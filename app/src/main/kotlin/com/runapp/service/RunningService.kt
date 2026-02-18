@@ -356,9 +356,15 @@ class RunningService : Service() {
             return
         }
 
-        // Com sinal fraco, a margem de erro do GPS já cobre vários metros
-        // Usar accuracy para definir limiar dinâmico — evita auto-pause por jitter
-        val limiarMovimento = maxOf(DISTANCIA_MINIMA_MOVIMENTO, location.accuracy.toDouble())
+        // BUG FIX 1: Limitar o limiar dinâmico a no máximo 8m.
+        // Antes, usava location.accuracy diretamente — com sinal fraco (20-40m de accuracy),
+        // o limiar ficava tão alto que nenhum movimento real conseguia superá-lo,
+        // travando o app em auto-pause para sempre.
+        val LIMIAR_MAXIMO_METROS = 8.0
+        val limiarMovimento = minOf(
+            maxOf(DISTANCIA_MINIMA_MOVIMENTO, location.accuracy.toDouble()),
+            LIMIAR_MAXIMO_METROS
+        )
 
         val distanciaDesdeUltima = calcularDistancia(
             ultimaLoc.latitude, ultimaLoc.longitude,
@@ -370,8 +376,16 @@ class RunningService : Service() {
             contadorSemMovimento++
             contadorEmMovimento = 0
 
+            // BUG FIX 2: Atualizar a referência mesmo durante auto-pause.
+            // Antes, ultimaLocalizacaoSignificativa só era atualizada ao detectar movimento.
+            // Isso fazia com que, ao retomar, a distância fosse calculada desde um ponto
+            // antigo (pré-pausa), resultando em valores incorretos ou bloqueio da retomada.
+            if (_autoPausado.value) {
+                ultimaLocalizacaoSignificativa = location
+            }
+
             if (contadorSemMovimento >= LIMITE_SEM_MOVIMENTO && !_autoPausado.value) {
-                Log.d(TAG, "⏸️ Auto-pause ativado (${contadorSemMovimento}s sem movimento, accuracy=${location.accuracy}m)")
+                Log.d(TAG, "⏸️ Auto-pause ativado (${contadorSemMovimento}s sem movimento, accuracy=${location.accuracy}m, limiar=${limiarMovimento}m)")
                 _autoPausado.value = true
                 atualizarNotificacao("Auto-pausado (sem movimento)")
             }
