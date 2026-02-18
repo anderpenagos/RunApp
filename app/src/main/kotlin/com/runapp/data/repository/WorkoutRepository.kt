@@ -131,8 +131,8 @@ class WorkoutRepository(private val api: IntervalsApi) {
                 start  = o.get("start")?.takeIf { !it.isJsonNull }?.asDouble,
                 end    = o.get("end")?.takeIf { !it.isJsonNull }?.asDouble
             )
-            // Log crucial para debug: se end vier null aqui, o range Z5-Z6 nunca funcionará
-            Log.d(TAG, "   └─ Target: v=${st.value} start=${st.start} end=${st.end} units=${st.units}")
+            // Se no Logcat aparecer 'end=6.0', o range vai funcionar.
+            Log.d(TAG, "  DEBUG PARSER: start=${st.start} end=${st.end} effEnd=${st.effectiveEnd}")
             st
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao parsear StepTarget", e)
@@ -258,30 +258,34 @@ class WorkoutRepository(private val api: IntervalsApi) {
 
             paceTarget?.isPaceZone == true -> {
                 val zonaInicio = paceTarget.effectiveValue.toInt().coerceAtLeast(1)
-                // effectiveEnd: usa end se > 0, senão assume zona única
                 val zonaFim = (paceTarget.effectiveEnd?.toInt() ?: zonaInicio).coerceAtLeast(zonaInicio)
-
-                // Cor/identidade = zona mais alta do range
+                // Define a identidade visual pela zona mais alta
                 zona = zonaFim
-
-                Log.d(TAG, "  pace_zone: zonaInicio=$zonaInicio zonaFim=$zonaFim")
-
                 val zonaConfigInicio = paceZones.getOrNull(zonaInicio - 1)
                 val zonaConfigFim    = paceZones.getOrNull(zonaFim - 1)
-
                 if (zonaFim > zonaInicio && zonaConfigInicio != null && zonaConfigFim != null) {
-                    // Range Z5-Z6: min=pace mais rápido de Z6, max=pace mais lento de Z5
+                    // Caso tenha as configurações do servidor e seja um range
                     paceMinStr = formatarPace(zonaConfigFim.min)
                     paceMaxStr = formatarPace(zonaConfigInicio.max)
-                    Log.d(TAG, "  ✓ Range Z$zonaInicio-Z$zonaFim: $paceMinStr – $paceMaxStr")
-                } else if (zonaConfigInicio != null) {
+                } else if (zonaConfigInicio != null && zonaFim == zonaInicio) {
+                    // Caso tenha as configurações do servidor e seja zona única
                     paceMinStr = formatarPace(zonaConfigInicio.min)
                     paceMaxStr = formatarPace(zonaConfigInicio.max)
-                    Log.d(TAG, "  ✓ Zona única Z$zonaInicio: $paceMinStr – $paceMaxStr")
                 } else {
-                    val (min, max) = getPaceFallback(zonaInicio)
-                    paceMinStr = min; paceMaxStr = max
-                    Log.w(TAG, "  ⚠ Zona $zonaInicio não encontrada, fallback: $min – $max")
+                    // --- CORREÇÃO: FALLBACK PARA RANGE ---
+                    val fallbackInicio = getPaceFallback(zonaInicio)
+                    val fallbackFim = getPaceFallback(zonaFim)
+
+                    if (zonaFim > zonaInicio) {
+                        // Se for Z5-Z6 no fallback: pega o min da Z6 e o max da Z5
+                        paceMinStr = fallbackFim.first    // "4:13" (Z6)
+                        paceMaxStr = fallbackInicio.second // "4:43" (Z5)
+                        Log.d(TAG, "  ⚠ Usando Fallback de RANGE Z$zonaInicio-Z$zonaFim: $paceMinStr – $paceMaxStr")
+                    } else {
+                        paceMinStr = fallbackInicio.first
+                        paceMaxStr = fallbackInicio.second
+                        Log.w(TAG, "  ⚠ Usando Fallback de ZONA ÚNICA Z$zonaInicio: $paceMinStr – $paceMaxStr")
+                    }
                 }
             }
 
