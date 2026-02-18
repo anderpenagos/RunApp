@@ -570,6 +570,10 @@ class RunningService : Service() {
         // FLAG_ACTIVITY_SINGLE_TOP — reutiliza a Activity existente em vez de criar nova
         // FLAG_ACTIVITY_CLEAR_TOP — garante que não empilha Activities duplicadas
         val intent = Intent(this, MainActivity::class.java).apply {
+            // Ação específica para distinguir clique na notificação de abertura normal
+            action = ACTION_SHOW_RUNNING
+            // Carrega o ID do treino para navegação direta — sem passar pela Home
+            putExtra(EXTRA_EVENT_ID, treinoAtivo?.id ?: -1L)
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val pendingIntent = PendingIntent.getActivity(
@@ -668,6 +672,10 @@ class RunningService : Service() {
         const val ACTION_PAUSE = "PAUSE"
         const val ACTION_RESUME = "RESUME"
         const val ACTION_STOP = "STOP"
+
+        // Intent da notificação persistente → navegação direta para a corrida
+        const val ACTION_SHOW_RUNNING = "ACTION_SHOW_RUNNING_SCREEN"
+        const val EXTRA_EVENT_ID = "EVENT_ID"
         
         const val MAX_ACCURACY_METERS = 50f
     }
