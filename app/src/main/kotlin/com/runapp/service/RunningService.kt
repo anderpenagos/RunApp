@@ -19,6 +19,8 @@ import com.runapp.MainActivity
 import com.runapp.data.datastore.PreferencesRepository
 import com.runapp.data.datastore.dataStore
 import com.runapp.data.model.LatLngPonto
+import com.runapp.data.model.PassoExecucao
+import com.runapp.data.model.WorkoutEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -66,6 +68,27 @@ class RunningService : Service() {
     // Janela adaptativa: ajustada dinamicamente pelo ViewModel conforme duração do passo
     // Passo curto (<60s) → 5s | Passo longo → 12s
     private var janelaAtualSegundos = 12
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Custódia do Treino — sobrevive à morte da ViewModel
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    private var treinoAtivo: WorkoutEvent? = null
+    private var passosAtivos: List<PassoExecucao> = emptyList()
+    private var indexPassoAtivo: Int = -1  // para não reanunciar ao reconectar
+
+    fun setDadosTreino(treino: WorkoutEvent, passos: List<PassoExecucao>) {
+        treinoAtivo = treino
+        passosAtivos = passos
+        Log.d(TAG, "📋 Treino salvo no service: ${treino.name} (${passos.size} passos)")
+    }
+
+    fun setIndexPassoAtivo(index: Int) { indexPassoAtivo = index }
+    fun getTreinoAtivo(): WorkoutEvent? = treinoAtivo
+    fun getPassosAtivos(): List<PassoExecucao> = passosAtivos
+    fun getIndexPassoAtivo(): Int = indexPassoAtivo
+    fun isCorrendo(): Boolean = estaCorrendo
+    fun isPausado(): Boolean = estaPausado
+
     fun setDuracaoPassoAtual(duracaoSegundos: Int) {
         janelaAtualSegundos = if (duracaoSegundos < 60) 5 else 12
         Log.d(TAG, "⚙️ Janela de pace ajustada para ${janelaAtualSegundos}s (passo=${duracaoSegundos}s)")

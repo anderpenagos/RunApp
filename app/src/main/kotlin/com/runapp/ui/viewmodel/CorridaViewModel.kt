@@ -18,6 +18,7 @@ import com.runapp.data.model.WorkoutEvent
 import com.runapp.data.repository.WorkoutRepository
 import com.runapp.service.AudioCoach
 import com.runapp.service.RunningService
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -118,12 +119,32 @@ class CorridaViewModel(
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as RunningService.LocalBinder
-            runningService = binder.getService()
+            val s = binder.getService()
+            runningService = s
             serviceBound = true
-            
+
             android.util.Log.d("CorridaVM", "✅ Service conectado")
-            
-            // Observar dados do service
+
+            // Restauração de estado: se o service já está rodando (app foi morto e reaberto)
+            if (s.isCorrendo()) {
+                val treinoRecuperado = s.getTreinoAtivo()
+                val passosRecuperados = s.getPassosAtivos()
+                val indexRecuperado  = s.getIndexPassoAtivo()
+
+                if (treinoRecuperado != null && passosRecuperados.isNotEmpty()) {
+                    android.util.Log.d("CorridaVM", "♻️ Restaurando treino: ${treinoRecuperado.name}")
+                    // Sincroniza index para não reanunciar o passo em voz alta ao reconectar
+                    indexPassoAnunciado = indexRecuperado
+                    _uiState.value = _uiState.value.copy(
+                        fase       = if (s.isPausado() || s.autoPausado.value) FaseCorrida.PAUSADO else FaseCorrida.CORRENDO,
+                        treino     = treinoRecuperado,
+                        passos     = passosRecuperados,
+                        passoAtual = passosRecuperados.getOrNull(indexRecuperado.coerceAtLeast(0))
+                    )
+                }
+            }
+
+            // Observar dados do service (sempre, sessão nova ou restaurada)
             observarDadosDoService()
         }
 
@@ -140,6 +161,14 @@ class CorridaViewModel(
 
     init {
         android.util.Log.d("CorridaVM", "✅ ViewModel inicializado")
+        // Reconexão silenciosa com flag 0: tenta o bind mas NÃO cria o service se ele não existir.
+        // - Service parado → bindService retorna false, zero RAM gasta, onServiceConnected não dispara.
+        // - Service rodando → conecta e restaura o estado via onServiceConnected.
+        // BIND_AUTO_CREATE fica reservado apenas para iniciarCorrida(), onde temos certeza
+        // de que o usuário quer o service vivo.
+        Intent(context, RunningService::class.java).also { intent ->
+            context.bindService(intent, serviceConnection, 0)
+        }
     }
 
     override fun onCleared() {
@@ -282,8 +311,9 @@ class CorridaViewModel(
             indexPassoAnunciado = indexAtivo
             ultimoPaceFeedback = 0L  // reseta aviso de pace ao mudar de passo
             audioCoach.anunciarPasso(passo.nome, passo.paceAlvoMax, passo.duracao)
-            // Informar o service da duração do novo passo para ajustar a janela de pace
+            // Informar o service da duração e do index atual (persistência de estado)
             runningService?.setDuracaoPassoAtual(passo.duracao)
+            runningService?.setIndexPassoAtivo(indexAtivo)
         }
 
         // Countdown adaptativo: hierarquia de alertas baseada na duração do passo
@@ -373,6 +403,15 @@ class CorridaViewModel(
         // Bind ao service para receber atualizações
         Intent(context, RunningService::class.java).also { bindIntent ->
             context.bindService(bindIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+        }
+
+        // Enviar os dados do treino ao service assim que a conexão for estabelecida.
+        // O service passa a ser o "dono" do treino — sobrevive à morte da ViewModel.
+        viewModelScope.launch {
+            while (runningService == null) { delay(100) }
+            _uiState.value.treino?.let { treino ->
+                runningService?.setDadosTreino(treino, _uiState.value.passos)
+            }
         }
 
         _uiState.value = _uiState.value.copy(fase = FaseCorrida.CORRENDO)
