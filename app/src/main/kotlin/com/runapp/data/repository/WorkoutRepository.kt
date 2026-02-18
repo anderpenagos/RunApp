@@ -177,7 +177,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
         Log.d(TAG, "=== CONVERSÃO DE TREINO ===")
         Log.d(TAG, "Evento: ${evento.name}")
         Log.d(TAG, "Zonas processadas: ${paceZones.size}")
-        
+
         val doc = evento.workoutDoc ?: return listOf(
             PassoExecucao(
                 nome = evento.name,
@@ -188,9 +188,55 @@ class WorkoutRepository(private val api: IntervalsApi) {
                 instrucao = evento.description ?: "Siga seu ritmo confortável"
             )
         )
-        
-        Log.d(TAG, "Steps no workout: ${doc.steps.size}")
-        return expandirPassos(doc.steps, paceZones)
+
+        // Re-parsear o workout_doc do JSON raw para garantir que campos como
+        // "start", "end" e "units" em StepTarget sejam lidos corretamente,
+        // independente de como o Gson desserializou o objeto (Unsafe vs construtor).
+        val stepsParseados = try {
+            val jsonStr = com.google.gson.Gson().toJson(doc)
+            Log.d(TAG, "workout_doc JSON: $jsonStr")
+            val jsonDoc = com.google.gson.JsonParser.parseString(jsonStr).asJsonObject
+            parseSteps(jsonDoc.getAsJsonArray("steps"))
+        } catch (e: Exception) {
+            Log.w(TAG, "Falha no re-parse do workout_doc, usando steps do Gson: ${e.message}")
+            doc.steps
+        }
+
+        Log.d(TAG, "Steps no workout: ${stepsParseados.size}")
+        return expandirPassos(stepsParseados, paceZones)
+    }
+
+    /** Parseia um JsonArray de steps diretamente, sem depender do Gson para StepTarget */
+    private fun parseSteps(arr: com.google.gson.JsonArray?): List<WorkoutStep> {
+        if (arr == null) return emptyList()
+        return arr.mapNotNull { el ->
+            if (!el.isJsonObject) return@mapNotNull null
+            val o = el.asJsonObject
+            WorkoutStep(
+                type     = o.get("type")?.takeIf { !it.isJsonNull }?.asString ?: "SteadyState",
+                duration = o.get("duration")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+                pace     = parseStepTarget(o.getAsJsonObject("pace")),
+                target   = parseStepTarget(o.getAsJsonObject("power")),
+                text     = o.get("text")?.takeIf { !it.isJsonNull }?.asString,
+                reps     = o.get("reps")?.takeIf { !it.isJsonNull }?.asInt,
+                steps    = parseSteps(o.getAsJsonArray("steps"))
+            )
+        }
+    }
+
+    /** Parseia um JsonObject de pace/power diretamente para StepTarget */
+    private fun parseStepTarget(o: com.google.gson.JsonObject?): StepTarget? {
+        if (o == null) return null
+        val st = StepTarget(
+            value  = o.get("value")?.takeIf  { !it.isJsonNull }?.asDouble ?: 0.0,
+            value2 = o.get("value2")?.takeIf { !it.isJsonNull }?.asDouble,
+            type   = o.get("type")?.takeIf   { !it.isJsonNull }?.asString ?: "pace",
+            units  = o.get("units")?.takeIf  { !it.isJsonNull }?.asString,
+            start  = o.get("start")?.takeIf  { !it.isJsonNull }?.asDouble,
+            end    = o.get("end")?.takeIf    { !it.isJsonNull }?.asDouble
+        )
+        Log.d(TAG, "parseStepTarget: value=${st.value} units=${st.units} start=${st.start} end=${st.end} isPaceZone=${st.isPaceZone} effectiveValue=${st.effectiveValue} effectiveEnd=${st.effectiveEnd}")
+        return st
     }
 
     private fun expandirPassos(
