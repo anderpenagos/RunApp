@@ -58,27 +58,32 @@ class WorkoutRepository(private val api: IntervalsApi) {
     suspend fun getTreinoDetalhe(athleteId: String, eventId: Long): Result<WorkoutEvent> {
         return try {
             val body = api.getEventDetailRaw(athleteId, eventId).string()
-            Log.d(TAG, "Raw event JSON (primeiros 500 chars): ${body.take(500)}")
-            val root = JsonParser.parseString(body).asJsonObject
 
-            // Parsear o WorkoutEvent com Gson normal (campos simples funcionam OK)
+            // CORREÇÃO: Tratar se a resposta é um Array [ { ... } ] ou um Objeto { ... }
+            val jsonElement = JsonParser.parseString(body)
+            val root = if (jsonElement.isJsonArray) {
+                jsonElement.asJsonArray.get(0).asJsonObject
+            } else {
+                jsonElement.asJsonObject
+            }
+
+            // Parsear o WorkoutEvent com Gson normal
             val evento = gson.fromJson(root, WorkoutEvent::class.java)
 
             // Re-parsear workout_doc.steps diretamente do JSON bruto
             val workoutDocJson = root.getAsJsonObject("workout_doc")
-            val stepsParseados = if (workoutDocJson != null) {
+            val stepsParseados = if (workoutDocJson != null && workoutDocJson.has("steps")) {
                 parseStepsFromJson(workoutDocJson.getAsJsonArray("steps"))
             } else emptyList()
 
-            // Substituir o workout_doc com steps corretamente parseados
-            val docCorrigido = evento.workoutDoc?.copy(steps = stepsParseados)
-                ?: WorkoutDoc(steps = stepsParseados)
+            // Montar o evento corrigido com a árvore de steps completa
+            val docCorrigido = (evento.workoutDoc ?: WorkoutDoc()).copy(steps = stepsParseados)
             val eventoCorrigido = evento.copy(workoutDoc = docCorrigido)
 
-            Log.d(TAG, "Evento parseado: ${eventoCorrigido.name}, steps: ${stepsParseados.size}")
+            Log.d(TAG, "✅ Treino '${eventoCorrigido.name}' processado com ${stepsParseados.size} steps.")
             Result.success(eventoCorrigido)
         } catch (e: Exception) {
-            Log.e(TAG, "Erro ao buscar treino detalhe", e)
+            Log.e(TAG, "❌ Erro ao buscar treino detalhe", e)
             Result.failure(e)
         }
     }
@@ -117,16 +122,22 @@ class WorkoutRepository(private val api: IntervalsApi) {
 
     private fun parseStepTargetFromJson(o: JsonObject?): StepTarget? {
         if (o == null) return null
-        val st = StepTarget(
-            value  = o.get("value")?.takeIf  { !it.isJsonNull }?.asDouble ?: 0.0,
-            value2 = o.get("value2")?.takeIf { !it.isJsonNull }?.asDouble,
-            type   = o.get("type")?.takeIf   { !it.isJsonNull }?.asString ?: "pace",
-            units  = o.get("units")?.takeIf  { !it.isJsonNull }?.asString,
-            start  = o.get("start")?.takeIf  { !it.isJsonNull }?.asDouble,
-            end    = o.get("end")?.takeIf    { !it.isJsonNull }?.asDouble
-        )
-        Log.d(TAG, "  StepTarget: value=${st.value} start=${st.start} end=${st.end} units=${st.units} → isPaceZone=${st.isPaceZone} effectiveValue=${st.effectiveValue} effectiveEnd=${st.effectiveEnd}")
-        return st
+        return try {
+            val st = StepTarget(
+                value  = o.get("value")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0,
+                value2 = o.get("value2")?.takeIf { !it.isJsonNull }?.asDouble,
+                type   = o.get("type")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: "pace",
+                units  = o.get("units")?.takeIf { !it.isJsonNull }?.asString?.trim(),
+                start  = o.get("start")?.takeIf { !it.isJsonNull }?.asDouble,
+                end    = o.get("end")?.takeIf { !it.isJsonNull }?.asDouble
+            )
+            // Log crucial para debug: se end vier null aqui, o range Z5-Z6 nunca funcionará
+            Log.d(TAG, "   └─ Target: v=${st.value} start=${st.start} end=${st.end} units=${st.units}")
+            st
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro ao parsear StepTarget", e)
+            null
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

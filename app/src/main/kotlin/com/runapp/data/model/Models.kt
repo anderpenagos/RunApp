@@ -53,17 +53,19 @@ data class StepTarget(
     @SerializedName("start") val start: Double? = null,
     @SerializedName("end")   val end: Double? = null
 ) {
-    /** Zona efetiva: usa 'value' se preenchido, senão 'start' (início do range) */
+    // Se o Intervals enviar {"start": 5, "end": 6}, value será 0.0.
+    // Esta lógica garante que pegamos o 5.0 do start.
     val effectiveValue: Double get() = if (value > 0.0) value else (start ?: 0.0)
 
-    /** Zona final do range (ex: Z6 em Z5-Z6) */
+    // Esta lógica garante que pegamos o 6.0 do end.
     val effectiveEnd: Double? get() = end ?: if (value2 != null && value2 > 0.0) value2 else null
 
-    /** true se é uma zona de pace (não % de pace) */
-    val isPaceZone: Boolean get() = units == "pace_zone" || type == "zone" || type == "pace_zone"
+    // Verifica se é zona de pace
+    val isPaceZone: Boolean get() = units?.contains("pace_zone", ignoreCase = true) == true ||
+                                    type?.contains("zone", ignoreCase = true) == true
 
-    /** true se é descanso (0% de pace) */
-    val isRest: Boolean get() = (units == "%pace" && value == 0.0) || (type == "pace" && value == 0.0 && start == null)
+    val isRest: Boolean get() = (units == "%pace" && value == 0.0) ||
+                                (type == "pace" && value == 0.0 && start == null)
 }
 
 // ---- Zonas (FORMATO CORRETO DA API) ----
