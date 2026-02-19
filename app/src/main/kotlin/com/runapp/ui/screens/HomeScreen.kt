@@ -1,14 +1,17 @@
 package com.runapp.ui.screens
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -21,7 +24,9 @@ import java.util.Locale
 fun HomeScreen(
     onVerTreinos: () -> Unit,
     onVerHistorico: () -> Unit,
-    onConfigurar: () -> Unit
+    onConfigurar: () -> Unit,
+    corridaAtiva: Boolean = false,
+    onVoltarParaCorrida: () -> Unit = {}
 ) {
     val hoje = LocalDate.now()
     val formatter = DateTimeFormatter.ofPattern("EEEE, d 'de' MMMM", Locale("pt", "BR"))
@@ -43,11 +48,49 @@ fun HomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(24.dp),
+                .padding(24.dp)
+                .animateContentSize(), // banner entra/sai suavemente sem pulo
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
 
-            // Saudação
+            // Banner de corrida ativa — aparece quando o usuário saiu sem finalizar
+            if (corridaAtiva) {
+                Card(
+                    onClick = onVoltarParaCorrida,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFF4CAF50)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text(
+                                text = "🏃 Corrida em andamento",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                color = Color.White
+                            )
+                            Text(
+                                text = "Toque para voltar ao treino",
+                                fontSize = 13.sp,
+                                color = Color.White.copy(alpha = 0.85f)
+                            )
+                        }
+                        Icon(
+                            Icons.Default.PlayArrow,
+                            contentDescription = "Voltar à corrida",
+                            modifier = Modifier.size(36.dp),
+                            tint = Color.White
+                        )
+                    }
+                }
+            }
             Text(
                 text = dataFormatada,
                 style = MaterialTheme.typography.bodyLarge,

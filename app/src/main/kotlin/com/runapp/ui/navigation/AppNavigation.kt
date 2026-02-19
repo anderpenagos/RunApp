@@ -140,14 +140,9 @@ fun AppNavigation(notificationIntent: Intent? = null) {
             }
         }
 
-        if (corridaAtiva && eventoId != null && rotaAtual == Screen.Home.route) {
-            processandoNavegacao = true
-            android.util.Log.d("AppNav", "🚀 Auto-redirecionando para corrida ativa")
-            navController.navigate(Screen.Corrida.criarRota(eventoId)) {
-                popUpTo(Screen.Home.route) { inclusive = false }
-                launchSingleTop = true
-            }
-        }
+        // Auto-redirecionamento removido intencionalmente.
+        // O banner verde na HomeScreen permite que o usuário volte quando quiser.
+        // O startDestination já leva direto para a corrida ao abrir o app do zero.
     }
 
     // Reseta a trava assim que o backStack confirma a nova rota
@@ -170,9 +165,13 @@ fun AppNavigation(notificationIntent: Intent? = null) {
 
         composable(Screen.Home.route) {
             HomeScreen(
-                onVerTreinos  = { navController.navigate(Screen.Treinos.route) },
+                onVerTreinos   = { navController.navigate(Screen.Treinos.route) },
                 onVerHistorico = { navController.navigate(Screen.Historico.route) },
-                onConfigurar  = { navController.navigate(Screen.Config.route) }
+                onConfigurar   = { navController.navigate(Screen.Config.route) },
+                corridaAtiva   = corridaAtiva,
+                onVoltarParaCorrida = {
+                    eventoId?.let { navController.navigate(Screen.Corrida.criarRota(it)) }
+                }
             )
         }
 
@@ -211,7 +210,13 @@ fun AppNavigation(notificationIntent: Intent? = null) {
             CorridaScreen(
                 eventId = eventId,
                 viewModel = corridaViewModel,
-                onSair = { navController.popBackStack() },
+                onSair = {
+                    // popBackStack() falha quando a corrida é o startDestination (pilha vazia).
+                    // Navegamos explicitamente para a Home, limpando a pilha inteira.
+                    navController.navigate(Screen.Home.route) {
+                        popUpTo(0) { inclusive = true }
+                    }
+                },
                 onFinalizar = {
                     navController.navigate(Screen.Resumo.route) {
                         popUpTo(Screen.Corrida.route) { inclusive = true }
