@@ -260,8 +260,8 @@ fun CorridaScreen(
                 if (!cameraSnapRealizado) {
                     // SNAP instantâneo: sem animação, sem "viagem" pelo oceano
                     cameraPositionState.position = CameraPosition.fromLatLngZoom(destino, 17f)
-                    // Aguarda o Google Maps renderizar o tile correto antes de abrir a cortina
-                    kotlinx.coroutines.delay(300)
+                    // Aguarda o Google Maps renderizar os tiles corretos antes de abrir a cortina
+                    kotlinx.coroutines.delay(600)
                     cameraSnapRealizado = true
                 } else {
                     // Seguimentos suaves durante a corrida
@@ -314,7 +314,14 @@ fun CorridaScreen(
         
         // Resto da interface (mapa + controles)
         Box(modifier = Modifier.fillMaxSize()) {
-            // Mapa
+            // Mapa invisível até o snap estar concluído — o alpha animado impede que
+            // qualquer frame de África/oceano vaze por baixo da máscara preta.
+            val alphaMap by androidx.compose.animation.core.animateFloatAsState(
+                targetValue = if (cameraSnapRealizado) 1f else 0f,
+                animationSpec = androidx.compose.animation.core.tween(durationMillis = 400),
+                label = "alphaMap"
+            )
+            Box(modifier = Modifier.fillMaxSize().alpha(alphaMap)) {
             GoogleMap(
                 modifier = Modifier.fillMaxSize(),
                 cameraPositionState = cameraPositionState,
@@ -345,6 +352,16 @@ fun CorridaScreen(
                     )
                 }
             }
+            } // Fim do Box alpha do mapa
+
+            // UI de métricas, máscara e botões — tudo ganha alpha junto com o mapa
+            // para que nenhum elemento apareça "solto" sobre a África durante a transição.
+            val alphaUI by androidx.compose.animation.core.animateFloatAsState(
+                targetValue = if (cameraSnapRealizado) 1f else 0f,
+                animationSpec = androidx.compose.animation.core.tween(durationMillis = 400),
+                label = "alphaUI"
+            )
+            Box(modifier = Modifier.fillMaxSize().alpha(alphaUI)) {
 
             // Informações no topo (apenas passo atual)
             state.passoAtual?.let { passo ->
@@ -489,11 +506,11 @@ fun CorridaScreen(
                     }
                 }
             }
+            } // Fim do Box alphaUI (métricas)
 
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             // MÁSCARA DE TRANSIÇÃO: esconde mapa até câmera estar no lugar certo.
-            // Condição: treino carregado E câmera já teletransportou para a posição real.
-            // Isso elimina Afrika (0,0), oceano e tela preta visíveis ao usuário.
+            // Fica FORA do alphaUI para manter alpha 1 enquanto carrega.
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             val mostrarOverlay = state.treino == null || !cameraSnapRealizado
 
