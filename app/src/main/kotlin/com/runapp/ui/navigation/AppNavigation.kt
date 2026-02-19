@@ -51,10 +51,25 @@ fun AppNavigation(notificationIntent: Intent? = null) {
 
     val corridaState by corridaViewModel.uiState.collectAsState()
 
-    val startDestination = if (configState.isConfigured) Screen.Home.route else Screen.Config.route
-
     val corridaAtiva = corridaState.fase == FaseCorrida.CORRENDO || corridaState.fase == FaseCorrida.PAUSADO
     val eventoId = corridaState.treino?.id
+
+    // Extrai o ID da notificação antes de definir o destino inicial.
+    // Isso permite decidir a tela de abertura ANTES de renderizar qualquer coisa,
+    // eliminando o flash Home → Corrida que causa o efeito "África".
+    val idNotificacao = remember {
+        if (notificationIntent?.action == RunningService.ACTION_SHOW_RUNNING)
+            notificationIntent.getLongExtra(RunningService.EXTRA_EVENT_ID, -1L)
+        else -1L
+    }
+
+    // Destino inicial inteligente: nunca passa pela Home quando há corrida ativa.
+    val startDestination = when {
+        !configState.isConfigured                  -> Screen.Config.route
+        idNotificacao != -1L                       -> Screen.Corrida.criarRota(idNotificacao)
+        corridaAtiva && eventoId != null           -> Screen.Corrida.criarRota(eventoId)
+        else                                       -> Screen.Home.route
+    }
 
     var processandoNavegacao by remember { mutableStateOf(false) }
 

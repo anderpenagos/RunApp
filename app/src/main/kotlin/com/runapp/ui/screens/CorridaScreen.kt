@@ -248,14 +248,21 @@ fun CorridaScreen(
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(posicaoInicial, 16f)
     }
-    // Bloqueio contra saltos para (0,0) / "África":
-    // Só anima a câmera se as coordenadas forem geograficamente válidas (abs > 1°).
+    // Primeiro posicionamento: instantâneo (sem animação para não "viajar" pelo oceano).
+    // Posicionamentos seguintes: animação suave normal.
+    var cameraInicializada by remember { mutableStateOf(false) }
     LaunchedEffect(state.posicaoAtual) {
         state.posicaoAtual?.let { pos ->
             if (Math.abs(pos.lat) > 1.0 && Math.abs(pos.lng) > 1.0) {
-                cameraPositionState.animate(
-                    CameraUpdateFactory.newLatLngZoom(LatLng(pos.lat, pos.lng), 17f)
-                )
+                val destino = LatLng(pos.lat, pos.lng)
+                if (!cameraInicializada) {
+                    // Nasce no lugar certo — sem animação de viagem
+                    cameraPositionState.position = CameraPosition.fromLatLngZoom(destino, 17f)
+                    cameraInicializada = true
+                } else {
+                    // Seguimentos suaves durante a corrida
+                    cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(destino, 17f))
+                }
             }
         }
     }
@@ -479,6 +486,44 @@ fun CorridaScreen(
                                 modifier = Modifier.weight(1f)
                             )
                         }
+                    }
+                }
+            }
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // MÁSCARA DE TRANSIÇÃO: esconde os estados intermediários do mapa
+            // (África, oceano, tela preta) enquanto o GPS e o treino ainda não estão prontos.
+            // Só desaparece com fade quando: treino carregado E posição GPS válida.
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            val posGpsValida = state.posicaoAtual
+                ?.let { Math.abs(it.lat) > 1.0 && Math.abs(it.lng) > 1.0 }
+                ?: false
+            val mostrarOverlay = state.treino == null ||
+                (state.fase != FaseCorrida.PREPARANDO && !posGpsValida)
+
+            AnimatedVisibility(
+                visible = mostrarOverlay,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xFF121212)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(
+                            color = Color(0xFF4ECDC4),
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = if (state.treino == null) "Carregando treino..." else "Restaurando sua corrida...",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium
+                        )
                     }
                 }
             }
