@@ -468,28 +468,69 @@ fun CorridaScreen(
                     enter = fadeIn(),
                     exit = fadeOut()
                 ) {
-                    FloatingActionButton(
-                        onClick = { 
-                            if (permissaoGps) {
-                                viewModel.iniciarCorrida()
-                            } else {
-                                Toast.makeText(
-                                    context,
-                                    "Conceda permissões de GPS primeiro",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                                permissionLauncher.launch(PermissionHelper.LOCATION_PERMISSIONS)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        // Erro de rede: só exibe se estivermos em PREPARANDO e sem treino.
+                        // Se a fase já for CORRENDO/PAUSADO, o service tem os dados — ignora.
+                        if (state.erro != null && state.treino == null && state.fase == FaseCorrida.PREPARANDO) {
+                            Card(
+                                modifier = Modifier
+                                    .padding(horizontal = 24.dp)
+                                    .padding(bottom = 16.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = Color(0xFFB71C1C).copy(alpha = 0.92f)
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "⚠️ ${state.erro}",
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        textAlign = TextAlign.Center
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    TextButton(onClick = { viewModel.carregarTreino(eventId) }) {
+                                        Text("Tentar novamente", color = Color.White, fontWeight = FontWeight.Bold)
+                                    }
+                                }
                             }
-                        },
-                        containerColor = Color(0xFF4CAF50),
-                        modifier = Modifier.size(72.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = "Iniciar",
-                            tint = Color.White,
-                            modifier = Modifier.size(32.dp)
-                        )
+                        }
+
+                        // Botão iniciar: só aparece quando o treino já está carregado
+                        if (state.treino != null) {
+                            FloatingActionButton(
+                                onClick = {
+                                    if (permissaoGps) {
+                                        viewModel.iniciarCorrida()
+                                    } else {
+                                        Toast.makeText(
+                                            context,
+                                            "Conceda permissões de GPS primeiro",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                        permissionLauncher.launch(PermissionHelper.LOCATION_PERMISSIONS)
+                                    }
+                                },
+                                containerColor = Color(0xFF4CAF50),
+                                modifier = Modifier.size(72.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    contentDescription = "Iniciar",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                            }
+                        } else if (state.erro == null) {
+                            // Carregando: spinner enquanto aguarda treino ou service
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                modifier = Modifier.size(48.dp)
+                            )
+                        }
                     }
                 }
 

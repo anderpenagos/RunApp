@@ -333,38 +333,50 @@ class CorridaViewModel(
 
     fun carregarTreino(eventId: Long) {
         viewModelScope.launch {
-            // ESPERA ATIVA: O bindService é assíncrono — o service pode demorar até ~1.5s
-            // para reconectar após o app abrir (comunicação entre processos do Android).
-            // Aguarda até 2s (20x100ms) antes de ir para a rede. O usuário não percebe
-            // a espera porque o mapa já está carregando na tela.
-            repeat(20) { tentativa ->
-                if (serviceBound && _uiState.value.treino?.id == eventId) {
-                    android.util.Log.d("CorridaVM", "♻️ Dados recuperados do Service na tentativa $tentativa. Cancelando rede.")
-                    return@launch
-                }
+            android.util.Log.d("CorridaVM", "⏱️ carregarTreino($eventId) iniciou. Aguardando bind...")
+
+            // ESPERA ATIVA PELO BIND: O Android demora 800ms–1.5s para conectar ao Service.
+            // Checamos serviceBound — não o uiState (que pode demorar mais para propagar).
+            var tentativas = 0
+            while (!serviceBound && tentativas < 15) {
                 delay(100)
+                tentativas++
             }
 
-            // Após a espera, se o state já foi preenchido pelo service, não precisa de rede.
-            if (_uiState.value.treino?.id == eventId && _uiState.value.fase != FaseCorrida.PREPARANDO) {
-                android.util.Log.d("CorridaVM", "♻️ Treino restaurado pelo service. Pulando rede.")
-                return@launch
+            // VERIFICAÇÃO DIRETA NO SERVICE (mais confiável que ler o uiState)
+            val service = runningService
+            if (service != null && service.isCorrendo()) {
+                val treinoNoService = service.getTreinoAtivo()
+                if (treinoNoService?.id == eventId) {
+                    android.util.Log.d("CorridaVM", "✅ Treino restaurado do Service na tentativa $tentativas. Cancelando rede.")
+                    // Popula o uiState diretamente — não depende de onServiceConnected ter rodado
+                    val passos = service.getPassosAtivos()
+                    _uiState.value = _uiState.value.copy(
+                        treino     = treinoNoService,
+                        passos     = passos,
+                        passoAtual = passos.getOrNull(service.getIndexPassoAtivo().coerceAtLeast(0)),
+                        fase       = if (service.isPausado() || service.autoPausado.value) FaseCorrida.PAUSADO else FaseCorrida.CORRENDO,
+                        erro       = null
+                    )
+                    return@launch  // Não encosta na internet
+                }
             }
 
-            // Só chega aqui se for um início de treino do zero — vai para a internet.
+            // Se chegou aqui: corrida não está ativa — é um treino novo. Vai para a rede.
+            if (_uiState.value.fase != FaseCorrida.PREPARANDO) return@launch
             android.util.Log.d("CorridaVM", "🌐 Buscando treino via rede (Intervals.icu)...")
             try {
-                val apiKey = container.preferencesRepository.apiKey.first()
+                val apiKey   = container.preferencesRepository.apiKey.first()
                 val athleteId = container.preferencesRepository.athleteId.first()
-                
+
                 if (athleteId == null) {
                     _uiState.value = _uiState.value.copy(erro = "ID do atleta não configurado")
                     return@launch
                 }
-                
+
                 val repo = container.createWorkoutRepository(apiKey ?: "")
                 workoutRepo = repo
-                
+
                 val resultado = repo.getTreinoDetalhe(athleteId, eventId)
                 resultado.fold(
                     onSuccess = { evento ->
@@ -375,26 +387,25 @@ class CorridaViewModel(
                         )
                         val passosProcessados = repo.converterParaPassos(evento, paceZones)
                         _uiState.value = _uiState.value.copy(
-                            treino = evento,
-                            passos = passosProcessados,
+                            treino     = evento,
+                            passos     = passosProcessados,
                             passoAtual = passosProcessados.firstOrNull(),
-                            erro = null
+                            erro       = null
                         )
                         android.util.Log.d("CorridaVM", "✅ Treino carregado: ${evento.name}")
                     },
                     onFailure = { e ->
-                        // Se o service conectou durante a chamada de rede, ignora o erro —
-                        // os dados já estão no state via restauração.
-                        if (_uiState.value.fase == FaseCorrida.PREPARANDO) {
+                        // Se o service conectou enquanto a rede falhava, ignora o erro
+                        if (_uiState.value.treino == null) {
                             android.util.Log.e("CorridaVM", "❌ Erro de rede: ${e.message}")
-                            _uiState.value = _uiState.value.copy(erro = "Erro de conexão: ${e.message}")
+                            _uiState.value = _uiState.value.copy(erro = "Sem conexão. Verifique a internet e tente novamente.")
                         } else {
-                            android.util.Log.w("CorridaVM", "⚠️ Erro de rede ignorado — corrida já restaurada pelo service")
+                            android.util.Log.w("CorridaVM", "⚠️ Erro de rede ignorado — service já restaurou o treino")
                         }
                     }
                 )
             } catch (e: Exception) {
-                if (_uiState.value.fase == FaseCorrida.PREPARANDO) {
+                if (_uiState.value.treino == null) {
                     android.util.Log.e("CorridaVM", "❌ Erro ao carregar treino", e)
                     _uiState.value = _uiState.value.copy(erro = "Erro ao carregar: ${e.message}")
                 }

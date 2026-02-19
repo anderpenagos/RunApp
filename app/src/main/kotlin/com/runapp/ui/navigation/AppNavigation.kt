@@ -13,6 +13,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.runapp.service.RunningService
@@ -52,16 +53,46 @@ fun AppNavigation(notificationIntent: Intent? = null) {
 
     val startDestination = if (configState.isConfigured) Screen.Home.route else Screen.Config.route
 
-    // Navegação direta via clique na notificação persistente.
-    // O intent traz ACTION_SHOW_RUNNING_SCREEN + EVENT_ID — vai direto para a corrida
-    // sem depender do bind ao service completar (cobre cold start e app em background).
-    var navegacaoNotificacaoRealizada by remember { mutableStateOf(false) }
-    LaunchedEffect(notificationIntent) {
-        if (notificationIntent?.action == RunningService.ACTION_SHOW_RUNNING && !navegacaoNotificacaoRealizada) {
-            val eventId = notificationIntent.getLongExtra(RunningService.EXTRA_EVENT_ID, -1L)
-            if (eventId != -1L) {
-                navegacaoNotificacaoRealizada = true
-                navController.navigate(Screen.Corrida.criarRota(eventId)) {
+    val corridaAtiva = corridaState.fase == FaseCorrida.CORRENDO || corridaState.fase == FaseCorrida.PAUSADO
+    val eventoId = corridaState.treino?.id
+
+    // Trava de segurança: impede que dois navigate() disparem simultaneamente.
+    // Sem isso, o clique na notificação e o LaunchedEffect do service podem colidir
+    // durante a animação de abertura da tela (o "efeito bumerangue").
+    var processandoNavegacao by remember { mutableStateOf(false) }
+
+    // LaunchedEffect unificado com prioridade explícita:
+    //   Prioridade 1 — clique na notificação (tem eventId no intent)
+    //   Prioridade 2 — redirecionamento automático (service restaurou a corrida)
+    LaunchedEffect(notificationIntent, corridaAtiva, eventoId) {
+        if (processandoNavegacao) return@LaunchedEffect
+
+        val rotaAtual = navController.currentBackStackEntry?.destination?.route
+        val jaEstaNaCorrida = rotaAtual?.startsWith("corrida") == true
+                           || rotaAtual?.startsWith("resumo")  == true
+        if (jaEstaNaCorrida) return@LaunchedEffect
+
+        if (notificationIntent?.action == RunningService.ACTION_SHOW_RUNNING) {
+            val id = notificationIntent.getLongExtra(RunningService.EXTRA_EVENT_ID, -1L)
+            if (id != -1L) {
+                processandoNavegacao = true
+                android.util.Log.d("AppNav", "🎯 Navegando via notificação → corrida/$id")
+                navController.navigate(Screen.Corrida.criarRota(id)) {
+                    popUpTo(Screen.Home.route) { inclusive = false }
+                    launchSingleTop = true
+                }
+                notificationIntent.action = null
+                notificationIntent.removeExtra(RunningService.EXTRA_EVENT_ID)
+                return@LaunchedEffect
+            }
+        }
+
+        if (corridaAtiva && eventoId != null) {
+            val naHomeOuConfig = rotaAtual == Screen.Home.route || rotaAtual == Screen.Config.route
+            if (naHomeOuConfig) {
+                processandoNavegacao = true
+                android.util.Log.d("AppNav", "🚀 Auto-redirecionando para corrida ativa")
+                navController.navigate(Screen.Corrida.criarRota(eventoId)) {
                     popUpTo(Screen.Home.route) { inclusive = false }
                     launchSingleTop = true
                 }
@@ -69,25 +100,10 @@ fun AppNavigation(notificationIntent: Intent? = null) {
         }
     }
 
-    // Fallback: se a corrida foi restaurada pelo service mas o app abriu normalmente
-    // (ex: usuário abriu pelo ícone, não pela notificação), redireciona da Home.
-    // Chave dupla (corridaAtiva + eventoId) evita disparo espúrio quando apenas
-    // um dos dois oscila durante o bind assíncrono ao service.
-    val corridaAtiva = corridaState.fase == FaseCorrida.CORRENDO || corridaState.fase == FaseCorrida.PAUSADO
-    val eventoId = corridaState.treino?.id
-
-    LaunchedEffect(corridaAtiva, eventoId) {
-        if (corridaAtiva && eventoId != null) {
-            val rotaAtual = navController.currentDestination?.route
-            val naTelaCorreta = rotaAtual?.startsWith("corrida/") == true
-            val noResumo     = rotaAtual?.startsWith("resumo")   == true
-            if (!naTelaCorreta && !noResumo) {
-                navController.navigate(Screen.Corrida.criarRota(eventoId)) {
-                    popUpTo(Screen.Home.route) { inclusive = false }
-                    launchSingleTop = true
-                }
-            }
-        }
+    // Reseta a trava assim que a navegação completa (back stack confirma nova rota)
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    LaunchedEffect(backStackEntry) {
+        processandoNavegacao = false
     }
 
     NavHost(navController = navController, startDestination = startDestination) {
