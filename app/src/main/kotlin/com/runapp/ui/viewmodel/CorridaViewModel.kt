@@ -30,6 +30,7 @@ import java.io.File
 // Enums
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+
 enum class FaseCorrida {
     PREPARANDO,
     CORRENDO,
