@@ -53,7 +53,7 @@ enum class UploadEstado {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // UI State
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 data class CorridaUiState(
     val fase: FaseCorrida = FaseCorrida.PREPARANDO,
@@ -440,7 +440,9 @@ class CorridaViewModel(
         android.util.Log.d("CorridaVM", "▶️ Iniciando corrida")
 
         // Resetar controle de passos
-        indexPassoAnunciado = -1
+        // indexPassoAnunciado começa em 0 (não -1) para evitar que atualizarProgressoPasso
+        // detecte "novo passo" no index 0 e duplique o áudio com o anunciarInicioCorrida().
+        indexPassoAnunciado = 0
         ultimoKmAnunciado = 0
         ultimoPaceFeedback = 0L
 
@@ -466,17 +468,19 @@ class CorridaViewModel(
 
         _uiState.value = _uiState.value.copy(fase = FaseCorrida.CORRENDO)
 
-        // Anunciar início e primeiro passo
+        // Anunciar início e primeiro passo.
+        // indexPassoAnunciado já está em 0, então atualizarProgressoPasso não vai
+        // re-anunciar o passo 0 quando o primeiro tick do service chegar.
         audioCoach.anunciarInicioCorrida()
         val primeiroPasso = _uiState.value.passos.firstOrNull()
         if (primeiroPasso != null) {
             viewModelScope.launch {
                 kotlinx.coroutines.delay(2000) // espera o anúncio de início terminar
                 audioCoach.anunciarPasso(primeiroPasso.nome, primeiroPasso.paceAlvoMax, primeiroPasso.duracao)
-                indexPassoAnunciado = 0
                 // Configurar a janela de pace para o primeiro passo imediatamente
                 // (atualizarProgressoPasso só dispara na mudança de passo, não no início)
                 runningService?.setDuracaoPassoAtual(primeiroPasso.duracao)
+                runningService?.setIndexPassoAtivo(0)
             }
         }
     }

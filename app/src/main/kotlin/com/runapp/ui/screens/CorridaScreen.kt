@@ -151,14 +151,17 @@ fun CorridaScreen(
     val (statusGps, corBanner) = when {
         // 1. Sem permissão — prioridade crítica
         !permissaoGps -> "⚠️ Sem permissão GPS" to Color(0xFFFF6B6B)
-        // 2. Perda total de sinal (posicaoAtual sumiu completamente)
+        // 2. Instante exato do Play (tempo ainda zerado) — GPS estava OK, não deve "piscar"
+        // Precisa vir antes do !gpsLocalizou para blindar a transição de estado
+        state.fase == FaseCorrida.CORRENDO && state.tempoTotalSegundos == 0L ->
+            "🚀 Iniciando..." to Color(0xFF4ECDC4)
+        // 3. Perda total de sinal (posicaoAtual sumiu completamente)
         !gpsLocalizou -> "🔍 Buscando sinal GPS..." to Color(0xFFFFBE0B)
-        // 3. Antes do Play — verde tranquilo
+        // 4. Antes do Play — verde tranquilo
         state.fase == FaseCorrida.PREPARANDO -> "✅ GPS OK (Pronto para iniciar)" to Color(0xFF4ECDC4)
-        // 4. Primeiros segundos após o Play — ainda sem pontos suficientes, mas GPS está OK
-        // Evita o falso "sinal fraco" nos primeiros metros da corrida
+        // 5. Primeiros pontos após o Play — GPS OK, rota ainda acumulando
         state.fase == FaseCorrida.CORRENDO && pontosColetados < 5 -> "🚀 Iniciando gravação..." to Color(0xFF4ECDC4)
-        // 5. Corrida normal — verde com contagem de pontos
+        // 6. Corrida normal
         else -> "✅ GPS OK ($pontosColetados pontos)" to Color(0xFF4ECDC4)
     }
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -280,7 +283,12 @@ fun CorridaScreen(
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // ✨ NOVO: Interface com Indicador de GPS
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier
+        .fillMaxSize()
+        // Fundo preto no container mais externo — elimina o flash da tela Home
+        // que aparecia por 1-2 frames antes da máscara preta do Box interior carregar.
+        .background(Color(0xFF121212))
+    ) {
         // Indicador de status GPS no topo
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -363,7 +371,8 @@ fun CorridaScreen(
             // UI de métricas, máscara e botões — tudo ganha alpha junto com o mapa
             // para que nenhum elemento apareça "solto" sobre a África durante a transição.
             val alphaUI by androidx.compose.animation.core.animateFloatAsState(
-                targetValue = if (cameraSnapRealizado) 1f else 0f,
+                // SÓ mostra a UI quando o treino existir E o mapa estiver posicionado
+                targetValue = if (cameraSnapRealizado && state.treino != null) 1f else 0f,
                 animationSpec = androidx.compose.animation.core.tween(durationMillis = 400),
                 label = "alphaUI"
             )
