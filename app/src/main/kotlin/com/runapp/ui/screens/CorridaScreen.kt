@@ -493,7 +493,8 @@ fun CorridaScreen(
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             // MÁSCARA DE TRANSIÇÃO: esconde os estados intermediários do mapa
             // (África, oceano, tela preta) enquanto o GPS e o treino ainda não estão prontos.
-            // Só desaparece com fade quando: treino carregado E posição GPS válida.
+            // Usa animateFloatAsState para o fade — AnimatedVisibility com ColumnScope
+            // não pode ser chamado diretamente dentro de BoxScope.
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             val posGpsValida = state.posicaoAtual
                 ?.let { Math.abs(it.lat) > 1.0 && Math.abs(it.lng) > 1.0 }
@@ -501,29 +502,33 @@ fun CorridaScreen(
             val mostrarOverlay = state.treino == null ||
                 (state.fase != FaseCorrida.PREPARANDO && !posGpsValida)
 
-            AnimatedVisibility(
-                visible = mostrarOverlay,
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
+            val overlayAlpha by androidx.compose.animation.core.animateFloatAsState(
+                targetValue = if (mostrarOverlay) 1f else 0f,
+                animationSpec = androidx.compose.animation.core.tween(durationMillis = 400),
+                label = "overlayAlpha"
+            )
+
+            if (overlayAlpha > 0f) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color(0xFF121212)),
+                        .background(Color(0xFF121212).copy(alpha = overlayAlpha)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(
-                            color = Color(0xFF4ECDC4),
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = if (state.treino == null) "Carregando treino..." else "Restaurando sua corrida...",
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium
-                        )
+                    if (mostrarOverlay) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(
+                                color = Color(0xFF4ECDC4),
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = if (state.treino == null) "Carregando treino..." else "Restaurando sua corrida...",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
                 }
             }
