@@ -249,17 +249,20 @@ fun CorridaScreen(
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(posicaoInicial, 16f)
     }
-    // Primeiro posicionamento: instantâneo (sem animação para não "viajar" pelo oceano).
-    // Posicionamentos seguintes: animação suave normal.
-    var cameraInicializada by remember { mutableStateOf(false) }
+    // cameraSnapRealizado só vira true APÓS delay pós-snap.
+    // O delay garante que o Google Maps terminou de renderizar o tile correto
+    // antes de a máscara preta abrir — elimina qualquer frame de "África" visível.
+    var cameraSnapRealizado by remember { mutableStateOf(false) }
     LaunchedEffect(state.posicaoAtual) {
         state.posicaoAtual?.let { pos ->
             if (Math.abs(pos.lat) > 1.0 && Math.abs(pos.lng) > 1.0) {
                 val destino = LatLng(pos.lat, pos.lng)
-                if (!cameraInicializada) {
-                    // Nasce no lugar certo — sem animação de viagem
+                if (!cameraSnapRealizado) {
+                    // SNAP instantâneo: sem animação, sem "viagem" pelo oceano
                     cameraPositionState.position = CameraPosition.fromLatLngZoom(destino, 17f)
-                    cameraInicializada = true
+                    // Aguarda o Google Maps renderizar o tile correto antes de abrir a cortina
+                    kotlinx.coroutines.delay(300)
+                    cameraSnapRealizado = true
                 } else {
                     // Seguimentos suaves durante a corrida
                     cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(destino, 17f))
@@ -492,7 +495,7 @@ fun CorridaScreen(
             // Condição: treino carregado E câmera já teletransportou para a posição real.
             // Isso elimina Afrika (0,0), oceano e tela preta visíveis ao usuário.
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            val mostrarOverlay = state.treino == null || !cameraInicializada
+            val mostrarOverlay = state.treino == null || !cameraSnapRealizado
 
             val overlayAlpha by androidx.compose.animation.core.animateFloatAsState(
                 targetValue = if (mostrarOverlay) 1f else 0f,

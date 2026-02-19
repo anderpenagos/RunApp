@@ -65,12 +65,17 @@ fun AppNavigation(notificationIntent: Intent? = null) {
 
     // Destino inicial calculado UMA SÓ VEZ no remember — o NavHost não pode receber
     // um startDestination diferente entre recomposições ou o back stack corrompe.
+    // Usa corridaState.fase diretamente (não corridaAtiva) para detectar corrida
+    // restaurada pelo Service antes mesmo do primeiro frame renderizar.
     val startDestination = remember {
         when {
-            !configState.isConfigured        -> Screen.Config.route
-            idNotificacao != -1L             -> Screen.Corrida.criarRota(idNotificacao)
-            corridaAtiva && eventoId != null -> Screen.Corrida.criarRota(eventoId)
-            else                             -> Screen.Home.route
+            !configState.isConfigured -> Screen.Config.route
+            idNotificacao != -1L     -> Screen.Corrida.criarRota(idNotificacao)
+            corridaState.fase != FaseCorrida.PREPARANDO -> {
+                val id = corridaState.treino?.id ?: -1L
+                if (id != -1L) Screen.Corrida.criarRota(id) else Screen.Home.route
+            }
+            else -> Screen.Home.route
         }
     }
 
