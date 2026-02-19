@@ -71,15 +71,19 @@ fun AppNavigation(notificationIntent: Intent? = null) {
 
     // Fallback: se a corrida foi restaurada pelo service mas o app abriu normalmente
     // (ex: usuário abriu pelo ícone, não pela notificação), redireciona da Home.
+    // Chave dupla (corridaAtiva + eventoId) evita disparo espúrio quando apenas
+    // um dos dois oscila durante o bind assíncrono ao service.
     val corridaAtiva = corridaState.fase == FaseCorrida.CORRENDO || corridaState.fase == FaseCorrida.PAUSADO
     val eventoId = corridaState.treino?.id
 
-    LaunchedEffect(corridaAtiva) {
+    LaunchedEffect(corridaAtiva, eventoId) {
         if (corridaAtiva && eventoId != null) {
             val rotaAtual = navController.currentDestination?.route
             val naTelaCorreta = rotaAtual?.startsWith("corrida/") == true
-            if (!naTelaCorreta) {
+            val noResumo     = rotaAtual?.startsWith("resumo")   == true
+            if (!naTelaCorreta && !noResumo) {
                 navController.navigate(Screen.Corrida.criarRota(eventoId)) {
+                    popUpTo(Screen.Home.route) { inclusive = false }
                     launchSingleTop = true
                 }
             }

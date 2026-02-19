@@ -332,6 +332,13 @@ class CorridaViewModel(
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     fun carregarTreino(eventId: Long) {
+        // PROTEÇÃO: Se a corrida já está ativa (dados restaurados do Service),
+        // não faz chamada de rede — evita sobrescrever o estado válido com erro de internet.
+        if (_uiState.value.fase != FaseCorrida.PREPARANDO) {
+            android.util.Log.d("CorridaVM", "♻️ Pulando carregamento via rede: corrida já ativa (${_uiState.value.fase})")
+            return
+        }
+
         viewModelScope.launch {
             try {
                 val apiKey = container.preferencesRepository.apiKey.first()
