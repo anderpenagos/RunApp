@@ -517,7 +517,11 @@ class RunningService : Service(), SensorEventListener {
             lng = location.longitude,
             alt = location.altitude,
             tempo = agora,
-            accuracy = location.accuracy
+            accuracy = location.accuracy,
+            // Snapshot do pace e cadência no momento exato do ponto GPS
+            // Permite gráficos "pace ao longo do percurso" e correlação com altitude
+            paceNoPonto = ultimoPaceEma ?: 0.0,
+            cadenciaNoPonto = _cadencia.value
         )
 
         // Atualizar posição atual
@@ -640,6 +644,15 @@ class RunningService : Service(), SensorEventListener {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Cálculos de Pace
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /** Converte "5:30" → 330.0 seg/km. Retorna 0.0 para "--:--" ou inválido. */
+    private fun calcularPaceSegKm(paceFormatado: String): Double {
+        if (paceFormatado == "--:--") return 0.0
+        return runCatching {
+            val partes = paceFormatado.split(":")
+            partes[0].toLong() * 60.0 + partes[1].toLong()
+        }.getOrDefault(0.0)
+    }
 
     private fun calcularPaceAtual() {
         // Mínimo de 2 pontos (janelas curtas ficam responsivas mais rápido)

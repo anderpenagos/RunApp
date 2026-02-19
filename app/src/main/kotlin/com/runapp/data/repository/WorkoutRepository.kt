@@ -390,6 +390,17 @@ class WorkoutRepository(private val api: IntervalsApi) {
     // Salvar / Upload / Histórico
     // ─────────────────────────────────────────────────────────────────────────
 
+    /**
+     * Salva a atividade em disco (GPX + JSON) e computa métricas avançadas (D+, splits, cadência).
+     *
+     * ⚠️ THREAD — FIX C: Esta função executa I/O de arquivo e loops sobre até 7200 pontos GPS.
+     * SEMPRE chame a partir de um contexto de IO no ViewModel:
+     *
+     *   viewModelScope.launch(Dispatchers.IO) { repository.salvarAtividade(...) }
+     *
+     * Fazer isso na Main thread causa jank visível na animação de "Salvando..." e pode
+     * acionar o ANR watchdog em corridas longas (> 2h).
+     */
     suspend fun salvarAtividade(
         context: android.content.Context,
         athleteId: String,
@@ -425,20 +436,108 @@ class WorkoutRepository(private val api: IntervalsApi) {
             val tempoStr = if (tempoH > 0) "%d:%02d:%02d".format(tempoH, tempoM, tempoS)
                            else "%02d:%02d".format(tempoM, tempoS)
 
-            val meta = CorridaHistorico(
+            // ── Métricas avançadas para o dashboard ────────────────────────
+            val ganhoElevacao = calcularGanhoElevacao(rota)
+            val cadenciaMedia = calcularCadenciaMedia(rota)
+            val splits = calcularSplits(rota)
+
+            val meta = com.runapp.data.model.CorridaHistorico(
                 nome = nomeAtividade, data = dataHoraInicio.toString(),
                 distanciaKm = distanciaMetros / 1000.0, tempoFormatado = tempoStr,
-                paceMedia = paceMedia, pontosGps = rota.size, arquivoGpx = arquivo.name
+                paceMedia = paceMedia, pontosGps = rota.size, arquivoGpx = arquivo.name,
+                ganhoElevacaoM = ganhoElevacao,
+                cadenciaMedia = cadenciaMedia,
+                splitsParciais = splits
             )
             val jsonFile = java.io.File(pastaGpx, "corrida_$timestamp.json")
             jsonFile.writeText(Gson().toJson(meta))
 
-            Log.d(TAG, "✅ Salvo: ${arquivo.absolutePath}")
+            Log.d(TAG, "✅ Salvo: ${arquivo.absolutePath} | D+=${ganhoElevacao}m | SPM=$cadenciaMedia | ${splits.size} splits")
             Result.success(arquivo)
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao salvar atividade", e)
             Result.failure(e)
         }
+    }
+
+    /** D+ acumulado: soma apenas os ganhos positivos de altitude (filtro passa-alta ~0.5m) */
+    private fun calcularGanhoElevacao(rota: List<com.runapp.data.model.LatLngPonto>): Int {
+        if (rota.size < 2) return 0
+        // Suaviza altitude com média móvel de 5 pontos antes de calcular D+
+        // Elimina o ruído de GPS que causaria "serrote" no gráfico de elevação
+        val altsSuavizadas = rota.mapIndexed { i, _ ->
+            val inicio = maxOf(0, i - 2)
+            val fim = minOf(rota.lastIndex, i + 2)
+            rota.subList(inicio, fim + 1).map { it.alt }.average()
+        }
+
+        // FIX A: Ignorar ganho de elevação até o GPS estabilizar (primeiros 10m).
+        // Nos primeiros segundos, a altitude reportada pode oscilar vários metros,
+        // gerando D+ falso antes de qualquer subida real.
+        var distAcumulada = 0.0
+        val DISTANCIA_ESTABILIZACAO_M = 10.0
+
+        var ganho = 0.0
+        for (i in 1 until altsSuavizadas.size) {
+            distAcumulada += haversine(
+                rota[i - 1].lat, rota[i - 1].lng,
+                rota[i].lat,     rota[i].lng
+            )
+            if (distAcumulada < DISTANCIA_ESTABILIZACAO_M) continue  // aguarda GPS estabilizar
+
+            val delta = altsSuavizadas[i] - altsSuavizadas[i - 1]
+            if (delta > 0.5) ganho += delta  // ignora ruídos menores que 0.5m
+        }
+        return ganho.toInt()
+    }
+
+    /** SPM médio: média dos pontos com cadência > 0 (exclui paradas e início sem sensor) */
+    private fun calcularCadenciaMedia(rota: List<com.runapp.data.model.LatLngPonto>): Int {
+        val pontosComCadencia = rota.filter { it.cadenciaNoPonto > 0 }
+        if (pontosComCadencia.isEmpty()) return 0
+        return pontosComCadencia.map { it.cadenciaNoPonto }.average().toInt()
+    }
+
+    /** Pace por km completo — percorre a rota acumulando distância e marca cada km fechado */
+    private fun calcularSplits(rota: List<com.runapp.data.model.LatLngPonto>): List<com.runapp.data.model.SplitParcial> {
+        if (rota.size < 2) return emptyList()
+        val splits = mutableListOf<com.runapp.data.model.SplitParcial>()
+        var distAcumulada = 0.0
+        var kmAtual = 1
+        var indexInicioKm = 0
+
+        for (i in 1 until rota.size) {
+            val p1 = rota[i - 1]; val p2 = rota[i]
+            distAcumulada += haversine(p1.lat, p1.lng, p2.lat, p2.lng)
+
+            if (distAcumulada >= kmAtual * 1000.0) {
+                val tempoKm = (rota[i].tempo - rota[indexInicioKm].tempo) / 1000.0 // em segundos
+                // FIX B: Protege contra timestamps idênticos (sensor travado) ou valores
+                // absurdamente baixos (< 10s para percorrer 1 km = fisicamente impossível).
+                // Valor padrão 600.0 s/km (10:00/km) sinaliza a anomalia sem quebrar o gráfico.
+                val paceSegKm = if (tempoKm > 10.0) tempoKm else 600.0
+                val min = (paceSegKm / 60).toInt()
+                val seg = (paceSegKm % 60).toInt()
+                splits.add(com.runapp.data.model.SplitParcial(
+                    km = kmAtual,
+                    paceSegKm = paceSegKm,
+                    paceFormatado = "%d:%02d".format(min, seg)
+                ))
+                indexInicioKm = i
+                kmAtual++
+            }
+        }
+        return splits
+    }
+
+    private fun haversine(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
+        val R = 6371000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLng = Math.toRadians(lng2 - lng1)
+        val a = Math.sin(dLat / 2).let { it * it } +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLng / 2).let { it * it }
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
     }
 
     suspend fun uploadParaIntervals(athleteId: String, arquivo: java.io.File): Result<ActivityUploadResponse> {

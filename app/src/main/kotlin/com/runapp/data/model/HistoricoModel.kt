@@ -23,5 +23,16 @@ data class CorridaHistorico(
     val paceMedia: String,
     val pontosGps: Int,
     val arquivoGpx: String,
-    val enviadoIntervals: Boolean = false
+    val enviadoIntervals: Boolean = false,
+    // Métricas avançadas para o dashboard
+    val cadenciaMedia: Int = 0,             // SPM médio da corrida
+    val ganhoElevacaoM: Int = 0,            // D+ total em metros
+    val splitsParciais: List<SplitParcial> = emptyList() // pace por km completo
+)
+
+/** Pace de um quilômetro fechado da corrida */
+data class SplitParcial(
+    val km: Int,            // qual km (1, 2, 3...)
+    val paceSegKm: Double,  // pace em seg/km
+    val paceFormatado: String // "5:30"
 )

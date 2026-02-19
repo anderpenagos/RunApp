@@ -128,7 +128,9 @@ data class LatLngPonto(
     val lng: Double,
     val alt: Double = 0.0,
     val tempo: Long = 0L,
-    val accuracy: Float = 0f
+    val accuracy: Float = 0f,
+    val paceNoPonto: Double = 0.0,  // pace instantâneo em seg/km no momento do ponto
+    val cadenciaNoPonto: Int = 0    // SPM via acelerômetro no momento do ponto
 )
 
 data class ResumoFinal(
