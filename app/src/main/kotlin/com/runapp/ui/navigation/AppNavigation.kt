@@ -54,23 +54,24 @@ fun AppNavigation(notificationIntent: Intent? = null) {
     val corridaAtiva = corridaState.fase == FaseCorrida.CORRENDO || corridaState.fase == FaseCorrida.PAUSADO
     val eventoId = corridaState.treino?.id
 
-    // Extrai o ID da notificação antes de definir o destino inicial.
-    // Isso permite decidir a tela de abertura ANTES de renderizar qualquer coisa,
-    // eliminando o flash Home → Corrida que causa o efeito "África".
-    val idNotificacao = remember {
-        if (notificationIntent?.action == RunningService.ACTION_SHOW_RUNNING)
-            notificationIntent.getLongExtra(RunningService.EXTRA_EVENT_ID, -1L)
+    // Leitura SÍNCRONA do intent — não depende de collectAsState nem de remember.
+    // O Intent já está na memória no frame 0, antes de qualquer Flow emitir.
+    val idViaIntentExtra = notificationIntent?.let {
+        if (it.action == RunningService.ACTION_SHOW_RUNNING)
+            it.getLongExtra(RunningService.EXTRA_EVENT_ID, -1L)
         else -1L
-    }
+    } ?: -1L
 
-    // Destino inicial calculado UMA SÓ VEZ no remember — o NavHost não pode receber
-    // um startDestination diferente entre recomposições ou o back stack corrompe.
-    // Usa corridaState.fase diretamente (não corridaAtiva) para detectar corrida
-    // restaurada pelo Service antes mesmo do primeiro frame renderizar.
+    // startDestination calculado UMA SÓ VEZ. A prioridade do intent garante que,
+    // se viemos da notificação, o NavHost já nasce na CorridaScreen — a Home
+    // nunca chega a ser instanciada, eliminando o flash visual.
     val startDestination = remember {
         when {
+            // Prioridade máxima: intent síncrono, não depende do ViewModel ter acordado
+            idViaIntentExtra != -1L -> Screen.Corrida.criarRota(idViaIntentExtra)
+            // Configuração incompleta
             !configState.isConfigured -> Screen.Config.route
-            idNotificacao != -1L     -> Screen.Corrida.criarRota(idNotificacao)
+            // Corrida restaurada pelo Service (estado já disponível no primeiro frame)
             corridaState.fase != FaseCorrida.PREPARANDO -> {
                 val id = corridaState.treino?.id ?: -1L
                 if (id != -1L) Screen.Corrida.criarRota(id) else Screen.Home.route
