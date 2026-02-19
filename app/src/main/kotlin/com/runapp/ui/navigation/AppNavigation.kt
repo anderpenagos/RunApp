@@ -63,12 +63,15 @@ fun AppNavigation(notificationIntent: Intent? = null) {
         else -1L
     }
 
-    // Destino inicial inteligente: nunca passa pela Home quando há corrida ativa.
-    val startDestination = when {
-        !configState.isConfigured                  -> Screen.Config.route
-        idNotificacao != -1L                       -> Screen.Corrida.criarRota(idNotificacao)
-        corridaAtiva && eventoId != null           -> Screen.Corrida.criarRota(eventoId)
-        else                                       -> Screen.Home.route
+    // Destino inicial calculado UMA SÓ VEZ no remember — o NavHost não pode receber
+    // um startDestination diferente entre recomposições ou o back stack corrompe.
+    val startDestination = remember {
+        when {
+            !configState.isConfigured        -> Screen.Config.route
+            idNotificacao != -1L             -> Screen.Corrida.criarRota(idNotificacao)
+            corridaAtiva && eventoId != null -> Screen.Corrida.criarRota(eventoId)
+            else                             -> Screen.Home.route
+        }
     }
 
     var processandoNavegacao by remember { mutableStateOf(false) }

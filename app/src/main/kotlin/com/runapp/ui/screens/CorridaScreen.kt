@@ -23,7 +23,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -486,20 +488,15 @@ fun CorridaScreen(
             }
 
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            // MÁSCARA DE TRANSIÇÃO: esconde os estados intermediários do mapa
-            // (África, oceano, tela preta) enquanto o GPS e o treino ainda não estão prontos.
-            // Usa animateFloatAsState para o fade — AnimatedVisibility com ColumnScope
-            // não pode ser chamado diretamente dentro de BoxScope.
+            // MÁSCARA DE TRANSIÇÃO: esconde mapa até câmera estar no lugar certo.
+            // Condição: treino carregado E câmera já teletransportou para a posição real.
+            // Isso elimina Afrika (0,0), oceano e tela preta visíveis ao usuário.
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            val posGpsValida = state.posicaoAtual
-                ?.let { Math.abs(it.lat) > 1.0 && Math.abs(it.lng) > 1.0 }
-                ?: false
-            val mostrarOverlay = state.treino == null ||
-                (state.fase != FaseCorrida.PREPARANDO && !posGpsValida)
+            val mostrarOverlay = state.treino == null || !cameraInicializada
 
             val overlayAlpha by androidx.compose.animation.core.animateFloatAsState(
                 targetValue = if (mostrarOverlay) 1f else 0f,
-                animationSpec = androidx.compose.animation.core.tween(durationMillis = 400),
+                animationSpec = androidx.compose.animation.core.tween(durationMillis = 800),
                 label = "overlayAlpha"
             )
 
@@ -507,11 +504,16 @@ fun CorridaScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color(0xFF121212).copy(alpha = overlayAlpha)),
+                        .background(Color(0xFF121212).copy(alpha = overlayAlpha))
+                        // Bloqueia toques na UI por baixo enquanto a máscara está visível
+                        .pointerInput(Unit) {},
                     contentAlignment = Alignment.Center
                 ) {
                     if (mostrarOverlay) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.alpha(overlayAlpha)
+                        ) {
                             CircularProgressIndicator(
                                 color = Color(0xFF4ECDC4),
                                 modifier = Modifier.size(48.dp)
