@@ -1,6 +1,10 @@
 package com.runapp.ui.navigation
 
 import android.content.Intent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -8,6 +12,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -62,20 +69,35 @@ fun AppNavigation(notificationIntent: Intent? = null) {
         else -1L
     } ?: -1L
 
-    // startDestination calculado UMA SÓ VEZ. A prioridade do intent garante que,
-    // se viemos da notificação, o NavHost já nasce na CorridaScreen — a Home
-    // nunca chega a ser instanciada, eliminando o flash visual.
+    // TRAVA DE INICIALIZAÇÃO: enquanto o Room não terminou de ler as credenciais,
+    // não deixamos o NavHost tomar decisões. Sem isso, isConfigured==false no frame 0
+    // manda o usuário para a Config mesmo que ele já tenha credenciais salvas.
+    // A exceção é a notificação: o intent é síncrono e já sabemos o destino.
+    if (configState.isLoading && idViaIntentExtra == -1L) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF121212)),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(color = Color(0xFF4ECDC4))
+        }
+        return
+    }
+
+    // startDestination calculado UMA SÓ VEZ. Prioridade:
+    // 1. Intent da notificação (síncrono, frame 0)
+    // 2. Corrida restaurada pelo Service
+    // 3. Configuração incompleta (só avaliado APÓS isLoading=false)
+    // 4. Home
     val startDestination = remember {
         when {
-            // Prioridade máxima: intent síncrono, não depende do ViewModel ter acordado
             idViaIntentExtra != -1L -> Screen.Corrida.criarRota(idViaIntentExtra)
-            // Configuração incompleta
-            !configState.isConfigured -> Screen.Config.route
-            // Corrida restaurada pelo Service (estado já disponível no primeiro frame)
             corridaState.fase != FaseCorrida.PREPARANDO -> {
                 val id = corridaState.treino?.id ?: -1L
                 if (id != -1L) Screen.Corrida.criarRota(id) else Screen.Home.route
             }
+            !configState.isConfigured -> Screen.Config.route
             else -> Screen.Home.route
         }
     }

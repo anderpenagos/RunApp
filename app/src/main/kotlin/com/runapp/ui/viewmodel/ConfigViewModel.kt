@@ -17,7 +17,9 @@ data class ConfigUiState(
     val isSaving: Boolean = false,
     val error: String? = null,
     val isConfigured: Boolean = false,
-    val autoPauseEnabled: Boolean = true
+    val autoPauseEnabled: Boolean = true,
+    // true enquanto o Room ainda não respondeu — impede decisões de navegação precipitadas
+    val isLoading: Boolean = true
 )
 
 class ConfigViewModel(application: Application) : AndroidViewModel(application) {
@@ -36,7 +38,8 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                 apiKey = apiKey ?: "",
                 athleteId = athleteId ?: "",
                 isConfigured = !apiKey.isNullOrBlank() && !athleteId.isNullOrBlank(),
-                autoPauseEnabled = autoPause
+                autoPauseEnabled = autoPause,
+                isLoading = false  // Room respondeu — navegação pode prosseguir
             )
         }
     }

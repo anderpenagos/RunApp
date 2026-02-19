@@ -526,8 +526,11 @@ fun CorridaScreen(
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             // MÁSCARA DE TRANSIÇÃO: esconde mapa até câmera estar no lugar certo.
             // Fica FORA do alphaUI para manter alpha 1 enquanto carrega.
-            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            val mostrarOverlay = state.treino == null || !cameraSnapRealizado
+            // Tripla trava: treino carregado + snap realizado + GPS longe da África (0,0)
+            val posicaoGpsValida = state.posicaoAtual?.let {
+                Math.abs(it.lat) > 1.0 && Math.abs(it.lng) > 1.0
+            } ?: false
+            val mostrarOverlay = state.treino == null || !cameraSnapRealizado || !posicaoGpsValida
 
             val overlayAlpha by androidx.compose.animation.core.animateFloatAsState(
                 targetValue = if (mostrarOverlay) 1f else 0f,
