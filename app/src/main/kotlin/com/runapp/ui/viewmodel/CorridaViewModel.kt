@@ -115,6 +115,9 @@ class CorridaViewModel(
     // Service
     private var runningService: RunningService? = null
     private var serviceBound = false
+    // true = Android confirmou que o service existe e está conectando.
+    // false = service não estava rodando (treino novo) — pula a espera ativa no carregarTreino.
+    private var isBindingTentativo = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -162,12 +165,12 @@ class CorridaViewModel(
     init {
         android.util.Log.d("CorridaVM", "✅ ViewModel inicializado")
         // Reconexão silenciosa com flag 0: tenta o bind mas NÃO cria o service se ele não existir.
-        // - Service parado → bindService retorna false, zero RAM gasta, onServiceConnected não dispara.
-        // - Service rodando → conecta e restaura o estado via onServiceConnected.
-        // BIND_AUTO_CREATE fica reservado apenas para iniciarCorrida(), onde temos certeza
-        // de que o usuário quer o service vivo.
+        // O retorno boolean indica se o service estava rodando:
+        //   true  → service existe, onServiceConnected vai disparar (espera ativa válida)
+        //   false → service não existe, treino novo (pula a espera no carregarTreino)
         Intent(context, RunningService::class.java).also { intent ->
-            context.bindService(intent, serviceConnection, 0)
+            isBindingTentativo = context.bindService(intent, serviceConnection, 0)
+            android.util.Log.d("CorridaVM", "Bind silencioso: service ${if (isBindingTentativo) "encontrado ✅" else "não existe (treino novo)"}")
         }
     }
 
@@ -335,12 +338,14 @@ class CorridaViewModel(
         viewModelScope.launch {
             android.util.Log.d("CorridaVM", "⏱️ carregarTreino($eventId) iniciou. Aguardando bind...")
 
-            // ESPERA ATIVA PELO BIND: O Android demora 800ms–1.5s para conectar ao Service.
-            // Checamos serviceBound — não o uiState (que pode demorar mais para propagar).
-            var tentativas = 0
-            while (!serviceBound && tentativas < 15) {
-                delay(100)
-                tentativas++
+            // ESPERA ATIVA PELO BIND: só faz sentido se o Android confirmou que o service existe.
+            // Se isBindingTentativo=false, é treino novo — pula direto para a rede sem esperar.
+            if (isBindingTentativo) {
+                var tentativas = 0
+                while (!serviceBound && tentativas < 15) {
+                    delay(100)
+                    tentativas++
+                }
             }
 
             // VERIFICAÇÃO DIRETA NO SERVICE (mais confiável que ler o uiState)
