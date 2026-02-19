@@ -84,9 +84,6 @@ fun CorridaScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    var statusGps by remember { mutableStateOf("Buscando GPS...") }
-    var pontosColetados by remember { mutableStateOf(0) }
-
     // Passo 3: pedir localização em background (após ter localização em primeiro plano)
     val backgroundLocationLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -144,15 +141,17 @@ fun CorridaScreen(
         }
     }
 
-    // Atualizar status do GPS baseado nos pontos coletados
-    LaunchedEffect(state.rota.size) {
-        pontosColetados = state.rota.size
-        statusGps = when {
-            !permissaoGps -> "⚠️ Sem permissão GPS"
-            pontosColetados == 0 -> "🔍 Buscando sinal GPS..."
-            pontosColetados < 10 -> "📡 Sinal GPS fraco ($pontosColetados pontos)"
-            else -> "✅ GPS OK ($pontosColetados pontos)"
-        }
+    // Status GPS calculado em tempo real como derived state — sem LaunchedEffect.
+    // Qualquer mudança em permissaoGps, posicaoAtual, fase ou rota.size
+    // dispara recomposição automática e atualiza o banner instantaneamente.
+    val pontosColetados = state.rota.size
+    val gpsLocalizou = state.posicaoAtual != null
+    val (statusGps, corBanner) = when {
+        !permissaoGps -> "⚠️ Sem permissão GPS" to Color(0xFFFF6B6B)
+        !gpsLocalizou -> "🔍 Buscando sinal GPS..." to Color(0xFFFFBE0B)
+        state.fase == FaseCorrida.PREPARANDO -> "✅ GPS OK (Pronto para iniciar)" to Color(0xFF4ECDC4)
+        pontosColetados < 10 -> "📡 Sinal GPS fraco ($pontosColetados pontos)" to Color(0xFFFFBE0B)
+        else -> "✅ GPS OK ($pontosColetados pontos)" to Color(0xFF4ECDC4)
     }
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -274,11 +273,7 @@ fun CorridaScreen(
         // Indicador de status GPS no topo
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            color = when {
-                !permissaoGps -> Color(0xFFFF6B6B)  // Vermelho - sem permissão
-                pontosColetados < 10 -> Color(0xFFFFBE0B)  // Amarelo - sinal fraco
-                else -> Color(0xFF4ECDC4)  // Verde - GPS OK
-            }
+            color = corBanner
         ) {
             Row(
                 modifier = Modifier
