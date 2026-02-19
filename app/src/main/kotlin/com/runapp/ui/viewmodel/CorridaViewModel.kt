@@ -67,6 +67,7 @@ data class CorridaUiState(
     val tempoTotalSegundos: Long = 0,
     val paceAtual: String = "--:--",
     val paceMedia: String = "--:--",
+    val cadencia: Int = 0,          // passos por minuto via acelerômetro
     
     // Rastreamento GPS (vêm do Service)
     val rota: List<LatLngPonto> = emptyList(),
@@ -237,6 +238,12 @@ class CorridaViewModel(
         viewModelScope.launch {
             service.paceMedia.collect { pace ->
                 _uiState.value = _uiState.value.copy(paceMedia = pace)
+            }
+        }
+
+        viewModelScope.launch {
+            service.cadencia.collect { spm ->
+                _uiState.value = _uiState.value.copy(cadencia = spm)
             }
         }
         

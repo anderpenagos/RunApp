@@ -555,6 +555,22 @@ fun CorridaScreen(
                                 modifier = Modifier.weight(1f)
                             )
                         }
+
+                        // Linha de cadência — só aparece quando há leitura válida do sensor
+                        if (state.cadencia > 0) {
+                            Divider(color = Color.White.copy(alpha = 0.2f))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                MetricaCompacta(
+                                    label = "CADÊNCIA",
+                                    value = state.cadencia.toString(),
+                                    unit = "spm",
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
                     }
                 }
             }

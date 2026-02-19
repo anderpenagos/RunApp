@@ -7,6 +7,10 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.Location
 import android.os.Binder
 import android.os.IBinder
@@ -45,7 +49,7 @@ import kotlin.math.sqrt
  * IMPORTANTE: Este serviço roda independentemente do ciclo de vida das Activities.
  * Ele mantém o GPS ativo e processa todos os cálculos de pace, distância, etc.
  */
-class RunningService : Service() {
+class RunningService : Service(), SensorEventListener {
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Coroutines e Lifecycle
@@ -210,6 +214,22 @@ class RunningService : Service() {
     
     private val _paceMedia = MutableStateFlow("--:--")
     val paceMedia: StateFlow<String> = _paceMedia.asStateFlow()
+
+    // ── Cadência (passos por minuto) via acelerômetro ─────────────────────────
+    private val _cadencia = MutableStateFlow(0)
+    val cadencia: StateFlow<Int> = _cadencia.asStateFlow()
+
+    private lateinit var sensorManager: SensorManager
+    private var acelerometro: Sensor? = null
+
+    // Buffer circular dos últimos timestamps de passo (janela de 10s)
+    private val timestampsPassos = ArrayDeque<Long>(50)
+    private var ultimoTimestampPasso = 0L
+
+    // Threshold adaptativo: começa em 11.0 e se ajusta ao perfil do usuário
+    private var thresholdAceleracao = 11.0f
+    private var somaUltimosPicos = 0f
+    private var contadorPicos = 0
     
     private val _rotaAtual = MutableStateFlow<List<LatLngPonto>>(emptyList())
     val rotaAtual: StateFlow<List<LatLngPonto>> = _rotaAtual.asStateFlow()
@@ -240,7 +260,12 @@ class RunningService : Service() {
         super.onCreate()
         Log.d(TAG, "🔵 Service onCreate")
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        
+
+        // Sensores — acelerômetro para cadência
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        acelerometro = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+        if (acelerometro == null) Log.w(TAG, "⚠️ TYPE_LINEAR_ACCELERATION não disponível")
+
         // Adquirir WakeLock parcial
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
@@ -290,6 +315,18 @@ class RunningService : Service() {
         _tempoTotalSegundos.value = 0
         estaPausado = false
         estaCorrendo = true
+
+        // Resetar cadência e registrar sensor
+        timestampsPassos.clear()
+        ultimoTimestampPasso = 0L
+        thresholdAceleracao = 11.0f
+        somaUltimosPicos = 0f
+        contadorPicos = 0
+        _cadencia.value = 0
+        acelerometro?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+            Log.d(TAG, "📡 Acelerômetro registrado para cadência")
+        }
         
         // Iniciar GPS
         iniciarAtualizacoesGPS()
@@ -322,9 +359,13 @@ class RunningService : Service() {
 
     private fun pararRastreamento() {
         Log.d(TAG, "⏹️ Parando rastreamento")
-        
+
         estaCorrendo = false
-        
+
+        // Parar sensor de cadência
+        sensorManager.unregisterListener(this)
+        _cadencia.value = 0
+
         // Parar timer
         timerJob?.cancel()
         timerJob = null
@@ -347,13 +388,76 @@ class RunningService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "🔴 Service onDestroy")
-        
+
         // Garantir limpeza
         timerJob?.cancel()
         pararAtualizacoesGPS()
+        sensorManager.unregisterListener(this)
         wakeLock?.let {
-            if (it.isHeld) {
-                it.release()
+            if (it.isHeld) it.release()
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Cadência via Acelerômetro
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    override fun onSensorChanged(event: SensorEvent?) {
+        // Ignora quando pausado ou se não está correndo
+        if (!estaCorrendo || estaPausado || event == null) return
+        if (event.sensor.type != Sensor.TYPE_LINEAR_ACCELERATION) return
+
+        val x = event.values[0]
+        val y = event.values[1]
+        val z = event.values[2]
+        // Norma do vetor de aceleração linear (sem gravidade)
+        val magnitude = kotlin.math.sqrt((x * x + y * y + z * z).toDouble()).toFloat()
+
+        detectarPasso(magnitude)
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) { /* não usado */ }
+
+    private fun detectarPasso(magnitude: Float) {
+        val agora = System.currentTimeMillis()
+
+        // ANTI-DEADLOCK: se passou mais de 2s sem passo, o usuário mudou de ritmo
+        // (parou, desacelerou, trocou de superfície). Reseta o threshold para não
+        // "travar" em um valor calibrado para uma intensidade que não existe mais.
+        if (agora - ultimoTimestampPasso > 2000L && ultimoTimestampPasso > 0L) {
+            thresholdAceleracao = 11.0f
+        }
+
+        // Pico válido: magnitude acima do threshold E debounce de 250ms (máx ~240 SPM)
+        if (magnitude < thresholdAceleracao) return
+        if (agora - ultimoTimestampPasso < 250L) return
+
+        ultimoTimestampPasso = agora
+
+        // Threshold adaptativo: ajusta gradualmente à força do impacto do usuário
+        // Evita falsos positivos em corredores leves e falsos negativos em pisadores fortes
+        somaUltimosPicos += magnitude
+        contadorPicos++
+        if (contadorPicos >= 10) {
+            val mediaPicos = somaUltimosPicos / contadorPicos
+            // Novo threshold = 75% da média dos picos → sempre abaixo dos picos reais
+            thresholdAceleracao = mediaPicos * 0.75f
+            somaUltimosPicos = 0f
+            contadorPicos = 0
+        }
+
+        // Buffer circular: mantém apenas timestamps dos últimos 10s
+        timestampsPassos.addLast(agora)
+        while (timestampsPassos.isNotEmpty() && timestampsPassos.first() < agora - 10_000L) {
+            timestampsPassos.removeFirst()
+        }
+
+        // Cadência = (passos em 10s / 10) * 60, só se tiver dados suficientes (≥3 passos)
+        if (timestampsPassos.size >= 3) {
+            val spm = (timestampsPassos.size / 10.0 * 60).toInt()
+            // Sanidade: corrida real fica entre 120–220 SPM
+            if (spm in 120..220) {
+                _cadencia.value = spm
             }
         }
     }
