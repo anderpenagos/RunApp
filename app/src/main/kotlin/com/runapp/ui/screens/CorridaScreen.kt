@@ -149,10 +149,16 @@ fun CorridaScreen(
     val pontosColetados = state.rota.size
     val gpsLocalizou = state.posicaoAtual != null
     val (statusGps, corBanner) = when {
+        // 1. Sem permissão — prioridade crítica
         !permissaoGps -> "⚠️ Sem permissão GPS" to Color(0xFFFF6B6B)
+        // 2. Perda total de sinal (posicaoAtual sumiu completamente)
         !gpsLocalizou -> "🔍 Buscando sinal GPS..." to Color(0xFFFFBE0B)
+        // 3. Antes do Play — verde tranquilo
         state.fase == FaseCorrida.PREPARANDO -> "✅ GPS OK (Pronto para iniciar)" to Color(0xFF4ECDC4)
-        pontosColetados < 10 -> "📡 Sinal GPS fraco ($pontosColetados pontos)" to Color(0xFFFFBE0B)
+        // 4. Primeiros segundos após o Play — ainda sem pontos suficientes, mas GPS está OK
+        // Evita o falso "sinal fraco" nos primeiros metros da corrida
+        state.fase == FaseCorrida.CORRENDO && pontosColetados < 5 -> "🚀 Iniciando gravação..." to Color(0xFF4ECDC4)
+        // 5. Corrida normal — verde com contagem de pontos
         else -> "✅ GPS OK ($pontosColetados pontos)" to Color(0xFF4ECDC4)
     }
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
