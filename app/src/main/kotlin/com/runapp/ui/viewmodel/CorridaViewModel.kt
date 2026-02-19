@@ -332,22 +332,33 @@ class CorridaViewModel(
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     fun carregarTreino(eventId: Long) {
-        // PROTEÇÃO: Se a corrida já está ativa (dados restaurados do Service),
-        // não faz chamada de rede — evita sobrescrever o estado válido com erro de internet.
-        if (_uiState.value.fase != FaseCorrida.PREPARANDO) {
-            android.util.Log.d("CorridaVM", "♻️ Pulando carregamento via rede: corrida já ativa (${_uiState.value.fase})")
-            return
-        }
-
         viewModelScope.launch {
+            // ESPERA ATIVA: O bindService é assíncrono — o service pode demorar até ~1.5s
+            // para reconectar após o app abrir (comunicação entre processos do Android).
+            // Aguarda até 2s (20x100ms) antes de ir para a rede. O usuário não percebe
+            // a espera porque o mapa já está carregando na tela.
+            repeat(20) { tentativa ->
+                if (serviceBound && _uiState.value.treino?.id == eventId) {
+                    android.util.Log.d("CorridaVM", "♻️ Dados recuperados do Service na tentativa $tentativa. Cancelando rede.")
+                    return@launch
+                }
+                delay(100)
+            }
+
+            // Após a espera, se o state já foi preenchido pelo service, não precisa de rede.
+            if (_uiState.value.treino?.id == eventId && _uiState.value.fase != FaseCorrida.PREPARANDO) {
+                android.util.Log.d("CorridaVM", "♻️ Treino restaurado pelo service. Pulando rede.")
+                return@launch
+            }
+
+            // Só chega aqui se for um início de treino do zero — vai para a internet.
+            android.util.Log.d("CorridaVM", "🌐 Buscando treino via rede (Intervals.icu)...")
             try {
                 val apiKey = container.preferencesRepository.apiKey.first()
                 val athleteId = container.preferencesRepository.athleteId.first()
                 
                 if (athleteId == null) {
-                    _uiState.value = _uiState.value.copy(
-                        erro = "ID do atleta não configurado"
-                    )
+                    _uiState.value = _uiState.value.copy(erro = "ID do atleta não configurado")
                     return@launch
                 }
                 
@@ -362,29 +373,31 @@ class CorridaViewModel(
                             onSuccess = { zonesResponse -> repo.processarZonas(zonesResponse) },
                             onFailure = { emptyList() }
                         )
-                        
                         val passosProcessados = repo.converterParaPassos(evento, paceZones)
-                        
                         _uiState.value = _uiState.value.copy(
                             treino = evento,
                             passos = passosProcessados,
-                            passoAtual = passosProcessados.firstOrNull()
+                            passoAtual = passosProcessados.firstOrNull(),
+                            erro = null
                         )
-                        
                         android.util.Log.d("CorridaVM", "✅ Treino carregado: ${evento.name}")
                     },
                     onFailure = { e ->
-                        android.util.Log.e("CorridaVM", "❌ Erro ao carregar treino", e)
-                        _uiState.value = _uiState.value.copy(
-                            erro = "Erro ao carregar treino: ${e.message}"
-                        )
+                        // Se o service conectou durante a chamada de rede, ignora o erro —
+                        // os dados já estão no state via restauração.
+                        if (_uiState.value.fase == FaseCorrida.PREPARANDO) {
+                            android.util.Log.e("CorridaVM", "❌ Erro de rede: ${e.message}")
+                            _uiState.value = _uiState.value.copy(erro = "Erro de conexão: ${e.message}")
+                        } else {
+                            android.util.Log.w("CorridaVM", "⚠️ Erro de rede ignorado — corrida já restaurada pelo service")
+                        }
                     }
                 )
             } catch (e: Exception) {
-                android.util.Log.e("CorridaVM", "❌ Erro ao carregar treino", e)
-                _uiState.value = _uiState.value.copy(
-                    erro = "Erro ao carregar treino: ${e.message}"
-                )
+                if (_uiState.value.fase == FaseCorrida.PREPARANDO) {
+                    android.util.Log.e("CorridaVM", "❌ Erro ao carregar treino", e)
+                    _uiState.value = _uiState.value.copy(erro = "Erro ao carregar: ${e.message}")
+                }
             }
         }
     }
