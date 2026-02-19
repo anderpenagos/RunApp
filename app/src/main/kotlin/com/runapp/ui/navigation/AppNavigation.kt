@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.ui.unit.dp
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -34,6 +35,9 @@ sealed class Screen(val route: String) {
     object Home        : Screen("home")
     object Treinos     : Screen("treinos")
     object Historico   : Screen("historico")
+    object DetalheAtividade : Screen("detalhe_atividade/{arquivoGpx}") {
+        fun criarRota(arquivoGpx: String) = "detalhe_atividade/$arquivoGpx"
+    }
     object DetalheTreino : Screen("detalhe/{eventId}") {
         fun criarRota(eventId: Long) = "detalhe/$eventId"
     }
@@ -41,6 +45,20 @@ sealed class Screen(val route: String) {
         fun criarRota(eventId: Long) = "corrida/$eventId"
     }
     object Resumo : Screen("resumo")
+}
+
+/**
+ * Estado de carregamento para DetalheAtividade.
+ * Distingue Carregando / Erro / Sucesso — sem isso um GPX corrompido
+ * ou deletado deixa o spinner infinito na tela.
+ */
+private sealed class DetalheEstado {
+    object Carregando : DetalheEstado()
+    object Erro       : DetalheEstado()
+    data class Sucesso(
+        val corrida : com.runapp.data.model.CorridaHistorico,
+        val rota    : List<com.runapp.data.model.LatLngPonto>
+    ) : DetalheEstado()
 }
 
 @Composable
@@ -186,8 +204,76 @@ fun AppNavigation(notificationIntent: Intent? = null) {
 
         composable(Screen.Historico.route) {
             HistoricoScreen(
-                onVoltar = { navController.popBackStack() }
+                onVoltar = { navController.popBackStack() },
+                onVerDetalhe = { corrida ->
+                    // FIX: O ponto (.) em "corrida_20240515.gpx" quebra o roteamento —
+                    // o Navigation interpreta tudo após o ponto como extensão da URL.
+                    // Uri.encode transforma "corrida.gpx" em "corrida%2Egpx" (opaco).
+                    // O composable de destino desfaz com Uri.decode ao receber o argumento.
+                    val arquivoSeguro = android.net.Uri.encode(corrida.arquivoGpx)
+                    navController.navigate(Screen.DetalheAtividade.criarRota(arquivoSeguro))
+                }
             )
+        }
+
+        composable(
+            route = Screen.DetalheAtividade.route,
+            arguments = listOf(navArgument("arquivoGpx") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val arquivoGpx = backStackEntry.arguments?.getString("arquivoGpx")
+                ?.let { android.net.Uri.decode(it) }
+                ?: return@composable
+
+            val detalheEstado = androidx.compose.runtime.produceState<DetalheEstado>(
+                initialValue = DetalheEstado.Carregando
+            ) {
+                value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching {
+                        val app = navController.context.applicationContext as com.runapp.RunApp
+                        val repo = com.runapp.data.repository.HistoricoRepository(app)
+                        val corrida = repo.listarCorridas().find { it.arquivoGpx == arquivoGpx }
+                            ?: return@runCatching DetalheEstado.Erro
+
+                        val gpxFile = repo.obterArquivoGpx(corrida)
+                        val rota = if (gpxFile != null)
+                            com.runapp.util.GpxParser.parsear(gpxFile)
+                        else emptyList()
+
+                        DetalheEstado.Sucesso(corrida, rota)
+                    }.getOrElse { DetalheEstado.Erro }
+                }
+            }
+
+            when (val estado = detalheEstado.value) {
+                is DetalheEstado.Carregando -> {
+                    Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
+                }
+                is DetalheEstado.Erro -> {
+                    Box(Modifier.fillMaxSize(), Alignment.Center) {
+                        androidx.compose.foundation.layout.Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(16.dp)
+                        ) {
+                            androidx.compose.material3.Text(
+                                text = "Não foi possível carregar a atividade.",
+                                color = Color(0xFFAAAAAA)
+                            )
+                            androidx.compose.material3.TextButton(
+                                onClick = { navController.popBackStack() }
+                            ) {
+                                androidx.compose.material3.Text("Voltar", color = Color(0xFF4ECDC4))
+                            }
+                        }
+                    }
+                }
+                is DetalheEstado.Sucesso -> {
+                    DetalheAtividadeScreen(
+                        corrida  = estado.corrida,
+                        rota     = estado.rota,
+                        onVoltar = { navController.popBackStack() }
+                    )
+                }
+            }
         }
 
         composable(

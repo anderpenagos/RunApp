@@ -429,9 +429,17 @@ private fun prepararDadosGrafico(rota: List<LatLngPonto>): DadosGrafico {
     if (rota.size < 2) return DadosGrafico(emptyList(), emptyList(), emptyList(),
         emptyList(), emptyList(), emptyList(), 0.0, false)
 
-    // Suaviza altitude com média móvel de 5 pontos (elimina ruído GPS)
+    // Suaviza altitude com média móvel de 5 pontos (elimina ruído GPS).
+    // coerceAtLeast/coerceAtMost garantem que corridas curtas (< 5 pontos) não crasham.
     val altsSuav = rota.mapIndexed { i, _ ->
-        val inicio = maxOf(0, i - 2); val fim = minOf(rota.lastIndex, i + 2)
+        val inicio = (i - 2).coerceAtLeast(0); val fim = (i + 2).coerceAtMost(rota.lastIndex)
+        rota.subList(inicio, fim + 1).map { it.alt }.average()
+    }
+
+    // Suavização mais agressiva (11 pontos) para o gráfico de altitude sem serrilhado.
+    // A mesma proteção de índices é essencial em corridas curtas de teste (< 11 pontos).
+    val altsSuavGAP = rota.mapIndexed { i, _ ->
+        val inicio = (i - 5).coerceAtLeast(0); val fim = (i + 5).coerceAtMost(rota.lastIndex)
         rota.subList(inicio, fim + 1).map { it.alt }.average()
     }
 
