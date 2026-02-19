@@ -31,6 +31,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -64,6 +67,21 @@ fun CorridaScreen(
     }
     var permissaoBackground by remember {
         mutableStateOf(PermissionHelper.hasBackgroundLocationPermission(context))
+    }
+
+    // Re-checa as permissões sempre que a tela volta ao foco (onResume).
+    // O remember inicial executa antes da Activity estar completamente pronta,
+    // então pode retornar false mesmo com permissão concedida — o observer corrige isso.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                permissaoGps = PermissionHelper.hasLocationPermissions(context)
+                permissaoBackground = PermissionHelper.hasBackgroundLocationPermission(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     var statusGps by remember { mutableStateOf("Buscando GPS...") }
@@ -219,14 +237,26 @@ fun CorridaScreen(
     }
 
     // Câmera do mapa
-    val cameraPositionState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(LatLng(-23.55, -46.63), 15f)
+    // Usa o último ponto conhecido da rota como posição inicial — se existir.
+    // Isso evita que o mapa apareça em (0,0) / "África" ao reabrir pelo notificação,
+    // pois a posição já vem preenchida antes do LaunchedEffect assíncrono disparar.
+    val posicaoInicial = remember(state.rota) {
+        state.rota.lastOrNull()?.let { LatLng(it.lat, it.lng) }
+            ?: state.posicaoAtual?.let { LatLng(it.lat, it.lng) }
+            ?: LatLng(-23.55, -46.63) // São Paulo como fallback neutro
     }
+    val cameraPositionState = rememberCameraPositionState {
+        position = CameraPosition.fromLatLngZoom(posicaoInicial, 16f)
+    }
+    // Bloqueio contra saltos para (0,0) / "África":
+    // Só anima a câmera se as coordenadas forem geograficamente válidas (abs > 1°).
     LaunchedEffect(state.posicaoAtual) {
         state.posicaoAtual?.let { pos ->
-            cameraPositionState.animate(
-                CameraUpdateFactory.newLatLngZoom(LatLng(pos.lat, pos.lng), 16f)
-            )
+            if (Math.abs(pos.lat) > 1.0 && Math.abs(pos.lng) > 1.0) {
+                cameraPositionState.animate(
+                    CameraUpdateFactory.newLatLngZoom(LatLng(pos.lat, pos.lng), 17f)
+                )
+            }
         }
     }
 

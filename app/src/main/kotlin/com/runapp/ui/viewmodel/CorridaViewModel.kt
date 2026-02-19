@@ -30,7 +30,6 @@ import java.io.File
 // Enums
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-
 enum class FaseCorrida {
     PREPARANDO,
     CORRENDO,
@@ -137,14 +136,27 @@ class CorridaViewModel(
 
                 if (treinoRecuperado != null && passosRecuperados.isNotEmpty()) {
                     android.util.Log.d("CorridaVM", "♻️ Restaurando treino: ${treinoRecuperado.name}")
-                    // Sincroniza index para não reanunciar o passo em voz alta ao reconectar
                     indexPassoAnunciado = indexRecuperado
+                    // RESTAURAÇÃO COMPLETA E IMEDIATA: entrega posição, rota e métricas
+                    // no primeiro milissegundo da conexão, sem esperar os collects assíncronos.
+                    // Isso impede que o mapa "fuja" para a África (0,0) e que a UI
+                    // mostre zeros antes dos flows chegarem.
                     _uiState.value = _uiState.value.copy(
-                        fase       = if (s.isPausado() || s.autoPausado.value) FaseCorrida.PAUSADO else FaseCorrida.CORRENDO,
-                        treino     = treinoRecuperado,
-                        passos     = passosRecuperados,
-                        passoAtual = passosRecuperados.getOrNull(indexRecuperado.coerceAtLeast(0))
+                        fase               = if (s.isPausado() || s.autoPausado.value) FaseCorrida.PAUSADO else FaseCorrida.CORRENDO,
+                        treino             = treinoRecuperado,
+                        passos             = passosRecuperados,
+                        passoAtual         = passosRecuperados.getOrNull(indexRecuperado.coerceAtLeast(0)),
+                        // GPS — lê StateFlow.value diretamente (síncrono, sem piscar para África)
+                        posicaoAtual       = s.posicaoAtual.value,
+                        rota               = s.rotaAtual.value,
+                        // Métricas — snapshot imediato do service, evita flicker de zeros
+                        distanciaMetros    = s.distanciaMetros.value,
+                        tempoTotalSegundos = s.tempoTotalSegundos.value,
+                        tempoFormatado     = formatarTempo(s.tempoTotalSegundos.value),
+                        paceAtual          = s.paceAtual.value,
+                        paceMedia          = s.paceMedia.value
                     )
+                    android.util.Log.d("CorridaVM", "♻️ Estado recuperado do Service com sucesso")
                 }
             }
 
@@ -337,39 +349,35 @@ class CorridaViewModel(
 
     fun carregarTreino(eventId: Long) {
         viewModelScope.launch {
-            android.util.Log.d("CorridaVM", "⏱️ carregarTreino($eventId) iniciou. Aguardando bind...")
+            android.util.Log.d("CorridaVM", "⏱️ carregarTreino($eventId) iniciou. isBindingTentativo=$isBindingTentativo")
 
-            // ESPERA ATIVA PELO BIND: só faz sentido se o Android confirmou que o service existe.
-            // Se isBindingTentativo=false, é treino novo — pula direto para a rede sem esperar.
+            // ESPERA ATIVA: verifica o service a cada 100ms enquanto ele ainda não conectou.
+            // Checa na ENTRADA de cada ciclo, não após o delay — assim captura o service
+            // imediatamente quando o bind completa, sem esperar o próximo tick.
+            // Só entra no loop se o Android confirmou que o service existe (isBindingTentativo=true).
             if (isBindingTentativo) {
-                var tentativas = 0
-                while (!serviceBound && tentativas < 15) {
+                repeat(30) { tentativa ->
+                    val s = runningService
+                    if (s != null && s.isCorrendo()) {
+                        val treinoNoService = s.getTreinoAtivo()
+                        if (treinoNoService != null) {
+                            android.util.Log.d("CorridaVM", "✅ Treino ${treinoNoService.id} recuperado do Service na tentativa $tentativa.")
+                            val passos   = s.getPassosAtivos()
+                            val indexAtual = s.getIndexPassoAtivo()
+                            _uiState.value = _uiState.value.copy(
+                                treino       = treinoNoService,
+                                passos       = passos,
+                                passoAtual   = passos.getOrNull(indexAtual.coerceAtLeast(0)),
+                                fase         = if (s.isPausado() || s.autoPausado.value) FaseCorrida.PAUSADO else FaseCorrida.CORRENDO,
+                                posicaoAtual = s.posicaoAtual.value,
+                                rota         = s.rotaAtual.value,
+                                erro         = null
+                            )
+                            indexPassoAnunciado = indexAtual
+                            return@launch  // Não encosta na internet
+                        }
+                    }
                     delay(100)
-                    tentativas++
-                }
-            }
-
-            // VERIFICAÇÃO DIRETA NO SERVICE (mais confiável que ler o uiState)
-            val service = runningService
-            if (service != null && service.isCorrendo()) {
-                val treinoNoService = service.getTreinoAtivo()
-                // Se o service tem qualquer treino ativo, usamos ele — ignoramos o eventId
-                // da tela, que pode ser -1 (notificação antiga) ou diferente por race condition.
-                // O service é a única fonte de verdade durante uma corrida ativa.
-                if (treinoNoService != null) {
-                    android.util.Log.d("CorridaVM", "✅ Treino ${treinoNoService.id} recuperado do Service (pedido: $eventId). Cancelando rede.")
-                    val passos = service.getPassosAtivos()
-                    val indexAtual = service.getIndexPassoAtivo()
-                    _uiState.value = _uiState.value.copy(
-                        treino     = treinoNoService,
-                        passos     = passos,
-                        passoAtual = passos.getOrNull(indexAtual.coerceAtLeast(0)),
-                        fase       = if (service.isPausado() || service.autoPausado.value) FaseCorrida.PAUSADO else FaseCorrida.CORRENDO,
-                        erro       = null
-                    )
-                    // Sincroniza o index de áudio para não repetir o anúncio do passo atual
-                    indexPassoAnunciado = indexAtual
-                    return@launch  // Não encosta na internet
                 }
             }
 

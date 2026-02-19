@@ -56,26 +56,30 @@ fun AppNavigation(notificationIntent: Intent? = null) {
     val corridaAtiva = corridaState.fase == FaseCorrida.CORRENDO || corridaState.fase == FaseCorrida.PAUSADO
     val eventoId = corridaState.treino?.id
 
-    // Trava de segurança: impede que dois navigate() disparem simultaneamente.
-    // Sem isso, o clique na notificação e o LaunchedEffect do service podem colidir
-    // durante a animação de abertura da tela (o "efeito bumerangue").
     var processandoNavegacao by remember { mutableStateOf(false) }
 
-    // LaunchedEffect unificado com prioridade explícita:
-    //   Prioridade 1 — clique na notificação (tem eventId no intent)
-    //   Prioridade 2 — redirecionamento automático (service restaurou a corrida)
-    LaunchedEffect(notificationIntent, corridaAtiva, eventoId) {
+    // rotaAtual como estado reativo: quando a rota muda, o LaunchedEffect re-executa
+    // e a guarda "já está na corrida" tem o valor garantidamente atual.
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val rotaAtual = backStackEntry?.destination?.route
+
+    LaunchedEffect(notificationIntent, corridaAtiva, eventoId, rotaAtual) {
         if (processandoNavegacao) return@LaunchedEffect
 
-        val rotaAtual = navController.currentBackStackEntry?.destination?.route
+        // TRAVA DE SEGURANÇA: se já estamos na tela de corrida ou resumo,
+        // ignoramos qualquer redirecionamento automático (da Home ou da notificação).
+        // Isso evita que o NavController resete a pilha de telas e feche a corrida.
         val jaEstaNaCorrida = rotaAtual?.startsWith("corrida") == true
-                           || rotaAtual?.startsWith("resumo")  == true
-        if (jaEstaNaCorrida) return@LaunchedEffect
+        val jaEstaNoResumo  = rotaAtual?.startsWith("resumo")  == true
+
+        if (jaEstaNaCorrida || jaEstaNoResumo) {
+            // Apenas limpa o intent de notificação para não reprocessar
+            notificationIntent?.action = null
+            return@LaunchedEffect
+        }
 
         if (notificationIntent?.action == RunningService.ACTION_SHOW_RUNNING) {
             val idFromNotif = notificationIntent.getLongExtra(RunningService.EXTRA_EVENT_ID, -1L)
-            // Se o id vier como -1 (notificação criada antes do setDadosTreino),
-            // usa o eventoId que o service já restaurou no state como fallback.
             val finalId = if (idFromNotif != -1L) idFromNotif else eventoId
             if (finalId != null && finalId != -1L) {
                 processandoNavegacao = true
@@ -90,21 +94,17 @@ fun AppNavigation(notificationIntent: Intent? = null) {
             }
         }
 
-        if (corridaAtiva && eventoId != null) {
-            val naHomeOuConfig = rotaAtual == Screen.Home.route || rotaAtual == Screen.Config.route
-            if (naHomeOuConfig) {
-                processandoNavegacao = true
-                android.util.Log.d("AppNav", "🚀 Auto-redirecionando para corrida ativa")
-                navController.navigate(Screen.Corrida.criarRota(eventoId)) {
-                    popUpTo(Screen.Home.route) { inclusive = false }
-                    launchSingleTop = true
-                }
+        if (corridaAtiva && eventoId != null && rotaAtual == Screen.Home.route) {
+            processandoNavegacao = true
+            android.util.Log.d("AppNav", "🚀 Auto-redirecionando para corrida ativa")
+            navController.navigate(Screen.Corrida.criarRota(eventoId)) {
+                popUpTo(Screen.Home.route) { inclusive = false }
+                launchSingleTop = true
             }
         }
     }
 
-    // Reseta a trava assim que a navegação completa (back stack confirma nova rota)
-    val backStackEntry by navController.currentBackStackEntryAsState()
+    // Reseta a trava assim que o backStack confirma a nova rota
     LaunchedEffect(backStackEntry) {
         processandoNavegacao = false
     }
