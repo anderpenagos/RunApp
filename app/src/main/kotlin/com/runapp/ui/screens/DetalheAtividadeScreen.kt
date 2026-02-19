@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -22,9 +23,9 @@ import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.runapp.data.model.CorridaHistorico
@@ -37,13 +38,13 @@ import kotlin.math.*
 // ─────────────────────────────────────────────────────────────────────────────
 private val CorFundo       = Color(0xFF121212)
 private val CorCard        = Color(0xFF1E1E1E)
-private val CorPace        = Color(0xFF4FC3F7)   // azul claro
-private val CorElevacao    = Color(0xFF546E7A)   // cinza azulado
-private val CorCadencia    = Color(0xFFAB47BC)   // roxo
+private val CorPace        = Color(0xFF4FC3F7)
+private val CorElevacao    = Color(0xFF546E7A)
+private val CorCadencia    = Color(0xFFAB47BC)
 private val CorCursor      = Color(0xFFFFFFFF)
-private val CorBarra1      = Color(0xFF4CAF50)   // verde
-private val CorBarra2      = Color(0xFFFF6B35)   // laranja
-private val CorGAP         = Color(0xFF81C784)   // verde claro
+private val CorBarra1      = Color(0xFF4CAF50)
+private val CorBarra2      = Color(0xFFFF6B35)
+private val CorGAP         = Color(0xFF81C784)
 
 private val CoreZonas = listOf(
     Color(0xFF90CAF9), Color(0xFF66BB6A), Color(0xFFFFEE58), Color(0xFFFFA726), Color(0xFFEF5350)
@@ -89,14 +90,14 @@ fun DetalheAtividadeScreen(
             item { ResumoMetricas(corrida) }
 
             item {
-                GraficoCard(titulo = "Ritmo e Elevação", subtitulo = "Azul = pace  •  Área = altitude") {
+                GraficoCard(titulo = "Pace e Elevação", subtitulo = "Azul = ritmo  •  Área = altitude") {
                     GraficoPaceElevacao(dados = dadosGrafico, cursorFrac = cursorFrac, indexCursor = indexCursor, onCursorChange = { cursorFrac = it })
                 }
             }
 
             if (dadosGrafico.temGAP) {
                 item {
-                    GraficoCard(titulo = "Ritmo Ajustado (GAP)", subtitulo = "Esforço estimado em terreno plano") {
+                    GraficoCard(titulo = "Ritmo Ajustado (GAP)", subtitulo = "Verde = Esforço estimado em plano") {
                         GraficoGAP(dados = dadosGrafico, cursorFrac = cursorFrac, indexCursor = indexCursor, onCursorChange = { cursorFrac = it })
                     }
                 }
@@ -104,7 +105,7 @@ fun DetalheAtividadeScreen(
 
             if (dadosGrafico.temCadencia) {
                 item {
-                    GraficoCard(titulo = "Cadência", subtitulo = "Passos por minuto (SPM)") {
+                    GraficoCard(titulo = "Cadência", subtitulo = "Passos por minuto") {
                         GraficoCadencia(dados = dadosGrafico, indexCursor = indexCursor)
                     }
                 }
@@ -115,8 +116,6 @@ fun DetalheAtividadeScreen(
         }
     }
 }
-
-// ── COMPONENTES DE UI ────────────────────────────────────────────────────────
 
 @Composable
 private fun ResumoMetricas(corrida: CorridaHistorico) {
@@ -160,28 +159,24 @@ private fun GraficoCard(titulo: String, subtitulo: String, conteudo: @Composable
     }
 }
 
-// ── GRÁFICOS ─────────────────────────────────────────────────────────────────
-
 @Composable
 private fun GraficoPaceElevacao(dados: DadosGrafico, cursorFrac: Float, indexCursor: Int, onCursorChange: (Float) -> Unit) {
-    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
-    
     Column {
         Box(modifier = Modifier.fillMaxWidth().height(24.dp)) {
             if (indexCursor >= 0) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("⏱️ ${dados.paceFormatado[indexCursor]}", color = CorPace, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text("⏱️ ${dados.paceFormatado[indexCursor]}/km", color = CorPace, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     Text("⛰️ ${dados.altitudes[indexCursor].roundToInt()}m", color = Color.White, fontSize = 12.sp)
                 }
             }
         }
+        Spacer(modifier = Modifier.height(8.dp))
         Row(modifier = Modifier.fillMaxWidth().height(160.dp)) {
             Column(modifier = Modifier.fillMaxHeight().width(35.dp), verticalArrangement = Arrangement.SpaceBetween) {
                 Text(dados.paceFormatado.minOrNull() ?: "", fontSize = 9.sp, color = CorPace)
                 Text(dados.paceFormatado.maxOrNull() ?: "", fontSize = 9.sp, color = CorPace.copy(alpha = 0.5f))
             }
             Canvas(modifier = Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(4.dp)).background(Color.White.copy(alpha = 0.03f))
-                .onSizeChanged { canvasSize = it }
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragStart = { onCursorChange(it.x / size.width) },
@@ -191,8 +186,7 @@ private fun GraficoPaceElevacao(dados: DadosGrafico, cursorFrac: Float, indexCur
                     )
                 }
             ) {
-                val w = size.width; val h = size.height
-                val drawH = h - 12f
+                val w = size.width; val h = size.height; val drawH = h - 12f
                 repeat(3) { i -> drawLine(Color.White.copy(alpha = 0.05f), Offset(0f, h * (i + 1) / 4), Offset(w, h * (i + 1) / 4)) }
 
                 val pathAlt = Path().apply {
@@ -212,7 +206,7 @@ private fun GraficoPaceElevacao(dados: DadosGrafico, cursorFrac: Float, indexCur
 
                 if (indexCursor >= 0) {
                     val cx = cursorFrac.coerceIn(0f, 1f) * w
-                    drawLine(Color.White.copy(alpha = 0.6f), Offset(cx, 0f), Offset(cx, h), strokeWidth = 2f)
+                    drawLine(CorCursor.copy(alpha = 0.6f), Offset(cx, 0f), Offset(cx, h), strokeWidth = 2f)
                     drawCircle(CorPace, radius = 8f, center = Offset(cx, 4f + drawH * dados.paceNorm[indexCursor]))
                 }
             }
@@ -234,8 +228,9 @@ private fun GraficoCadencia(dados: DadosGrafico, indexCursor: Int) {
         dados.cadencias.forEachIndexed { i, spm ->
             if (spm > 0) {
                 val ratio = ((spm - cadMin) / (cadMax - cadMin).coerceAtLeast(1f)).coerceIn(0f, 1f)
+                val isSelected = i == indexCursor
                 val barH = h * (0.2f + 0.8f * ratio)
-                val color = if (i == indexCursor) Color.White else lerpColor(CorBarra1, CorBarra2, ratio).copy(alpha = 0.7f)
+                val color = if (isSelected) Color.White else lerpColor(CorBarra1, CorBarra2, ratio).copy(alpha = 0.7f)
                 drawRect(color, Offset(i * barW, h - barH), Size(barW.coerceAtLeast(1f), barH))
             }
         }
@@ -264,12 +259,10 @@ private fun GraficoGAP(dados: DadosGrafico, cursorFrac: Float, indexCursor: Int,
         drawPath(pathGap, CorGAP, style = Stroke(width = 2.5f))
         if (indexCursor >= 0) {
             val cx = cursorFrac.coerceIn(0f, 1f) * w
-            drawLine(Color.White.copy(alpha = 0.4f), Offset(cx, 0f), Offset(cx, h))
+            drawLine(CorCursor.copy(alpha = 0.4f), Offset(cx, 0f), Offset(cx, h))
         }
     }
 }
-
-// ── AUXILIARES E LÓGICA ──────────────────────────────────────────────────────
 
 private fun prepararDadosGrafico(rota: List<LatLngPonto>): DadosGrafico {
     if (rota.size < 2) return DadosGrafico(emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), 0.0, false, false, emptyList(), emptyList())
@@ -280,7 +273,6 @@ private fun prepararDadosGrafico(rota: List<LatLngPonto>): DadosGrafico {
     val paces = rota.map { it.paceNoPonto }
     val pacesValidos = paces.filter { it in 60.0..1200.0 }
     val pMin = pacesValidos.minOrNull() ?: 300.0; val pMax = pacesValidos.maxOrNull() ?: 600.0
-    
     val gaps = rota.mapIndexed { i, pt ->
         val p = pt.paceNoPonto
         if (p !in 60.0..1200.0) return@mapIndexed 0.0
@@ -291,10 +283,8 @@ private fun prepararDadosGrafico(rota: List<LatLngPonto>): DadosGrafico {
         } else 0.0
         (p * (1.0 + 0.033 * grad + 0.00012 * grad.pow(2))).coerceIn(60.0, 1200.0)
     }
-
     val step = maxOf(1, rota.size / 300)
     val idxs = rota.indices.filter { it % step == 0 }
-
     return DadosGrafico(
         paceNorm = idxs.map { ((paces[it] - pMin) / (pMax - pMin).coerceAtLeast(1.0)).toFloat().coerceIn(0f, 1f) },
         altNorm = idxs.map { ((altsSuav[it] - altsSuav.min()) / (altsSuav.max() - altsSuav.min()).coerceAtLeast(1.0)).toFloat().coerceIn(0f, 1f) },
@@ -364,11 +354,9 @@ private fun lerpColor(a: Color, b: Color, t: Float): Color = Color(a.red + (b.re
 private fun haversineMetros(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     val R = 6371000.0; val dLat = Math.toRadians(lat2-lat1); val dLon = Math.toRadians(lon2-lon1)
     val a = sin(dLat/2).pow(2) + cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon/2).pow(2)
-    return R * 2 * atan2(sqrt(a), sqrt(1-a))
+    return R * 2 * atan2(sqrt(a), sqrt(1 - a))
 }
 private fun formatarDataDetalhe(iso: String): String = runCatching { java.time.LocalDateTime.parse(iso).format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")) }.getOrDefault(iso)
 
 data class DadosGrafico(val paceNorm: List<Float>, val altNorm: List<Float>, val cadNorm: List<Float>, val gapNorm: List<Float>, val paceFormatado: List<String>, val gapFormatado: List<String>, val gapSegKm: List<Double>, val altitudes: List<Double>, val cadencias: List<Int>, val distanciaTotal: Double, val temCadencia: Boolean, val temGAP: Boolean, val pacesRaw: List<Double>, val tempos: List<Long>)
 data class InfoZona(val nome: String, val percentagem: Float, val tempo: String)
-
-import androidx.compose.foundation.shape.CircleShape
