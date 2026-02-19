@@ -80,7 +80,8 @@ class DetalheTreinoViewModel(
 fun DetalheTreinoScreen(
     eventId: Long,
     onIniciarCorrida: () -> Unit,
-    onVoltar: () -> Unit
+    onVoltar: () -> Unit,
+    corridaAtiva: Boolean = false
 ) {
     val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as RunApp
     val viewModel: DetalheTreinoViewModel = viewModel(factory = object : ViewModelProvider.Factory {
@@ -104,16 +105,36 @@ fun DetalheTreinoScreen(
         bottomBar = {
             if (state.treino != null) {
                 Surface(tonalElevation = 4.dp) {
-                    Button(
-                        onClick = onIniciarCorrida,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp)
-                            .height(56.dp)
-                    ) {
-                        Icon(Icons.Default.DirectionsRun, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Iniciar Corrida", fontWeight = FontWeight.Bold)
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        if (corridaAtiva) {
+                            Text(
+                                text = "⚠️ Finalize a corrida atual para iniciar este treino",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 8.dp),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
+                        Button(
+                            onClick = onIniciarCorrida,
+                            enabled = !corridaAtiva,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        ) {
+                            Icon(Icons.Default.DirectionsRun, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                if (corridaAtiva) "Corrida em andamento" else "Iniciar Corrida",
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }

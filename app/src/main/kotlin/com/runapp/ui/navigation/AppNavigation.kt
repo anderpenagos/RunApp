@@ -197,6 +197,7 @@ fun AppNavigation(notificationIntent: Intent? = null) {
             val eventId = backStackEntry.arguments?.getLong("eventId") ?: return@composable
             DetalheTreinoScreen(
                 eventId = eventId,
+                corridaAtiva = corridaAtiva,
                 onIniciarCorrida = { navController.navigate(Screen.Corrida.criarRota(eventId)) },
                 onVoltar = { navController.popBackStack() }
             )
@@ -206,9 +207,21 @@ fun AppNavigation(notificationIntent: Intent? = null) {
             route = Screen.Corrida.route,
             arguments = listOf(navArgument("eventId") { type = NavType.LongType })
         ) { backStackEntry ->
-            val eventId = backStackEntry.arguments?.getLong("eventId") ?: return@composable
+            val eventIdDaUrl = backStackEntry.arguments?.getLong("eventId") ?: return@composable
+
+            // GUARDA DE INTEGRIDADE: se já há uma corrida ativa com ID diferente,
+            // redireciona para o treino correto em vez de criar estado "Frankenstein".
+            if (corridaAtiva && eventoId != null && eventIdDaUrl != eventoId) {
+                LaunchedEffect(Unit) {
+                    navController.navigate(Screen.Corrida.criarRota(eventoId)) {
+                        popUpTo(Screen.Corrida.route) { inclusive = true }
+                    }
+                }
+                return@composable
+            }
+
             CorridaScreen(
-                eventId = eventId,
+                eventId = eventIdDaUrl,
                 viewModel = corridaViewModel,
                 onSair = {
                     // popBackStack() falha quando a corrida é o startDestination (pilha vazia).

@@ -31,6 +31,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -93,6 +96,78 @@ class RunningService : Service() {
     fun isCorrendo(): Boolean = estaCorrendo
     fun isPausado(): Boolean = estaPausado
 
+    // Teletransporta o cronômetro para o início do próximo passo.
+    // O ViewModel detectará a mudança de index via atualizarProgressoPasso e anunciará o passo.
+    fun pularPasso() {
+        if (passosAtivos.isEmpty()) return
+        val indexAtual = indexPassoAtivo.coerceAtLeast(0)
+        if (indexAtual >= passosAtivos.lastIndex) return // já no último passo
+
+        // Debounce: ignora cliques com menos de 1s de intervalo
+        val agora = System.currentTimeMillis()
+        if (agora - ultimoCliquePasso < 1000L) return
+        ultimoCliquePasso = agora
+
+        var tempoDestino = 0L
+        for (i in 0..indexAtual) tempoDestino += passosAtivos[i].duracao
+
+        // CORREÇÃO CRÍTICA DO TIMER: o timerJob recalcula o tempo a cada segundo usando
+        // (System.currentTimeMillis() - timestampInicio - tempoPausadoTotal).
+        // Se apenas atribuirmos _tempoTotalSegundos.value, o próximo tick desfaz o pulo.
+        // A solução é ajustar tempoPausadoTotal para que a fórmula produza tempoDestino.
+        // Prova: tempoDestino = (agora - timestampInicio - novoPausado) / 1000
+        //        novoPausado = agora - timestampInicio - (tempoDestino * 1000)
+        val delta = (tempoDestino - _tempoTotalSegundos.value) * 1000L
+        tempoPausadoTotal -= delta
+        _tempoTotalSegundos.value = tempoDestino
+
+        vibrar()
+        Log.d(TAG, "⏭️ Passo ${indexAtual} → ${indexAtual + 1} | tempo → ${tempoDestino}s | delta=${delta}ms")
+    }
+
+    // Teletransporta o cronômetro para o início do passo anterior (ou reinicia o atual).
+    fun voltarPasso() {
+        if (passosAtivos.isEmpty()) return
+        val indexAtual = indexPassoAtivo.coerceAtLeast(0)
+
+        // Debounce: ignora cliques com menos de 1s de intervalo
+        val agora = System.currentTimeMillis()
+        if (agora - ultimoCliquePasso < 1000L) return
+        ultimoCliquePasso = agora
+
+        // Se estiver nos primeiros 3s do passo atual, vai para o anterior; senão reinicia o atual
+        val tempoInicioAtual = passosAtivos.take(indexAtual).sumOf { it.duracao.toLong() }
+        val tempoNoPasso = _tempoTotalSegundos.value - tempoInicioAtual
+
+        val tempoDestino = if (tempoNoPasso > 3 || indexAtual == 0) {
+            tempoInicioAtual // reinicia o passo atual
+        } else {
+            passosAtivos.take(indexAtual - 1).sumOf { it.duracao.toLong() } // passo anterior
+        }
+
+        // CORREÇÃO CRÍTICA DO TIMER: mesmo raciocínio do pularPasso
+        val delta = (tempoDestino - _tempoTotalSegundos.value) * 1000L
+        tempoPausadoTotal -= delta
+        _tempoTotalSegundos.value = tempoDestino
+
+        vibrar()
+        Log.d(TAG, "⏮️ Voltando passo | tempo → ${tempoDestino}s | delta=${delta}ms")
+    }
+
+    private fun vibrar() {
+        try {
+            val vibrator = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                (getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(VIBRATOR_SERVICE) as Vibrator
+            }
+            vibrator.vibrate(VibrationEffect.createOneShot(60L, VibrationEffect.DEFAULT_AMPLITUDE))
+        } catch (e: Exception) {
+            Log.w(TAG, "Vibração não disponível: ${e.message}")
+        }
+    }
+
     fun setDuracaoPassoAtual(duracaoSegundos: Int) {
         janelaAtualSegundos = if (duracaoSegundos < 60) 5 else 12
         Log.d(TAG, "⚙️ Janela de pace ajustada para ${janelaAtualSegundos}s (passo=${duracaoSegundos}s)")
@@ -105,6 +180,7 @@ class RunningService : Service() {
     private var timestampInicio: Long = 0
     private var timestampPausaInicio: Long = 0
     private var tempoPausadoTotal: Long = 0
+    private var ultimoCliquePasso: Long = 0L  // debounce para pularPasso/voltarPasso
     
     // Auto-pause
     private var ultimaLocalizacaoSignificativa: Location? = null

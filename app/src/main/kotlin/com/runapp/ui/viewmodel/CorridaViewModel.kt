@@ -551,6 +551,11 @@ class CorridaViewModel(
     // Aliases para compatibilidade com CorridaScreen e ResumoScreen
     fun pausar() = pausarCorrida()
     fun retomar() = retomarCorrida()
+
+    // Navegação de passos — delega ao Service que controla o cronômetro oficial.
+    // O atualizarProgressoPasso detectará a mudança de index e anunciará o novo passo via áudio.
+    fun pularPasso() { runningService?.pularPasso() }
+    fun voltarPasso() { runningService?.voltarPasso() }
     fun salvarCorrida() = salvarAtividade()
 
     /**

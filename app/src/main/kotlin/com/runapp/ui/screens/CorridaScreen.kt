@@ -17,6 +17,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -390,40 +392,75 @@ fun CorridaScreen(
                     ),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = passo.nome,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                        if (!passo.isDescanso) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Botão voltar passo — só visível durante corrida ativa
+                        if (state.fase == FaseCorrida.CORRENDO || state.fase == FaseCorrida.PAUSADO) {
+                            IconButton(onClick = { viewModel.voltarPasso() }) {
+                                Icon(
+                                    Icons.Default.SkipPrevious,
+                                    contentDescription = "Passo anterior",
+                                    tint = Color.White.copy(alpha = 0.85f),
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 4.dp)
+                        ) {
                             Text(
-                                text = "🎯 ${passo.paceAlvoMin}—${passo.paceAlvoMax}/km",
-                                fontSize = 14.sp,
-                                color = Color.White.copy(alpha = 0.9f)
+                                text = passo.nome,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            if (!passo.isDescanso) {
+                                Text(
+                                    text = "🎯 ${passo.paceAlvoMin}—${passo.paceAlvoMax}/km",
+                                    fontSize = 14.sp,
+                                    color = Color.White.copy(alpha = 0.9f)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // Barra de progresso
+                            LinearProgressIndicator(
+                                progress = { state.progressoPasso },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(4.dp)),
+                                color = Color.White,
+                                trackColor = Color.White.copy(alpha = 0.3f)
+                            )
+
+                            Text(
+                                text = "${state.tempoPassoRestante}s restantes",
+                                fontSize = 12.sp,
+                                color = Color.White.copy(alpha = 0.9f),
+                                modifier = Modifier.padding(top = 4.dp)
                             )
                         }
-                        
-                        Spacer(modifier = Modifier.height(8.dp))
-                        
-                        // Barra de progresso
-                        LinearProgressIndicator(
-                            progress = { state.progressoPasso },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(8.dp)
-                                .clip(RoundedCornerShape(4.dp)),
-                            color = Color.White,
-                            trackColor = Color.White.copy(alpha = 0.3f)
-                        )
-                        
-                        Text(
-                            text = "${state.tempoPassoRestante}s restantes",
-                            fontSize = 12.sp,
-                            color = Color.White.copy(alpha = 0.9f),
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
+
+                        // Botão próximo passo — só visível durante corrida ativa
+                        if (state.fase == FaseCorrida.CORRENDO || state.fase == FaseCorrida.PAUSADO) {
+                            IconButton(onClick = { viewModel.pularPasso() }) {
+                                Icon(
+                                    Icons.Default.SkipNext,
+                                    contentDescription = "Próximo passo",
+                                    tint = Color.White.copy(alpha = 0.85f),
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
