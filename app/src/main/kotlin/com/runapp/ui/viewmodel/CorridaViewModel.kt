@@ -347,17 +347,22 @@ class CorridaViewModel(
             val service = runningService
             if (service != null && service.isCorrendo()) {
                 val treinoNoService = service.getTreinoAtivo()
-                if (treinoNoService?.id == eventId) {
-                    android.util.Log.d("CorridaVM", "✅ Treino restaurado do Service na tentativa $tentativas. Cancelando rede.")
-                    // Popula o uiState diretamente — não depende de onServiceConnected ter rodado
+                // Se o service tem qualquer treino ativo, usamos ele — ignoramos o eventId
+                // da tela, que pode ser -1 (notificação antiga) ou diferente por race condition.
+                // O service é a única fonte de verdade durante uma corrida ativa.
+                if (treinoNoService != null) {
+                    android.util.Log.d("CorridaVM", "✅ Treino ${treinoNoService.id} recuperado do Service (pedido: $eventId). Cancelando rede.")
                     val passos = service.getPassosAtivos()
+                    val indexAtual = service.getIndexPassoAtivo()
                     _uiState.value = _uiState.value.copy(
                         treino     = treinoNoService,
                         passos     = passos,
-                        passoAtual = passos.getOrNull(service.getIndexPassoAtivo().coerceAtLeast(0)),
+                        passoAtual = passos.getOrNull(indexAtual.coerceAtLeast(0)),
                         fase       = if (service.isPausado() || service.autoPausado.value) FaseCorrida.PAUSADO else FaseCorrida.CORRENDO,
                         erro       = null
                     )
+                    // Sincroniza o index de áudio para não repetir o anúncio do passo atual
+                    indexPassoAnunciado = indexAtual
                     return@launch  // Não encosta na internet
                 }
             }

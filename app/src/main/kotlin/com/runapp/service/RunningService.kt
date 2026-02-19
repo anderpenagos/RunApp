@@ -80,6 +80,10 @@ class RunningService : Service() {
         treinoAtivo = treino
         passosAtivos = passos
         Log.d(TAG, "📋 Treino salvo no service: ${treino.name} (${passos.size} passos)")
+        // CRÍTICO: Atualiza a notificação imediatamente para que o Intent contenha
+        // o eventId correto. Sem isso, a notificação criada antes do setDadosTreino
+        // carregava id=-1 e o clique nela não conseguia navegar para a corrida.
+        atualizarNotificacao()
     }
 
     fun setIndexPassoAtivo(index: Int) { indexPassoAtivo = index }

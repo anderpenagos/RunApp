@@ -153,18 +153,21 @@ fun CorridaScreen(
         }
     }
 
-    DisposableEffect(state.fase, permissaoGps) {  // ← Adicionado permissaoGps
-        if (state.fase == FaseCorrida.CORRENDO && permissaoGps) {
+    // GPS liga assim que a tela abre (se houver permissão) — não espera o Play.
+    // Isso garante que o mapa já mostra a posição real antes de iniciar a corrida,
+    // e elimina o "mapa da África" quando o app é reaberto pela notificação.
+    DisposableEffect(permissaoGps) {
+        if (permissaoGps) {
             val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
                 .setMinUpdateDistanceMeters(0f)
                 .build()
             try {
                 fusedLocationClient.requestLocationUpdates(
-                    request, 
-                    locationCallback, 
+                    request,
+                    locationCallback,
                     Looper.getMainLooper()
                 )
-                android.util.Log.d("CorridaScreen", "✅ GPS iniciado com sucesso")
+                android.util.Log.d("CorridaScreen", "✅ GPS iniciado na abertura da tela")
             } catch (e: SecurityException) {
                 android.util.Log.e("CorridaScreen", "❌ Erro GPS: ${e.message}")
                 Toast.makeText(
@@ -172,11 +175,6 @@ fun CorridaScreen(
                     "Erro ao acessar GPS. Verifique as permissões.",
                     Toast.LENGTH_LONG
                 ).show()
-            }
-        } else {
-            fusedLocationClient.removeLocationUpdates(locationCallback)
-            if (!permissaoGps && state.fase == FaseCorrida.CORRENDO) {
-                android.util.Log.w("CorridaScreen", "⚠️ GPS não iniciado - sem permissão")
             }
         }
         onDispose {

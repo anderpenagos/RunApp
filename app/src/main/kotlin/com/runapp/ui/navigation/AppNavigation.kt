@@ -73,11 +73,14 @@ fun AppNavigation(notificationIntent: Intent? = null) {
         if (jaEstaNaCorrida) return@LaunchedEffect
 
         if (notificationIntent?.action == RunningService.ACTION_SHOW_RUNNING) {
-            val id = notificationIntent.getLongExtra(RunningService.EXTRA_EVENT_ID, -1L)
-            if (id != -1L) {
+            val idFromNotif = notificationIntent.getLongExtra(RunningService.EXTRA_EVENT_ID, -1L)
+            // Se o id vier como -1 (notificação criada antes do setDadosTreino),
+            // usa o eventoId que o service já restaurou no state como fallback.
+            val finalId = if (idFromNotif != -1L) idFromNotif else eventoId
+            if (finalId != null && finalId != -1L) {
                 processandoNavegacao = true
-                android.util.Log.d("AppNav", "🎯 Navegando via notificação → corrida/$id")
-                navController.navigate(Screen.Corrida.criarRota(id)) {
+                android.util.Log.d("AppNav", "🎯 Navegando via notificação → corrida/$finalId (fromNotif=$idFromNotif)")
+                navController.navigate(Screen.Corrida.criarRota(finalId)) {
                     popUpTo(Screen.Home.route) { inclusive = false }
                     launchSingleTop = true
                 }
