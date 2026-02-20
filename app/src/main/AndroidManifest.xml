@@ -19,6 +19,12 @@
     <!-- Manter CPU ativa durante a corrida -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Solicitar exclusão de otimização de bateria para manter o GPS ativo em corridas longas.
+         Sem isso, fabricantes como Xiaomi, Samsung e Huawei matam o foreground service
+         mesmo com WakeLock ativo. O REQUEST_IGNORE_BATTERY_OPTIMIZATIONS permite pedir
+         ao usuário diretamente via Intent sem abrir as configurações manualmente. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- Áudio -->
     <uses-permission android:name="android.permission.VIBRATE" />
 

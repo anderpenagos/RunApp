@@ -2,8 +2,11 @@ package com.runapp.util
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import androidx.core.content.ContextCompat
 
 object PermissionHelper {
@@ -54,6 +57,30 @@ object PermissionHelper {
             ) == PackageManager.PERMISSION_GRANTED
         } else {
             true // Abaixo do Android 13 não precisa pedir
+        }
+    }
+
+    /**
+     * Verifica se o app já está excluído da otimização de bateria do sistema.
+     * Quando retorna false, o Android pode matar o foreground service em corridas longas
+     * mesmo com WakeLock ativo — especialmente em ROMs Xiaomi (MIUI), Samsung (One UI)
+     * e Huawei, que são mais agressivas do que o AOSP.
+     */
+    fun isBatteryOptimizationIgnored(context: Context): Boolean {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(context.packageName)
+    }
+
+    /**
+     * Retorna o Intent para pedir ao usuário que exclua o app da otimização de bateria.
+     * Deve ser lançado via startActivity(). A permissão REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+     * já está no manifesto, então esse Intent funciona sem abrir as configurações manualmente.
+     *
+     * Uso recomendado: chamar antes de iniciar uma corrida se [isBatteryOptimizationIgnored] = false.
+     */
+    fun batteryOptimizationIntent(context: Context): Intent {
+        return Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:${context.packageName}")
         }
     }
 

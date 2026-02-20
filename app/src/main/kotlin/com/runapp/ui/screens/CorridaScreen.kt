@@ -126,6 +126,23 @@ fun CorridaScreen(
         }
     }
 
+    // Solicitar exclusão de otimização de bateria ao entrar na tela.
+    // Sem isso, fabricantes como Xiaomi/Samsung podem matar o service de GPS
+    // em corridas longas mesmo com WakeLock e foreground service ativos.
+    val batteryOptLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { /* apenas aguarda — não há retorno verificável aqui, o sistema decide */ }
+
+    LaunchedEffect(Unit) {
+        if (!PermissionHelper.isBatteryOptimizationIgnored(context)) {
+            try {
+                batteryOptLauncher.launch(PermissionHelper.batteryOptimizationIntent(context))
+            } catch (e: Exception) {
+                android.util.Log.w("CorridaScreen", "Não foi possível abrir diálogo de otimização de bateria: ${e.message}")
+            }
+        }
+    }
+
     // Solicitar permissões ao entrar na tela, na ordem correta
     LaunchedEffect(Unit) {
         when {

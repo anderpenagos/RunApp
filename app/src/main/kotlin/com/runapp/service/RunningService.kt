@@ -192,7 +192,12 @@ class RunningService : Service(), SensorEventListener {
     private var contadorEmMovimento = 0
     private val LIMITE_SEM_MOVIMENTO = 3          // 3s parado → pausa
     private val LIMITE_RETOMAR_MOVIMENTO = 2      // 2 updates em movimento → retoma
-    private val DISTANCIA_MINIMA_MOVIMENTO = 4.0  // metros por update (1s)
+    // CORREÇÃO CRÍTICA: valor anterior era 4.0m, que é mais do que um corredor de 5:30/km
+    // percorre em 1 segundo (3m/s). Isso causava auto-pause durante a corrida, inflando
+    // o pace médio (timer continuava mas distância parava de acumular).
+    // Novo valor: 1.5m — suficiente para filtrar drift de GPS parado (~1-2m de ruído)
+    // sem acionar para qualquer ritmo humano realista (caminhada lenta = 1 m/s = 1m/update).
+    private val DISTANCIA_MINIMA_MOVIMENTO = 1.5  // metros por update (1s)
     private var autoPauseFuncaoAtiva = true       // lido das preferências ao iniciar
     
     // Estados
@@ -278,13 +283,24 @@ class RunningService : Service(), SensorEventListener {
         Log.d(TAG, "📌 onStartCommand: action=${intent?.action}")
         
         when (intent?.action) {
-            ACTION_START -> iniciarRastreamento()
-            ACTION_PAUSE -> pausarRastreamento()
+            ACTION_START  -> iniciarRastreamento()
+            ACTION_PAUSE  -> pausarRastreamento()
             ACTION_RESUME -> retomarRastreamento()
-            ACTION_STOP -> pararRastreamento()
+            ACTION_STOP   -> pararRastreamento()
+            null -> {
+                // O Android reiniciou o service via START_STICKY após matar o processo.
+                // O estado em memória (rota, timestamps, etc.) foi perdido.
+                // Não há como recuperar o treino de forma confiável — notificar o usuário
+                // e parar o service limpo, evitando ficar "zumbi" (vivo mas sem fazer nada).
+                Log.w(TAG, "⚠️ Service reiniciado pelo Android (intent null) — estado perdido, encerrando")
+                criarCanalNotificacao()
+                startForeground(NOTIFICATION_ID, criarNotificacao("Sessão encerrada pelo sistema. Inicie uma nova corrida."))
+                stopForeground(STOP_FOREGROUND_DETACH)
+                stopSelf()
+            }
         }
         
-        return START_STICKY  // Importante para o sistema tentar reiniciar o service
+        return START_NOT_STICKY  // Não reiniciar automaticamente — evita o zumbi inútil
     }
 
     private fun iniciarRastreamento() {
@@ -294,8 +310,10 @@ class RunningService : Service(), SensorEventListener {
         criarCanalNotificacao()
         startForeground(NOTIFICATION_ID, criarNotificacao())
         
-        // Adquirir WakeLock
-        wakeLock?.acquire(10 * 60 * 1000L /*10 minutos*/)
+        // Adquirir WakeLock — timeout de 6h cobre qualquer ultramaratona realista.
+        // O wakelock anterior de 10 minutos era a causa raiz do service morrer em corridas longas:
+        // após 10min a CPU dormia, o GPS parava e o treino era perdido.
+        wakeLock?.acquire(6 * 60 * 60 * 1000L /*6 horas*/)
         
         // Ler preferência de auto-pause antes de começar
         serviceScope.launch {
@@ -574,15 +592,30 @@ class RunningService : Service(), SensorEventListener {
         ultimasLocalizacoes.removeAll { it.time < tempoCorte }
         
         // PROTEÇÃO CONTRA SPIKE: Se ficou muito tempo sem GPS, limpar janela
+        // mas re-adicionar a localização atual como novo ponto de partida para
+        // evitar ficar "cego" até a janela encher de novo.
         if (ultimasLocalizacoes.size >= 2) {
             val tempoJanela = (ultimasLocalizacoes.last().time - ultimasLocalizacoes.first().time) / 1000.0
             if (tempoJanela > (janelaAtualSegundos * 2)) {
                 Log.w(TAG, "⚠️ Gap temporal detectado (${tempoJanela}s), resetando janela de pace")
                 ultimasLocalizacoes.clear()
+                ultimasLocalizacoes.add(location)   // ponto atual como nova âncora
                 ultimoPaceEma = null
                 _paceAtual.value = "--:--"
                 return
             }
+        }
+
+        // FILTRO DE SPIKE DE VELOCIDADE: O GPS pode reportar uma posição "saltada" logo
+        // após uma reconexão, causando paces impossíveis (ex: 3:39/km a 5:30/km real).
+        // Se a Location tiver speed disponível (hasSpeed()), usamos como sanidade:
+        // speed > 6.5 m/s (~4:17/km) é provavelmente ruído para corrida casual no campus.
+        // O limiar é generoso o suficiente para não cortar sprints legítimos de curto prazo.
+        if (location.hasSpeed() && location.speed > 6.5f) {
+            Log.w(TAG, "⚠️ Velocidade GPS suspeita: ${location.speed} m/s, descartando ponto de pace")
+            _paceAtual.value = "--:--"
+            ultimoPaceEma = null
+            return
         }
 
         // Calcular pace atual usando a janela móvel
@@ -600,36 +633,40 @@ class RunningService : Service(), SensorEventListener {
             return
         }
 
-        // BUG FIX 1: Limitar o limiar dinâmico a no máximo 8m.
-        // Antes, usava location.accuracy diretamente — com sinal fraco (20-40m de accuracy),
-        // o limiar ficava tão alto que nenhum movimento real conseguia superá-lo,
-        // travando o app em auto-pause para sempre.
-        val LIMIAR_MAXIMO_METROS = 8.0
-        val limiarMovimento = minOf(
-            maxOf(DISTANCIA_MINIMA_MOVIMENTO, location.accuracy.toDouble()),
-            LIMIAR_MAXIMO_METROS
-        )
+        // DETECÇÃO DE MOVIMENTO: preferir GPS speed (Doppler) quando disponível,
+        // pois é muito mais preciso que distância ponto-a-ponto para detectar movimento real.
+        // GPS speed < 0.5 m/s = praticamente parado; >= 0.5 m/s = algum movimento.
+        val emMovimento: Boolean = if (location.hasSpeed() &&
+            (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O || location.speedAccuracyMetersPerSecond < 1.5f)) {
+            // Usa velocidade Doppler do GPS — mais confiável que delta de coordenadas
+            location.speed >= 0.5f  // ≥ 0.5 m/s = 1.8 km/h = caminhada muito lenta
+        } else {
+            // Fallback: distância ponto-a-ponto com limiar adaptativo
+            val LIMIAR_MAXIMO_METROS = 8.0
+            val limiarMovimento = minOf(
+                maxOf(DISTANCIA_MINIMA_MOVIMENTO, location.accuracy.toDouble()),
+                LIMIAR_MAXIMO_METROS
+            )
+            val distanciaDesdeUltima = calcularDistancia(
+                ultimaLoc.latitude, ultimaLoc.longitude,
+                location.latitude, location.longitude
+            )
+            distanciaDesdeUltima >= limiarMovimento
+        }
 
-        val distanciaDesdeUltima = calcularDistancia(
-            ultimaLoc.latitude, ultimaLoc.longitude,
-            location.latitude, location.longitude
-        )
-
-        if (distanciaDesdeUltima < limiarMovimento) {
+        if (!emMovimento) {
             // Sem movimento suficiente
             contadorSemMovimento++
             contadorEmMovimento = 0
 
-            // BUG FIX 2: Atualizar a referência mesmo durante auto-pause.
-            // Antes, ultimaLocalizacaoSignificativa só era atualizada ao detectar movimento.
-            // Isso fazia com que, ao retomar, a distância fosse calculada desde um ponto
-            // antigo (pré-pausa), resultando em valores incorretos ou bloqueio da retomada.
+            // Atualizar referência mesmo durante auto-pause para que ao retomar
+            // a distância seja calculada desde a posição atual, não de um ponto antigo.
             if (_autoPausado.value) {
                 ultimaLocalizacaoSignificativa = location
             }
 
             if (contadorSemMovimento >= LIMITE_SEM_MOVIMENTO && !_autoPausado.value) {
-                Log.d(TAG, "⏸️ Auto-pause ativado (${contadorSemMovimento}s sem movimento, accuracy=${location.accuracy}m, limiar=${limiarMovimento}m)")
+                Log.d(TAG, "⏸️ Auto-pause ativado (${contadorSemMovimento}s sem movimento, speed=${location.speed} m/s)")
                 _autoPausado.value = true
                 atualizarNotificacao("Auto-pausado (sem movimento)")
             }
@@ -640,7 +677,7 @@ class RunningService : Service(), SensorEventListener {
             ultimaLocalizacaoSignificativa = location
 
             if (_autoPausado.value && contadorEmMovimento >= LIMITE_RETOMAR_MOVIMENTO) {
-                Log.d(TAG, "▶️ Auto-pause desativado (movimento confirmado, ${contadorEmMovimento} updates)")
+                Log.d(TAG, "▶️ Auto-pause desativado (movimento confirmado, speed=${location.speed} m/s)")
                 _autoPausado.value = false
                 contadorEmMovimento = 0
                 atualizarNotificacao("Corrida em andamento")
