@@ -35,6 +35,7 @@ import com.runapp.data.model.CorridaHistorico
 import com.runapp.data.model.LatLngPonto
 import com.runapp.data.model.SplitParcial
 import kotlin.math.*
+import kotlin.math.roundToInt
 
 private val CorFundo    = Color(0xFF121212)
 private val CorCard     = Color(0xFF1E1E1E)
@@ -536,9 +537,9 @@ private fun calcularZonasPace(dados: DadosGrafico): List<InfoZona> {
 
 // ── Heatmap para o mapa ──────────────────────────────────────────────────────
 
-private data class SegmentoHeatmap(val inicio: LatLng, val fim: LatLng, val cor: Color)
+private data class SegDetalhe(val inicio: LatLng, val fim: LatLng, val cor: Color)
 
-private fun calcularSegmentosHeatmapDetalhe(rota: List<LatLngPonto>): List<SegmentoHeatmap> {
+private fun calcularSegmentosHeatmapDetalhe(rota: List<LatLngPonto>): List<SegDetalhe> {
     if (rota.size < 2) return emptyList()
     val LENTO = 7 * 60.0; val RAPIDO = 3 * 60.0 + 30.0
     return buildList {
@@ -548,7 +549,7 @@ private fun calcularSegmentosHeatmapDetalhe(rota: List<LatLngPonto>): List<Segme
             val distM = haversineM(p1.lat, p1.lng, p2.lat, p2.lng); if (distM < 1.0) continue
             val pace = (dtMs / 1000.0) / distM * 1000.0
             if (pace < 120.0 || pace > 1200.0) continue
-            add(SegmentoHeatmap(LatLng(p1.lat, p1.lng), LatLng(p2.lat, p2.lng), corPorPaceD(pace, RAPIDO, LENTO)))
+            add(SegDetalhe(LatLng(p1.lat, p1.lng), LatLng(p2.lat, p2.lng), corPorPaceD(pace, RAPIDO, LENTO)))
         }
     }
 }
@@ -585,6 +586,3 @@ private fun haversineM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): 
 private fun formatarDataDetalhe(iso: String): String = runCatching {
     java.time.LocalDateTime.parse(iso).format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"))
 }.getOrDefault(iso)
-
-private fun Double.roundToInt() = kotlin.math.roundToInt(this)
-private fun Float.roundToInt()  = kotlin.math.roundToInt(this)
