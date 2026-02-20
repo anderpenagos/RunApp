@@ -226,8 +226,8 @@ class RunningService : Service(), SensorEventListener {
     private val timestampsPassos = ArrayDeque<Long>(50)
     private var ultimoTimestampPasso = 0L
 
-    // Threshold adaptativo: começa em 11.0 e se ajusta ao perfil do usuário
-    private var thresholdAceleracao = 11.0f
+    // Threshold adaptativo: começa em 13.0 (mais resistente a trepidação de bolso)
+    private var thresholdAceleracao = 13.0f
     private var somaUltimosPicos = 0f
     private var contadorPicos = 0
     
@@ -319,7 +319,7 @@ class RunningService : Service(), SensorEventListener {
         // Resetar cadência e registrar sensor
         timestampsPassos.clear()
         ultimoTimestampPasso = 0L
-        thresholdAceleracao = 11.0f
+        thresholdAceleracao = 13.0f
         somaUltimosPicos = 0f
         contadorPicos = 0
         _cadencia.value = 0
@@ -422,26 +422,31 @@ class RunningService : Service(), SensorEventListener {
         val agora = System.currentTimeMillis()
 
         // ANTI-DEADLOCK: se passou mais de 2s sem passo, o usuário mudou de ritmo
-        // (parou, desacelerou, trocou de superfície). Reseta o threshold para não
-        // "travar" em um valor calibrado para uma intensidade que não existe mais.
+        // (parou, desacelerou, trocou de superfície). Reseta o threshold para o valor base.
         if (agora - ultimoTimestampPasso > 2000L && ultimoTimestampPasso > 0L) {
-            thresholdAceleracao = 11.0f
+            thresholdAceleracao = 13.0f
         }
 
-        // Pico válido: magnitude acima do threshold E debounce de 250ms (máx ~240 SPM)
+        // FILTRO DE FORÇA: descarta sinal abaixo do threshold (ruído de bolso/pochete)
         if (magnitude < thresholdAceleracao) return
-        if (agora - ultimoTimestampPasso < 250L) return
+
+        // DEBOUNCE DE 350ms: limita a ~171 SPM máximo.
+        // O objetivo principal é matar o "repique" (segundo pico de vibração do mesmo passo)
+        // que chegava ~150-200ms depois e dobrava a contagem.
+        // 350ms é seguro até para corridas rápidas (~170 SPM), que é o teto real de caminhada/corrida casual.
+        if (agora - ultimoTimestampPasso < 350L) return
 
         ultimoTimestampPasso = agora
 
-        // Threshold adaptativo: ajusta gradualmente à força do impacto do usuário
-        // Evita falsos positivos em corredores leves e falsos negativos em pisadores fortes
+        // THRESHOLD ADAPTATIVO COM "PISO":
+        // Ajusta gradualmente à força do impacto do usuário, mas nunca cai abaixo de 12.5
+        // para não voltar a contar repiques quando o usuário desacelera.
         somaUltimosPicos += magnitude
         contadorPicos++
-        if (contadorPicos >= 10) {
+        if (contadorPicos >= 8) {
             val mediaPicos = somaUltimosPicos / contadorPicos
-            // Novo threshold = 75% da média dos picos → sempre abaixo dos picos reais
-            thresholdAceleracao = mediaPicos * 0.75f
+            // 72% da média dos picos, com piso em 12.5 → nunca volta a "cair" demais
+            thresholdAceleracao = (mediaPicos * 0.72f).coerceAtLeast(12.5f)
             somaUltimosPicos = 0f
             contadorPicos = 0
         }
@@ -455,8 +460,10 @@ class RunningService : Service(), SensorEventListener {
         // Cadência = (passos em 10s / 10) * 60, só se tiver dados suficientes (≥3 passos)
         if (timestampsPassos.size >= 3) {
             val spm = (timestampsPassos.size / 10.0 * 60).toInt()
-            // Sanidade: corrida real fica entre 120–220 SPM
-            if (spm in 120..220) {
+            // Sanidade: cobre caminhada (~60 SPM) até corrida rápida (220 SPM)
+            // ATENÇÃO: o range anterior era 120–220, o que silenciosamente ignorava
+            // cadências corretas de caminhada (~100–115 SPM). Corrigido para 60–220.
+            if (spm in 60..220) {
                 _cadencia.value = spm
             }
         }
