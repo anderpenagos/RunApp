@@ -30,6 +30,7 @@ import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
+import com.google.android.gms.maps.model.JointType // IMPORT ADICIONADO PARA CORRIGIR O ERRO
 import com.google.maps.android.compose.*
 import com.runapp.data.model.CorridaHistorico
 import com.runapp.data.model.LatLngPonto
