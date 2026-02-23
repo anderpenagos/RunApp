@@ -56,7 +56,10 @@ class RunningService : Service(), SensorEventListener {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     // Scope próprio do serviço - NÃO usa viewModelScope
-    private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
+    // FIX: SupervisorJob permite cancelar o scope todo no onDestroy sem afetar coroutines irmãs.
+    // O Job() original nunca era cancelado, causando um pequeno leak de coroutines.
+    private val serviceJob = kotlinx.coroutines.SupervisorJob()
+    private val serviceScope = CoroutineScope(Dispatchers.Default + serviceJob)
     private var timerJob: Job? = null
     
     // WakeLock para manter CPU parcialmente ativa
@@ -177,8 +180,11 @@ class RunningService : Service(), SensorEventListener {
         Log.d(TAG, "⚙️ Janela de pace ajustada para ${janelaAtualSegundos}s (passo=${duracaoSegundos}s)")
     }
 
-    // EMA (Média Móvel Exponencial) — suaviza sem perder reatividade
-    private var ultimoPaceEma: Double? = null  // null = sem valor anterior ainda
+    // EMA (Média Móvel Exponencial) — alias para compatibilidade interna
+    // Use ultimoPaceEmaInterno diretamente em todo o código novo
+    private var ultimoPaceEma: Double?
+        get() = ultimoPaceEmaInterno
+        set(value) { ultimoPaceEmaInterno = value }
     
     // Timestamps
     private var timestampInicio: Long = 0
@@ -225,7 +231,17 @@ class RunningService : Service(), SensorEventListener {
     val cadencia: StateFlow<Int> = _cadencia.asStateFlow()
 
     private lateinit var sensorManager: SensorManager
+    // FIX 4: Sensor de cadência — estratégia em duas camadas:
+    // Camada 1 (primária): TYPE_STEP_DETECTOR — chip dedicado de hardware presente na
+    //   maioria dos dispositivos modernos. Usa muito menos bateria que o acelerômetro
+    //   porque roda no DSP, não na CPU. Funciona bem independente de como o usuário
+    //   carrega o celular (bolso, braçadeira, colete).
+    // Camada 2 (fallback): TYPE_LINEAR_ACCELERATION — software-based, threshold adaptativo.
+    //   Ativado apenas se o hardware não tiver STEP_DETECTOR.
+    private var stepDetector: Sensor? = null
     private var acelerometro: Sensor? = null
+    // Flag que indica qual sensor está em uso (evita dupla contagem)
+    private var usandoStepDetector = false
 
     // Buffer circular dos últimos timestamps de passo (janela de 10s)
     private val timestampsPassos = ArrayDeque<Long>(50)
@@ -235,6 +251,15 @@ class RunningService : Service(), SensorEventListener {
     private var thresholdAceleracao = 13.0f
     private var somaUltimosPicos = 0f
     private var contadorPicos = 0
+
+    // FIX 7: Separação entre valor interno de EMA e string da UI.
+    // Problema original: ultimoPaceEma era null quando o pace estava fora da faixa válida
+    // (corredor parado, spike GPS). Isso causava "buracos" no heatmap (paceNoPonto=0.0)
+    // e quebrava a continuidade do EMA (perdia o histórico toda vez que o GPS flutuava).
+    // Solução: ultimoPaceEmaInterno mantém o ÚLTIMO valor numérico válido indefinidamente,
+    // mesmo quando a UI mostra "--:--". Só é zerado no início de uma nova corrida.
+    // O paceNoPonto do LatLngPonto sempre recebe um valor numérico real (nunca 0.0 espúrio).
+    private var ultimoPaceEmaInterno: Double? = null  // valor numérico, nunca zerado por --:--
     
     private val _rotaAtual = MutableStateFlow<List<LatLngPonto>>(emptyList())
     val rotaAtual: StateFlow<List<LatLngPonto>> = _rotaAtual.asStateFlow()
@@ -266,10 +291,25 @@ class RunningService : Service(), SensorEventListener {
         Log.d(TAG, "🔵 Service onCreate")
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
-        // Sensores — acelerômetro para cadência
+        // FIX 4: Inicialização de sensores com estratégia em duas camadas.
+        // STEP_DETECTOR é a opção preferida: chip de hardware dedicado, gasta ~10x menos
+        // bateria que o acelerômetro por software, funciona bem em qualquer posição de
+        // carregamento (bolso frontal, braçadeira, colete).
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        acelerometro = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
-        if (acelerometro == null) Log.w(TAG, "⚠️ TYPE_LINEAR_ACCELERATION não disponível")
+        stepDetector = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+        if (stepDetector != null) {
+            usandoStepDetector = true
+            Log.d(TAG, "👟 TYPE_STEP_DETECTOR disponível — usando hardware nativo (economia de bateria)")
+        } else {
+            // Fallback: acelerômetro por software com threshold adaptativo
+            acelerometro = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+            usandoStepDetector = false
+            if (acelerometro == null) {
+                Log.w(TAG, "⚠️ Nenhum sensor de passo disponível — cadência desativada")
+            } else {
+                Log.d(TAG, "📡 Fallback para TYPE_LINEAR_ACCELERATION (STEP_DETECTOR não encontrado)")
+            }
+        }
 
         // Adquirir WakeLock parcial
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -325,7 +365,7 @@ class RunningService : Service(), SensorEventListener {
         // Resetar dados
         rota.clear()
         ultimasLocalizacoes.clear()
-        ultimoPaceEma = null
+        ultimoPaceEmaInterno = null  // FIX 7: reset completo intencional no início de NOVA corrida
         janelaAtualSegundos = 12
         timestampInicio = System.currentTimeMillis()
         tempoPausadoTotal = 0
@@ -341,9 +381,22 @@ class RunningService : Service(), SensorEventListener {
         somaUltimosPicos = 0f
         contadorPicos = 0
         _cadencia.value = 0
-        acelerometro?.let {
-            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
-            Log.d(TAG, "📡 Acelerômetro registrado para cadência")
+
+        // FIX 4: Registra o sensor correto dependendo do que o hardware suporta.
+        // STEP_DETECTOR: usa SENSOR_DELAY_NORMAL — o chip de hardware não se beneficia
+        //   de polling mais rápido e taxa alta só drena bateria desnecessariamente.
+        // LINEAR_ACCELERATION: usa SENSOR_DELAY_GAME (50ms) para capturar os picos
+        //   de impacto do passo que têm duração ~100-200ms.
+        if (usandoStepDetector) {
+            stepDetector?.let {
+                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+                Log.d(TAG, "👟 STEP_DETECTOR registrado")
+            }
+        } else {
+            acelerometro?.let {
+                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+                Log.d(TAG, "📡 LINEAR_ACCELERATION registrado (fallback)")
+            }
         }
         
         // Iniciar GPS
@@ -409,6 +462,8 @@ class RunningService : Service(), SensorEventListener {
 
         // Garantir limpeza
         timerJob?.cancel()
+        // Cancela o serviceScope inteiro, encerrando todas as coroutines pendentes
+        serviceJob.cancel()
         pararAtualizacoesGPS()
         sensorManager.unregisterListener(this)
         wakeLock?.let {
@@ -423,20 +478,53 @@ class RunningService : Service(), SensorEventListener {
     override fun onSensorChanged(event: SensorEvent?) {
         // Ignora quando pausado ou se não está correndo
         if (!estaCorrendo || estaPausado || event == null) return
-        if (event.sensor.type != Sensor.TYPE_LINEAR_ACCELERATION) return
 
-        val x = event.values[0]
-        val y = event.values[1]
-        val z = event.values[2]
-        // Norma do vetor de aceleração linear (sem gravidade)
-        val magnitude = kotlin.math.sqrt((x * x + y * y + z * z).toDouble()).toFloat()
-
-        detectarPasso(magnitude)
+        when (event.sensor.type) {
+            Sensor.TYPE_STEP_DETECTOR -> {
+                // FIX 4: STEP_DETECTOR já entrega exatamente 1 evento por passo detectado.
+                // Não precisamos de threshold, debounce de magnitude ou cálculos haversine —
+                // o chip de hardware já faz todo esse trabalho. Apenas registramos o timestamp.
+                registrarPasso(System.currentTimeMillis())
+            }
+            Sensor.TYPE_LINEAR_ACCELERATION -> {
+                // Fallback: algoritmo de threshold adaptativo original
+                val x = event.values[0]
+                val y = event.values[1]
+                val z = event.values[2]
+                val magnitude = kotlin.math.sqrt((x * x + y * y + z * z).toDouble()).toFloat()
+                detectarPassoPorMagnitude(magnitude)
+            }
+        }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) { /* não usado */ }
 
-    private fun detectarPasso(magnitude: Float) {
+    // FIX 4: Lógica de contagem de cadência extraída para função compartilhada.
+    // Usada tanto pelo STEP_DETECTOR (caminho simples) quanto pelo LINEAR_ACCELERATION (fallback).
+    private fun registrarPasso(agora: Long) {
+        // Debounce mínimo de 200ms entre passos: cobre até 300 SPM (corrida olímpica)
+        // e filtra duplos eventos espúrios em raros dispositivos com STEP_DETECTOR ruidoso
+        if (agora - ultimoTimestampPasso < 200L) return
+        ultimoTimestampPasso = agora
+
+        // Buffer circular: mantém apenas timestamps dos últimos 10s
+        timestampsPassos.addLast(agora)
+        while (timestampsPassos.isNotEmpty() && timestampsPassos.first() < agora - 10_000L) {
+            timestampsPassos.removeFirst()
+        }
+
+        // Cadência = (passos em 10s / 10) * 60, só se tiver dados suficientes (≥3 passos)
+        if (timestampsPassos.size >= 3) {
+            val spm = (timestampsPassos.size / 10.0 * 60).toInt()
+            if (spm in 60..220) {
+                _cadencia.value = spm
+            }
+        }
+    }
+
+    // FIX 4: Renomeado de detectarPasso → detectarPassoPorMagnitude para clareza.
+    // Este é o fallback para dispositivos sem TYPE_STEP_DETECTOR.
+    private fun detectarPassoPorMagnitude(magnitude: Float) {
         val agora = System.currentTimeMillis()
 
         // ANTI-DEADLOCK: se passou mais de 2s sem passo, o usuário mudou de ritmo
@@ -454,8 +542,6 @@ class RunningService : Service(), SensorEventListener {
         // 350ms é seguro até para corridas rápidas (~170 SPM), que é o teto real de caminhada/corrida casual.
         if (agora - ultimoTimestampPasso < 350L) return
 
-        ultimoTimestampPasso = agora
-
         // THRESHOLD ADAPTATIVO COM "PISO":
         // Ajusta gradualmente à força do impacto do usuário, mas nunca cai abaixo de 12.5
         // para não voltar a contar repiques quando o usuário desacelera.
@@ -469,22 +555,8 @@ class RunningService : Service(), SensorEventListener {
             contadorPicos = 0
         }
 
-        // Buffer circular: mantém apenas timestamps dos últimos 10s
-        timestampsPassos.addLast(agora)
-        while (timestampsPassos.isNotEmpty() && timestampsPassos.first() < agora - 10_000L) {
-            timestampsPassos.removeFirst()
-        }
-
-        // Cadência = (passos em 10s / 10) * 60, só se tiver dados suficientes (≥3 passos)
-        if (timestampsPassos.size >= 3) {
-            val spm = (timestampsPassos.size / 10.0 * 60).toInt()
-            // Sanidade: cobre caminhada (~60 SPM) até corrida rápida (220 SPM)
-            // ATENÇÃO: o range anterior era 120–220, o que silenciosamente ignorava
-            // cadências corretas de caminhada (~100–115 SPM). Corrigido para 60–220.
-            if (spm in 60..220) {
-                _cadencia.value = spm
-            }
-        }
+        // Delega para o registrador comum (buffer + contagem de cadência)
+        registrarPasso(agora)
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -600,7 +672,10 @@ class RunningService : Service(), SensorEventListener {
                 Log.w(TAG, "⚠️ Gap temporal detectado (${tempoJanela}s), resetando janela de pace")
                 ultimasLocalizacoes.clear()
                 ultimasLocalizacoes.add(location)   // ponto atual como nova âncora
-                ultimoPaceEma = null
+                // FIX 7: NÃO zera ultimoPaceEmaInterno — mantém o último valor numérico
+                // válido para: (a) continuar o heatmap sem buracos e (b) reiniciar o EMA
+                // de onde parou (não do zero) assim que os pontos chegarem novamente.
+                // Só resetamos a STRING da UI para "--:--" (sinal visual de "sem leitura").
                 _paceAtual.value = "--:--"
                 return
             }
@@ -614,7 +689,8 @@ class RunningService : Service(), SensorEventListener {
         if (location.hasSpeed() && location.speed > 6.5f) {
             Log.w(TAG, "⚠️ Velocidade GPS suspeita: ${location.speed} m/s, descartando ponto de pace")
             _paceAtual.value = "--:--"
-            ultimoPaceEma = null
+            // FIX 7: Mesmo aqui, NÃO zeramos o EMA interno — o heatmap e o próximo
+            // cálculo real de pace continuam com o contexto histórico preservado.
             return
         }
 
@@ -743,18 +819,25 @@ class RunningService : Service(), SensorEventListener {
         val paceBruto = (tempoJanelaSegundos / distanciaJanela) * 1000.0
 
         // Sanidade: ignora valores impossíveis (< 1:30/km ou > 20:00/km)
+        // FIX 7: NÃO retornamos mais sem atualizar o EMA interno.
+        // Se o pace bruto for inválido, apenas mostramos "--:--" na UI mas
+        // preservamos o ultimo EMA válido para o heatmap não ter buracos.
         if (paceBruto < 90.0 || paceBruto > 1200.0) {
             _paceAtual.value = "--:--"
+            // ultimoPaceEmaInterno permanece inalterado — heatmap continua
             return
         }
 
         // EMA: alpha depende da janela — janela curta reage mais rápido
         val alpha = if (janelaAtualSegundos <= 5) 0.4 else 0.25
-        val paceEma = ultimoPaceEma?.let { anterior ->
+        val paceEma = ultimoPaceEmaInterno?.let { anterior ->
             (paceBruto * alpha) + (anterior * (1.0 - alpha))
         } ?: paceBruto  // primeiro valor: sem histórico, usa direto
 
-        ultimoPaceEma = paceEma
+        // FIX 7: Atualiza SEMPRE o valor numérico interno.
+        // A string da UI é gerada separadamente e pode ser "--:--",
+        // mas ultimoPaceEmaInterno sempre guarda o último Double válido.
+        ultimoPaceEmaInterno = paceEma
         _paceAtual.value = formatarPace(paceEma)
     }
 

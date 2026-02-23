@@ -15,6 +15,8 @@
     <!-- Foreground Service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Android 14+: exigido para foregroundServiceType="health" (acelerômetro/cadência) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
 
     <!-- Manter CPU ativa durante a corrida -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -54,11 +56,15 @@
             </intent-filter>
         </activity>
 
-        <!-- Foreground Service de GPS -->
+        <!-- Foreground Service de GPS + sensores de saúde (acelerômetro para cadência).
+             Android 14+ exige foregroundServiceType="location|health" para que o service
+             possa acessar sensores de movimento (TYPE_LINEAR_ACCELERATION, TYPE_STEP_DETECTOR)
+             em background. Sem "health" o sistema pode bloquear o acelerômetro silenciosamente
+             após alguns minutos, zerando a leitura de cadência sem nenhum erro visível. -->
         <service
             android:name=".service.RunningService"
             android:exported="false"
-            android:foregroundServiceType="location" />
+            android:foregroundServiceType="location|health" />
 
         <!--
             FileProvider — necessário para compartilhar arquivos GPX com outros apps

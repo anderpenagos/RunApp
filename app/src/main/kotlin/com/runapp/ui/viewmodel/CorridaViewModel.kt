@@ -10,6 +10,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.runapp.RunApp
 import com.runapp.AppContainer
 import com.runapp.data.model.LatLngPonto
@@ -18,12 +20,15 @@ import com.runapp.data.model.WorkoutEvent
 import com.runapp.data.repository.WorkoutRepository
 import com.runapp.service.AudioCoach
 import com.runapp.service.RunningService
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -50,6 +55,19 @@ enum class UploadEstado {
     ENVIADO,
     ERRO
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Backup de emergência — serializado para disco logo ao parar a corrida.
+// Garante que nenhum dado seja perdido mesmo se o app travar durante o save.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+private data class BackupEmergencia(
+    val distanciaMetros: Double,
+    val tempoTotalSegundos: Long,
+    val paceMedia: String,
+    val rota: List<LatLngPonto>,
+    val timestamp: Long = System.currentTimeMillis()
+)
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // UI State
@@ -104,6 +122,20 @@ class CorridaViewModel(
 
     private var workoutRepo: WorkoutRepository? = null
     private var arquivoGpxSalvo: File? = null
+
+    // Gson para backup de emergência
+    private val gson = Gson()
+
+    // Arquivo de backup de emergência no diretório privado do app
+    // FIX: salvo em cache interno — não precisa de permissão de armazenamento externo
+    private val backupFile: File
+        get() = File(context.filesDir, "emergency_run_backup.json")
+
+    // FIX 3: CompletableDeferred substitui o loop de 30 tentativas (repeat(30)).
+    // Não tem tempo fixo — resolve exatamente quando onServiceConnected é chamado,
+    // seja em 50ms ou em 2s, sem desperdiçar CPU em polling.
+    // É cancelado automaticamente com o viewModelScope se o ViewModel for destruído.
+    private val serviceConectadoDeferred = CompletableDeferred<RunningService>()
     
     // Audio Coach para alertas de voz
     private val audioCoach = AudioCoach(context)
@@ -128,6 +160,10 @@ class CorridaViewModel(
             serviceBound = true
 
             android.util.Log.d("CorridaVM", "✅ Service conectado")
+
+            // FIX 3: Sinaliza o CompletableDeferred — carregarTreino() e iniciarCorrida()
+            // estão esperando por este momento com await() sem fazer polling.
+            serviceConectadoDeferred.complete(s)
 
             // Restauração de estado: se o service já está rodando (app foi morto e reaberto)
             if (s.isCorrendo()) {
@@ -186,6 +222,14 @@ class CorridaViewModel(
             isBindingTentativo = context.bindService(intent, serviceConnection, 0)
             android.util.Log.d("CorridaVM", "Bind silencioso: service ${if (isBindingTentativo) "encontrado ✅" else "não existe (treino novo)"}")
         }
+
+        // FIX: Só verifica backup se NÃO há service rodando (isBindingTentativo = false).
+        // Se o service está ativo (corrida em andamento), o backup de uma sessão anterior
+        // seria stale e NUNCA deve sobrescrever o estado da corrida atual.
+        // Isso elimina a race condition entre verificarBackupEmergencia e onServiceConnected.
+        if (!isBindingTentativo) {
+            verificarBackupEmergencia()
+        }
     }
 
     override fun onCleared() {
@@ -202,6 +246,76 @@ class CorridaViewModel(
         }
         
         android.util.Log.d("CorridaVM", "🧹 ViewModel limpo")
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // FIX: Backup e Recuperação de Emergência
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * Salva imediatamente um backup JSON com todos os dados da corrida.
+     * Chamado logo quando o usuário pressiona STOP, ANTES de qualquer I/O pesado.
+     * Se o app travar depois, os dados são recuperados na próxima abertura.
+     */
+    private fun salvarBackupEmergencia(
+        distancia: Double,
+        tempo: Long,
+        paceMedia: String,
+        rota: List<LatLngPonto>
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val backup = BackupEmergencia(
+                    distanciaMetros = distancia,
+                    tempoTotalSegundos = tempo,
+                    paceMedia = paceMedia,
+                    rota = rota
+                )
+                backupFile.writeText(gson.toJson(backup))
+                android.util.Log.d("CorridaVM", "🛡️ Backup emergência salvo: ${rota.size} pontos GPS")
+            } catch (e: Exception) {
+                android.util.Log.e("CorridaVM", "⚠️ Falha ao salvar backup emergência", e)
+            }
+        }
+    }
+
+    /**
+     * Verifica na inicialização se existe um backup de uma sessão que travou.
+     * Se encontrar, restaura os dados para que o usuário possa salvar normalmente.
+     */
+    private fun verificarBackupEmergencia() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (!backupFile.exists()) return@launch
+
+                val json = backupFile.readText()
+                val backup = gson.fromJson(json, BackupEmergencia::class.java) ?: return@launch
+
+                // Valida se o backup tem dados reais (ao menos 50m e 30s)
+                if (backup.distanciaMetros < 50 || backup.tempoTotalSegundos < 30) {
+                    backupFile.delete()
+                    return@launch
+                }
+
+                android.util.Log.w("CorridaVM", "🔄 Backup encontrado! ${backup.rota.size} pontos, ${backup.distanciaMetros.toInt()}m")
+
+                // Restaura estado para que o ResumoScreen mostre os dados salvos
+                _uiState.value = _uiState.value.copy(
+                    fase               = FaseCorrida.FINALIZADO,
+                    distanciaMetros    = backup.distanciaMetros,
+                    tempoTotalSegundos = backup.tempoTotalSegundos,
+                    tempoFormatado     = formatarTempo(backup.tempoTotalSegundos),
+                    paceMedia          = backup.paceMedia,
+                    rota               = backup.rota,
+                    salvamentoEstado   = SalvamentoEstado.NAO_SALVO
+                )
+                android.util.Log.d("CorridaVM", "✅ Estado restaurado do backup de emergência")
+            } catch (e: Exception) {
+                android.util.Log.e("CorridaVM", "Erro ao ler backup emergência", e)
+                // Backup corrompido — deleta para não travar a próxima sessão
+                try { backupFile.delete() } catch (_: Exception) {}
+            }
+        }
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -262,6 +376,34 @@ class CorridaViewModel(
         viewModelScope.launch {
             service.autoPausado.collect { autoPausado ->
                 _uiState.value = _uiState.value.copy(autoPausado = autoPausado)
+            }
+        }
+
+        // FIX CRÍTICO: Backup periódico a cada 60 segundos durante a corrida.
+        //
+        // Cenário coberto: o SERVICE morre sozinho durante a corrida (OOM killer,
+        // crash de coroutine não tratado, agressividade do fabricante do dispositivo).
+        // Nesse caso, finalizarCorrida() NUNCA é chamado — o usuário não aperta Stop
+        // porque o app travou ou sumiu. Sem esse backup, TODOS os dados seriam perdidos.
+        //
+        // Com o backup periódico: no máximo 60 segundos de dados são perdidos.
+        // Na próxima abertura do app, verificarBackupEmergencia() detecta o arquivo
+        // e restaura o estado FINALIZADO para que o usuário possa salvar normalmente.
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                delay(60_000L) // salva a cada 60 segundos
+                val s = runningService ?: break
+                if (!s.isCorrendo()) break
+
+                val distancia = s.distanciaMetros.value
+                val tempo = s.tempoTotalSegundos.value
+                val paceMedia = s.paceMedia.value
+                val rota = s.rotaAtual.value
+
+                if (distancia >= 50 && tempo >= 30) {
+                    salvarBackupEmergencia(distancia, tempo, paceMedia, rota)
+                    android.util.Log.d("CorridaVM", "⏰ Backup periódico: ${rota.size} pontos, ${distancia.toInt()}m")
+                }
             }
         }
     }
@@ -363,29 +505,35 @@ class CorridaViewModel(
             // imediatamente quando o bind completa, sem esperar o próximo tick.
             // Só entra no loop se o Android confirmou que o service existe (isBindingTentativo=true).
             if (isBindingTentativo) {
-                repeat(30) { tentativa ->
-                    val s = runningService
-                    if (s != null && s.isCorrendo()) {
-                        val treinoNoService = s.getTreinoAtivo()
-                        if (treinoNoService != null) {
-                            android.util.Log.d("CorridaVM", "✅ Treino ${treinoNoService.id} recuperado do Service na tentativa $tentativa.")
-                            val passos   = s.getPassosAtivos()
-                            val indexAtual = s.getIndexPassoAtivo()
-                            _uiState.value = _uiState.value.copy(
-                                treino       = treinoNoService,
-                                passos       = passos,
-                                passoAtual   = passos.getOrNull(indexAtual.coerceAtLeast(0)),
-                                fase         = if (s.isPausado() || s.autoPausado.value) FaseCorrida.PAUSADO else FaseCorrida.CORRENDO,
-                                posicaoAtual = s.posicaoAtual.value,
-                                rota         = s.rotaAtual.value,
-                                erro         = null
-                            )
-                            indexPassoAnunciado = indexAtual
-                            return@launch  // Não encosta na internet
-                        }
-                    }
-                    delay(100)
+                // FIX 3: await() suspende a coroutine até onServiceConnected ser chamado.
+            // Não tem loop fixo, não usa CPU enquanto espera, e resolve instantaneamente
+            // se o service já estava conectado antes de carregarTreino() ser chamado.
+            // withTimeoutOrNull(5000) protege contra o caso raro em que o service nunca
+            // conecta (processo morto, Android agindo estranhamente): após 5s, segue
+            // para a busca na rede como se não houvesse service rodando.
+            val serviceRecuperado = kotlinx.coroutines.withTimeoutOrNull(5_000L) {
+                serviceConectadoDeferred.await()
+            }
+            val s = serviceRecuperado
+            if (s != null && s.isCorrendo()) {
+                val treinoNoService = s.getTreinoAtivo()
+                if (treinoNoService != null) {
+                    android.util.Log.d("CorridaVM", "✅ Treino ${treinoNoService.id} recuperado via Deferred.")
+                    val passos = s.getPassosAtivos()
+                    val indexAtual = s.getIndexPassoAtivo()
+                    _uiState.value = _uiState.value.copy(
+                        treino       = treinoNoService,
+                        passos       = passos,
+                        passoAtual   = passos.getOrNull(indexAtual.coerceAtLeast(0)),
+                        fase         = if (s.isPausado() || s.autoPausado.value) FaseCorrida.PAUSADO else FaseCorrida.CORRENDO,
+                        posicaoAtual = s.posicaoAtual.value,
+                        rota         = s.rotaAtual.value,
+                        erro         = null
+                    )
+                    indexPassoAnunciado = indexAtual
+                    return@launch
                 }
+            }
             }
 
             // Se chegou aqui: corrida não está ativa — é um treino novo. Vai para a rede.
@@ -464,12 +612,14 @@ class CorridaViewModel(
             context.bindService(bindIntent, serviceConnection, Context.BIND_AUTO_CREATE)
         }
 
-        // Enviar os dados do treino ao service assim que a conexão for estabelecida.
-        // O service passa a ser o "dono" do treino — sobrevive à morte da ViewModel.
+        // FIX 3: await() substitui o loop while(runningService == null) { delay(100) }.
+        // Resolve imediatamente quando onServiceConnected for chamado, sem polling.
         viewModelScope.launch {
-            while (runningService == null) { delay(100) }
+            val s = kotlinx.coroutines.withTimeoutOrNull(5_000L) {
+                serviceConectadoDeferred.await()
+            } ?: return@launch
             _uiState.value.treino?.let { treino ->
-                runningService?.setDadosTreino(treino, _uiState.value.passos)
+                s.setDadosTreino(treino, _uiState.value.passos)
             }
         }
 
@@ -525,6 +675,13 @@ class CorridaViewModel(
         val paceAtualFinal   = service?.paceAtual?.value         ?: _uiState.value.paceAtual
         val paceMediaFinal   = service?.paceMedia?.value         ?: _uiState.value.paceMedia
         val rotaFinal        = service?.rotaAtual?.value         ?: _uiState.value.rota
+
+        // FIX: Salvar backup de emergência IMEDIATAMENTE, antes de qualquer outra operação.
+        // Isso garante que, mesmo que o app trave durante o salvamento normal, os dados
+        // da corrida estão persistidos em disco e serão recuperados na próxima abertura.
+        if (distanciaFinal >= 50 && tempoFinal >= 30) {
+            salvarBackupEmergencia(distanciaFinal, tempoFinal, paceMediaFinal, rotaFinal)
+        }
 
         // Gravar snapshot no uiState ANTES de parar tudo
         _uiState.value = _uiState.value.copy(
@@ -594,6 +751,13 @@ class CorridaViewModel(
         ultimoPaceFeedback = 0L
         indexPassoAnunciado = -1
 
+        // FIX 2: Deleta o backup de emergência ao descartar a corrida.
+        // Sem isso, o arquivo permaneceria e na próxima abertura o app tentaria
+        // "restaurar" uma corrida que o usuário já descartou intencionalmente.
+        viewModelScope.launch(Dispatchers.IO) {
+            try { if (backupFile.exists()) backupFile.delete() } catch (_: Exception) {}
+        }
+
         // Voltar ao estado inicial — preservando apenas treino e passos carregados
         val state = _uiState.value
         _uiState.value = CorridaUiState(
@@ -657,7 +821,18 @@ class CorridaViewModel(
             erroSalvamento = null
         )
 
-        viewModelScope.launch {
+        // FIX CRÍTICO: usar Dispatchers.IO para todo o bloco de salvamento.
+        //
+        // O bug original usava viewModelScope.launch { } sem dispatcher, o que faz a
+        // coroutine rodar na Dispatchers.Main (thread principal da UI).
+        // Para uma corrida de 40min (~2400 pontos GPS), o processamento de elevação,
+        // cálculo de splits, geração do XML GPX e escrita em disco na thread principal
+        // dispara um ANR (Application Not Responding) em 5 segundos → Android mata o
+        // app → todos os dados da corrida são perdidos.
+        //
+        // Com Dispatchers.IO, todo o I/O e processamento pesado acontece em background.
+        // As atualizações de _uiState.value são thread-safe com MutableStateFlow.
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 val apiKey = container.preferencesRepository.apiKey.first()
                 val athleteId = container.preferencesRepository.athleteId.first()
@@ -679,14 +854,18 @@ class CorridaViewModel(
                     )
                 }"
 
+                // FIX: usa os dados do uiState atual, que podem ter sido restaurados
+                // do backup de emergência caso o app tenha sido morto anteriormente.
+                val stateAtual = _uiState.value
+
                 val result = repo.salvarAtividade(
                     context = context,
                     athleteId = athleteId,
                     nomeAtividade = nomeAtividade,
-                    distanciaMetros = state.distanciaMetros,
-                    tempoSegundos = state.tempoTotalSegundos,
-                    paceMedia = state.paceMedia,
-                    rota = state.rota
+                    distanciaMetros = stateAtual.distanciaMetros,
+                    tempoSegundos = stateAtual.tempoTotalSegundos,
+                    paceMedia = stateAtual.paceMedia,
+                    rota = stateAtual.rota
                 )
                 
                 result.fold(
@@ -695,6 +874,9 @@ class CorridaViewModel(
                         _uiState.value = _uiState.value.copy(
                             salvamentoEstado = SalvamentoEstado.SALVO
                         )
+                        // FIX: Só deleta o backup após confirmar que o save foi bem sucedido.
+                        // Isso garante que um save parcial não apague o backup prematuramente.
+                        try { backupFile.delete() } catch (_: Exception) {}
                         android.util.Log.d("CorridaVM", "✅ GPX salvo: ${arquivo.absolutePath}")
                     },
                     onFailure = { e ->
@@ -703,6 +885,7 @@ class CorridaViewModel(
                             salvamentoEstado = SalvamentoEstado.ERRO,
                             erroSalvamento = "Erro ao salvar: ${e.message}"
                         )
+                        // Backup permanece em disco — o usuário pode tentar salvar novamente
                     }
                 )
             } catch (e: Exception) {
@@ -711,6 +894,7 @@ class CorridaViewModel(
                     salvamentoEstado = SalvamentoEstado.ERRO,
                     erroSalvamento = "Erro: ${e.message}"
                 )
+                // Backup permanece em disco — o usuário pode tentar salvar novamente
             }
         }
     }
@@ -720,7 +904,7 @@ class CorridaViewModel(
 
         _uiState.value = _uiState.value.copy(uploadEstado = UploadEstado.ENVIANDO)
 
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 val apiKey = container.preferencesRepository.apiKey.first()
                 val athleteId = container.preferencesRepository.athleteId.first() ?: return@launch
