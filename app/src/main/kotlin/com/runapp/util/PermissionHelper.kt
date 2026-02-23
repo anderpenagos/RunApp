@@ -31,6 +31,16 @@ object PermissionHelper {
             emptyArray()
         }
 
+    // Android 10+ (API 29+): necessário para TYPE_STEP_DETECTOR/TYPE_STEP_COUNTER
+    // e para o foregroundServiceType="health" no Android 14+.
+    // Em versões anteriores o sistema não exige essa permissão em runtime.
+    val ACTIVITY_RECOGNITION_PERMISSION =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            arrayOf(Manifest.permission.ACTIVITY_RECOGNITION)
+        } else {
+            emptyArray()
+        }
+
     fun hasLocationPermissions(context: Context): Boolean {
         return LOCATION_PERMISSIONS.all { permission ->
             ContextCompat.checkSelfPermission(context, permission) ==
@@ -57,6 +67,17 @@ object PermissionHelper {
             ) == PackageManager.PERMISSION_GRANTED
         } else {
             true // Abaixo do Android 13 não precisa pedir
+        }
+    }
+
+    fun hasActivityRecognitionPermission(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACTIVITY_RECOGNITION
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true // Abaixo do Android 10 não precisa de permissão em runtime
         }
     }
 
@@ -87,7 +108,8 @@ object PermissionHelper {
     fun hasAllPermissions(context: Context): Boolean {
         return hasLocationPermissions(context) &&
                hasBackgroundLocationPermission(context) &&
-               hasNotificationPermission(context)
+               hasNotificationPermission(context) &&
+               hasActivityRecognitionPermission(context)
     }
 }
 

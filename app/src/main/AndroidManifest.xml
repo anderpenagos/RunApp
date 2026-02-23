@@ -18,6 +18,11 @@
     <!-- Android 14+: exigido para foregroundServiceType="health" (acelerômetro/cadência) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
 
+    <!-- Android 10+ (API 29+): exigido para usar TYPE_STEP_DETECTOR/TYPE_STEP_COUNTER
+         quando o foregroundServiceType inclui "health". Sem essa permissão concedida
+         em runtime, startForeground() lança SecurityException no Android 14+ e o app fecha. -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+
     <!-- Manter CPU ativa durante a corrida -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 

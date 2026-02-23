@@ -42,6 +42,8 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
+import android.os.Build
+import android.content.pm.ServiceInfo
 
 /**
  * Foreground Service para rastreamento GPS contínuo, mesmo com tela bloqueada.
@@ -334,7 +336,7 @@ class RunningService : Service(), SensorEventListener {
                 // e parar o service limpo, evitando ficar "zumbi" (vivo mas sem fazer nada).
                 Log.w(TAG, "⚠️ Service reiniciado pelo Android (intent null) — estado perdido, encerrando")
                 criarCanalNotificacao()
-                startForeground(NOTIFICATION_ID, criarNotificacao("Sessão encerrada pelo sistema. Inicie uma nova corrida."))
+                iniciarForeground("Sessão encerrada pelo sistema. Inicie uma nova corrida.")
                 stopForeground(STOP_FOREGROUND_DETACH)
                 stopSelf()
             }
@@ -348,7 +350,7 @@ class RunningService : Service(), SensorEventListener {
         
         // Configurar como Foreground Service
         criarCanalNotificacao()
-        startForeground(NOTIFICATION_ID, criarNotificacao())
+        iniciarForeground()
         
         // Adquirir WakeLock — timeout de 6h cobre qualquer ultramaratona realista.
         // O wakelock anterior de 10 minutos era a causa raiz do service morrer em corridas longas:
@@ -876,6 +878,58 @@ class RunningService : Service(), SensorEventListener {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Notificações
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * Chama startForeground() com o foregroundServiceType correto conforme a API.
+     *
+     * PROBLEMA RAIZ DO CRASH:
+     * Fix 6 adicionou foregroundServiceType="location|health" ao AndroidManifest.
+     * No Android 14+ (API 34+), quando o manifesto declara foregroundServiceType, o sistema
+     * EXIGE que startForeground() seja chamado com o 3º argumento (o tipo de serviço) E que
+     * a permissão correspondente (ACTIVITY_RECOGNITION para "health") esteja concedida.
+     * Chamar a versão de 2 argumentos resulta em tipo=0, que viola a validação do Android 14+
+     * e lança SecurityException → o app fecha imediatamente ao dar Play.
+     *
+     * SOLUÇÃO: usar o 3º argumento com os tipos corretos, com fallbacks por API level.
+     *   API 34+ com ACTIVITY_RECOGNITION concedida → LOCATION | HEALTH (cadência ativa)
+     *   API 34+ sem ACTIVITY_RECOGNITION            → só LOCATION (cadência desativada mas roda)
+     *   API 29-33 → FOREGROUND_SERVICE_TYPE_LOCATION (HEALTH não existe nessas versões)
+     *   API < 29  → versão de 2 argumentos (types não existem antes do Q)
+     */
+    private fun iniciarForeground(texto: String? = null) {
+        val notif = criarNotificacao(texto)
+        when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
+                // API 34+ (Android 14+): verifica ACTIVITY_RECOGNITION em runtime.
+                // Se concedida: usa HEALTH para manter acesso ao TYPE_STEP_DETECTOR em background.
+                // Se negada: usa só LOCATION — cadência desativada mas corrida funciona normalmente.
+                val temActivityRecognition = checkSelfPermission(
+                    android.Manifest.permission.ACTIVITY_RECOGNITION
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+                val tipoServico = if (temActivityRecognition) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH
+                } else {
+                    Log.w(TAG, "⚠️ ACTIVITY_RECOGNITION não concedida — cadência pode não funcionar no Android 14+")
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                }
+                startForeground(NOTIFICATION_ID, notif, tipoServico)
+            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
+                // API 29-33 (Android 10-13): HEALTH não existe; usa só LOCATION.
+                startForeground(
+                    NOTIFICATION_ID,
+                    notif,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                )
+            }
+            else -> {
+                // API < 29 (Android 9 e abaixo): tipos de serviço não existem.
+                startForeground(NOTIFICATION_ID, notif)
+            }
+        }
+    }
 
     private fun criarCanalNotificacao() {
         val channel = NotificationChannel(

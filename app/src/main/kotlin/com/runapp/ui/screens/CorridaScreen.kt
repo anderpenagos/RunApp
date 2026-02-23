@@ -72,6 +72,12 @@ fun CorridaScreen(
     var permissaoBackground by remember {
         mutableStateOf(PermissionHelper.hasBackgroundLocationPermission(context))
     }
+    // ACTIVITY_RECOGNITION: necessário no Android 10+ para TYPE_STEP_DETECTOR
+    // e obrigatório para foregroundServiceType="health" no Android 14+.
+    // Sem ele, startForeground() lança SecurityException → app fecha ao dar Play.
+    var permissaoAtividade by remember {
+        mutableStateOf(PermissionHelper.hasActivityRecognitionPermission(context))
+    }
 
     // Re-checa as permissões sempre que a tela volta ao foco (onResume).
     // O remember inicial executa antes da Activity estar completamente pronta,
@@ -82,6 +88,7 @@ fun CorridaScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 permissaoGps = PermissionHelper.hasLocationPermissions(context)
                 permissaoBackground = PermissionHelper.hasBackgroundLocationPermission(context)
+                permissaoAtividade = PermissionHelper.hasActivityRecognitionPermission(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -94,6 +101,15 @@ fun CorridaScreen(
     ) { permissions ->
         permissaoBackground = permissions.values.all { it }
         // Não bloqueia o app se negar — apenas GPS com tela bloqueada não vai funcionar
+    }
+
+    // ACTIVITY_RECOGNITION — solicitado como parte do fluxo de permissões.
+    // O usuário pode negar; nesse caso a cadência ficará desativada, mas o GPS funciona.
+    val activityRecognitionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        permissaoAtividade = permissions.values.all { it }
+        // Se negou, não bloqueia a corrida — apenas cadência desativada
     }
 
     // Passo 2: pedir localização em primeiro plano
@@ -113,6 +129,10 @@ fun CorridaScreen(
             if (!permissaoBackground && PermissionHelper.BACKGROUND_LOCATION_PERMISSION.isNotEmpty()) {
                 backgroundLocationLauncher.launch(PermissionHelper.BACKGROUND_LOCATION_PERMISSION)
             }
+            // Pede ACTIVITY_RECOGNITION em paralelo (Android 10+)
+            if (!permissaoAtividade && PermissionHelper.ACTIVITY_RECOGNITION_PERMISSION.isNotEmpty()) {
+                activityRecognitionLauncher.launch(PermissionHelper.ACTIVITY_RECOGNITION_PERMISSION)
+            }
         }
     }
 
@@ -123,6 +143,10 @@ fun CorridaScreen(
         // Independente da resposta, segue pedindo localização
         if (!permissaoGps) {
             permissionLauncher.launch(PermissionHelper.LOCATION_PERMISSIONS)
+        }
+        // Também pede ACTIVITY_RECOGNITION se ainda não foi concedida
+        if (!permissaoAtividade && PermissionHelper.ACTIVITY_RECOGNITION_PERMISSION.isNotEmpty()) {
+            activityRecognitionLauncher.launch(PermissionHelper.ACTIVITY_RECOGNITION_PERMISSION)
         }
     }
 
@@ -805,15 +829,23 @@ fun CorridaScreen(
                         if (state.treino != null) {
                             FloatingActionButton(
                                 onClick = {
-                                    if (permissaoGps) {
-                                        viewModel.iniciarCorrida()
-                                    } else {
-                                        Toast.makeText(
-                                            context,
-                                            "Conceda permissões de GPS primeiro",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                        permissionLauncher.launch(PermissionHelper.LOCATION_PERMISSIONS)
+                                    when {
+                                        // Prioridade 1: pedir ACTIVITY_RECOGNITION se não concedida
+                                        // (necessário para startForeground com HEALTH no Android 14+)
+                                        !permissaoAtividade && PermissionHelper.ACTIVITY_RECOGNITION_PERMISSION.isNotEmpty() -> {
+                                            activityRecognitionLauncher.launch(PermissionHelper.ACTIVITY_RECOGNITION_PERMISSION)
+                                        }
+                                        // Prioridade 2: pedir GPS se não concedido
+                                        !permissaoGps -> {
+                                            Toast.makeText(
+                                                context,
+                                                "Conceda permissões de GPS primeiro",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                            permissionLauncher.launch(PermissionHelper.LOCATION_PERMISSIONS)
+                                        }
+                                        // Tudo OK: iniciar corrida
+                                        else -> viewModel.iniciarCorrida()
                                     }
                                 },
                                 containerColor = Color(0xFF4CAF50),
