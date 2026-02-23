@@ -409,7 +409,8 @@ class WorkoutRepository(private val api: IntervalsApi) {
         tempoSegundos: Long,
         paceMedia: String,
         rota: List<com.runapp.data.model.LatLngPonto>,
-        dataHora: String = java.time.LocalDateTime.now().toString()
+        dataHora: String = java.time.LocalDateTime.now().toString(),
+        paceZones: List<PaceZone> = emptyList()
     ): Result<java.io.File> {
         return try {
             Log.d(TAG, "=== SALVANDO ATIVIDADE ===")
@@ -441,13 +442,25 @@ class WorkoutRepository(private val api: IntervalsApi) {
             val cadenciaMedia = calcularCadenciaMedia(rota)
             val splits = calcularSplits(rota)
 
+            // Converte PaceZone (seg/metro) → ZonaFronteira (seg/km) para persistir
+            // os limites reais do perfil do atleta junto com a corrida.
+            val zonasFronteira = paceZones.map { z ->
+                com.runapp.data.model.ZonaFronteira(
+                    nome         = z.name,
+                    cor          = z.color ?: "",
+                    paceMinSegKm = (z.min ?: 0.0) * 1000.0,
+                    paceMaxSegKm = z.max?.let { it * 1000.0 }
+                )
+            }
+
             val meta = com.runapp.data.model.CorridaHistorico(
                 nome = nomeAtividade, data = dataHoraInicio.toString(),
                 distanciaKm = distanciaMetros / 1000.0, tempoFormatado = tempoStr,
                 paceMedia = paceMedia, pontosGps = rota.size, arquivoGpx = arquivo.name,
                 ganhoElevacaoM = ganhoElevacao,
                 cadenciaMedia = cadenciaMedia,
-                splitsParciais = splits
+                splitsParciais = splits,
+                zonasFronteira = zonasFronteira
             )
             val jsonFile = java.io.File(pastaGpx, "corrida_$timestamp.json")
             jsonFile.writeText(Gson().toJson(meta))

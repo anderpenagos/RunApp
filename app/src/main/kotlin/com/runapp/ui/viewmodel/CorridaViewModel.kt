@@ -122,6 +122,7 @@ class CorridaViewModel(
 
     private var workoutRepo: WorkoutRepository? = null
     private var arquivoGpxSalvo: File? = null
+    private var paceZonesSalvas: List<com.runapp.data.model.PaceZone> = emptyList()
 
     // Gson para backup de emergência
     private val gson = Gson()
@@ -559,6 +560,7 @@ class CorridaViewModel(
                             onSuccess = { zonesResponse -> repo.processarZonas(zonesResponse) },
                             onFailure = { emptyList() }
                         )
+                        paceZonesSalvas = paceZones  // guarda para usar no save da corrida
                         val passosProcessados = repo.converterParaPassos(evento, paceZones)
                         _uiState.value = _uiState.value.copy(
                             treino     = evento,
@@ -865,7 +867,8 @@ class CorridaViewModel(
                     distanciaMetros = stateAtual.distanciaMetros,
                     tempoSegundos = stateAtual.tempoTotalSegundos,
                     paceMedia = stateAtual.paceMedia,
-                    rota = stateAtual.rota
+                    rota = stateAtual.rota,
+                    paceZones = paceZonesSalvas
                 )
                 
                 result.fold(

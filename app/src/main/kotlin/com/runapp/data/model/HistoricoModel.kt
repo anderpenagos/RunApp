@@ -27,7 +27,21 @@ data class CorridaHistorico(
     // Métricas avançadas para o dashboard
     val cadenciaMedia: Int = 0,             // SPM médio da corrida
     val ganhoElevacaoM: Int = 0,            // D+ total em metros
-    val splitsParciais: List<SplitParcial> = emptyList() // pace por km completo
+    val splitsParciais: List<SplitParcial> = emptyList(), // pace por km completo
+    // Fronteiras de pace do perfil do atleta no Intervals.icu, capturadas no momento do save.
+    // Usadas pelo gráfico de zonas de ritmo para mostrar dados reais em vez de heurísticas.
+    val zonasFronteira: List<ZonaFronteira> = emptyList()
+)
+
+/**
+ * Fronteira de uma zona de pace do perfil do atleta no Intervals.icu.
+ * Paces em seg/km. [paceMaxSegKm] null significa "sem teto" (zona mais lenta).
+ */
+data class ZonaFronteira(
+    val nome: String,
+    val cor: String = "",
+    val paceMinSegKm: Double,   // pace mais RÁPIDO da zona (seg/km) — número menor
+    val paceMaxSegKm: Double?   // pace mais LENTO da zona (seg/km) — null = sem teto
 )
 
 /** Pace de um quilômetro fechado da corrida */
