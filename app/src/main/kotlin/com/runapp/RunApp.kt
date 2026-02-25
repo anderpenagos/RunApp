@@ -3,6 +3,7 @@ package com.runapp
 import android.app.Application
 import com.runapp.data.api.IntervalsClient
 import com.runapp.data.datastore.PreferencesRepository
+import com.runapp.data.db.RunDatabase
 import com.runapp.data.repository.HistoricoRepository
 import com.runapp.data.repository.WorkoutRepository
 
@@ -29,6 +30,14 @@ class AppContainer(private val application: Application) {
 
     val preferencesRepository by lazy {
         PreferencesRepository(application)
+    }
+
+    /**
+     * Banco de dados Room — singleton para todo o app.
+     * Compartilhado entre RunningService (escrita) e CorridaViewModel (leitura/recovery).
+     */
+    val runDatabase by lazy {
+        RunDatabase.getInstance(application)
     }
 
     /**

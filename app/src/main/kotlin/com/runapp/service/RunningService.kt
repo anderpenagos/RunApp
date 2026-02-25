@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -44,6 +45,12 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 import android.os.Build
 import android.content.pm.ServiceInfo
+import android.os.SystemClock
+import com.google.gson.Gson
+import com.runapp.data.db.RoutePointEntity
+import com.runapp.data.db.RunDatabase
+import java.io.File
+import java.util.UUID
 
 /**
  * Foreground Service para rastreamento GPS contínuo, mesmo com tela bloqueada.
@@ -52,6 +59,115 @@ import android.content.pm.ServiceInfo
  * Ele mantém o GPS ativo e processa todos os cálculos de pace, distância, etc.
  */
 class RunningService : Service(), SensorEventListener {
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Checkpoint em disco — sobrevive à morte do processo
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    // Mesmo arquivo que o ViewModel lê ao restaurar — mantém compatibilidade.
+    // Salvo a cada 30s pelo Service, que é o único componente que sobrevive
+    // enquanto o processo estiver vivo (o ViewModel pode morrer com a Activity).
+    private val checkpointFile: File
+        get() = File(applicationContext.filesDir, "emergency_run_backup.json")
+
+    private val gson = Gson()
+
+    // Banco de dados Room — injetado via AppContainer na inicialização do Service.
+    // Inserção de pontos GPS é não-bloqueante (Dispatchers.IO no serviceScope).
+    private lateinit var database: RunDatabase
+
+    // ID único da sessão atual — gerado no início de cada corrida.
+    // Usado como chave primária no banco e no checkpoint JSON para recovery.
+    private var sessionId: String = ""
+
+    /**
+     * Checkpoint LEVE: apenas metadados (sem rota — rota está no Room).
+     * Economiza tempo de escrita e evita arquivos JSON de vários MB.
+     *
+     * Compatibilidade: o ViewModel lê o mesmo arquivo, mas o campo "rota"
+     * agora pode ser null — ele consulta o Room via sessionId se necessário.
+     */
+    private data class CheckpointData(
+        val sessionId: String,
+        val distanciaMetros: Double,
+        val tempoTotalSegundos: Long,
+        val paceMedia: String,
+        // WALL CLOCK: apenas para exibir "Corrida iniciada às 08:00"
+        val timestampInicioWall: Long,
+        // ELAPSED REALTIME: âncora monotônica imune a NTP/DST — para o cronômetro
+        val elapsedRealtimeInicio: Long,
+        val tempoPausadoTotalMs: Long,
+        val timestamp: Long = System.currentTimeMillis()
+    )
+
+    /**
+     * Salva checkpoint de metadados de forma ATÔMICA.
+     *
+     * ATOMICIDADE: escreve em arquivo .tmp e depois faz rename().
+     * Em Linux (que é o kernel do Android), rename() é uma operação atômica
+     * do filesystem — nunca gera arquivo parcialmente escrito, mesmo se o
+     * processo morrer no meio da operação.
+     *
+     * O arquivo contem apenas metadados (sem rota). A rota está no Room.
+     * Uma corrida de 2h gera <1KB de checkpoint vs ~500KB com rota em JSON.
+     */
+    private fun salvarCheckpoint() {
+        if (!estaCorrendo || _distanciaMetros.value < 10.0) return
+
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val checkpoint = CheckpointData(
+                    sessionId             = sessionId,
+                    distanciaMetros       = _distanciaMetros.value,
+                    tempoTotalSegundos    = _tempoTotalSegundos.value,
+                    paceMedia             = _paceMedia.value,
+                    timestampInicioWall   = timestampInicioWall,
+                    elapsedRealtimeInicio = elapsedRealtimeInicio,
+                    tempoPausadoTotalMs   = tempoPausadoTotalMs
+                )
+                val json = gson.toJson(checkpoint)
+                // ESCRITA ATÔMICA: tmp → rename (nunca corrompe o arquivo de backup)
+                val tmpFile = File(applicationContext.filesDir, "emergency_run_backup.tmp")
+                tmpFile.writeText(json)
+                if (!tmpFile.renameTo(checkpointFile)) {
+                    // Fallback: rename falha apenas entre partições diferentes (raro no Android)
+                    checkpointFile.writeText(json)
+                    tmpFile.delete()
+                }
+                Log.d(TAG, "💾 Checkpoint atômico: ${_distanciaMetros.value.toInt()}m (Room: ${rota.size} pts)")
+            } catch (e: Exception) {
+                Log.e(TAG, "⚠️ Falha ao salvar checkpoint", e)
+            }
+        }
+    }
+
+    /**
+     * Remove checkpoint E dados do Room ao terminar normalmente.
+     * Sem isso, na próxima abertura o ViewModel restauraria uma sessão antiga.
+     */
+    private fun deletarCheckpoint() {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                checkpointFile.delete()
+                File(applicationContext.filesDir, "emergency_run_backup.tmp").delete()
+                // Deleta também dados do Room desta sessão — já foram salvos no servidor
+                if (sessionId.isNotEmpty()) {
+                    database.routePointDao().deleteSession(sessionId)
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Lê checkpoint JSON de forma síncrona (para uso no recovery via START_STICKY).
+     * Retorna null se não existe ou se está corrompido.
+     */
+    private fun lerCheckpointSync(): CheckpointData? {
+        return try {
+            if (!checkpointFile.exists()) null
+            else gson.fromJson(checkpointFile.readText(), CheckpointData::class.java)
+        } catch (_: Exception) { null }
+    }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Coroutines e Lifecycle
@@ -104,6 +220,10 @@ class RunningService : Service(), SensorEventListener {
     fun getIndexPassoAtivo(): Int = indexPassoAtivo
     fun isCorrendo(): Boolean = estaCorrendo
     fun isPausado(): Boolean = estaPausado
+    /** Retorna snapshot completo da rota — usado pelo ViewModel ao reconectar (sem depender do StateFlow). */
+    fun getRotaCompleta(): List<LatLngPonto> = rota.toList()
+    /** Retorna o sessionId da corrida ativa — usado pelo ViewModel para queries no Room. */
+    fun getSessionId(): String = sessionId
 
     // Teletransporta o cronômetro para o início do próximo passo.
     // O ViewModel detectará a mudança de index via atualizarProgressoPasso e anunciará o passo.
@@ -188,12 +308,30 @@ class RunningService : Service(), SensorEventListener {
         get() = ultimoPaceEmaInterno
         set(value) { ultimoPaceEmaInterno = value }
     
-    // Timestamps
-    private var timestampInicio: Long = 0
-    private var timestampPausaInicio: Long = 0
-    private var tempoPausadoTotal: Long = 0
+    // Timestamps — DOIS conjuntos por design intencional:
+    // *Wall clock* (currentTimeMillis): para exibir horário de início ("às 08:00")
+    // *ElapsedRealtime* (SystemClock): monotônico, imune a NTP/fuso/DST — para duração
+    private var timestampInicioWall: Long = 0
+    private var elapsedRealtimeInicio: Long = 0
+    private var elapsedRealtimePausaInicio: Long = 0
+    private var tempoPausadoTotalMs: Long = 0
+    // Alias para compatibilidade com código que usa timestampInicio (GPS, window etc.)
+    private var timestampInicio: Long
+        get() = timestampInicioWall
+        set(value) { timestampInicioWall = value }
+    private var tempoPausadoTotal: Long
+        get() = tempoPausadoTotalMs
+        set(value) { tempoPausadoTotalMs = value }
     private var ultimoCliquePasso: Long = 0L  // debounce para pularPasso/voltarPasso
     
+    // ── GPS Cold Start (salto inicial após recovery) ──────────────────────────
+    // Após recuperar de process death, o primeiro ping GPS pode vir de uma torre
+    // de celular (500m+ de distância) antes de o chip adquirir satélites de verdade.
+    // Mantemos um contador de pontos "suspeitos" a ignorar logo após o recovery.
+    private var modoRecuperacaoGps = false
+    private var contadorPontosRecuperacao = 0
+    private val MAX_VELOCIDADE_HUMANA_MS = 11.0  // ~40 km/h — cobre sprints de elite
+
     // Auto-pause
     private var ultimaLocalizacaoSignificativa: Location? = null
     private var contadorSemMovimento = 0
@@ -319,6 +457,10 @@ class RunningService : Service(), SensorEventListener {
             PowerManager.PARTIAL_WAKE_LOCK,
             "RunApp::RunningServiceWakeLock"
         )
+
+        // Inicializar banco de dados Room via AppContainer (singleton — thread-safe)
+        val app = applicationContext as com.runapp.RunApp
+        database = app.container.runDatabase
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -330,19 +472,130 @@ class RunningService : Service(), SensorEventListener {
             ACTION_RESUME -> retomarRastreamento()
             ACTION_STOP   -> pararRastreamento()
             null -> {
-                // O Android reiniciou o service via START_STICKY após matar o processo.
-                // O estado em memória (rota, timestamps, etc.) foi perdido.
-                // Não há como recuperar o treino de forma confiável — notificar o usuário
-                // e parar o service limpo, evitando ficar "zumbi" (vivo mas sem fazer nada).
-                Log.w(TAG, "⚠️ Service reiniciado pelo Android (intent null) — estado perdido, encerrando")
-                criarCanalNotificacao()
-                iniciarForeground("Sessão encerrada pelo sistema. Inicie uma nova corrida.")
-                stopForeground(STOP_FOREGROUND_DETACH)
-                stopSelf()
+                // O Android reiniciou o Service (START_STICKY) após matar o processo.
+                // O estado em RAM foi perdido, mas temos: (1) checkpoint JSON com metadados,
+                // (2) Room DB com todos os pontos GPS. Tentamos recuperar e continuar silenciosamente.
+                Log.w(TAG, "⚠️ Service reiniciado pelo Android (intent null) — tentando recuperar via Room")
+                recuperarAposProcessDeath()
             }
         }
-        
-        return START_NOT_STICKY  // Não reiniciar automaticamente — evita o zumbi inútil
+
+        return START_STICKY  // Android reinicia o Service se for morto por OOM — recovery via Room
+    }
+
+    /**
+     * Recovery após o Android reiniciar o Service (START_STICKY + process death).
+     *
+     * FLUXO:
+     * 1. Lê checkpoint JSON (síncrono — arquivo pequeno, < 1KB)
+     * 2. Restaura metadados (timer, distância, pace)
+     * 3. Restaura rota do Room (assíncrono — pode ser grande)
+     * 4. Reinicia GPS e timer com estado restaurado
+     *
+     * Se não há checkpoint (primeira run, ou corrida já finalizada): para limpo.
+     * Notificação atualizada automaticamente — o usuário vê "Corrida recuperada"
+     * sem precisar abrir o app.
+     */
+    private fun recuperarAposProcessDeath() {
+        criarCanalNotificacao()
+
+        val checkpoint = lerCheckpointSync()
+        if (checkpoint == null || checkpoint.distanciaMetros < 10.0) {
+            Log.w(TAG, "⚠️ Sem checkpoint válido para recuperar — encerrando")
+            iniciarForeground("Sessão encerrada pelo sistema. Inicie uma nova corrida.")
+            stopForeground(STOP_FOREGROUND_DETACH)
+            stopSelf()
+            return
+        }
+
+        serviceScope.launch {
+            Log.d(TAG, "♻️ Recuperando: ${checkpoint.distanciaMetros.toInt()}m, ${checkpoint.tempoTotalSegundos}s")
+
+            // Restaurar metadados do timer com elapsedRealtime
+            sessionId           = checkpoint.sessionId
+            timestampInicioWall = checkpoint.timestampInicioWall
+            tempoPausadoTotalMs = checkpoint.tempoPausadoTotalMs
+
+            // FIX 1 — PROTEÇÃO CONTRA REINÍCIO DO CELULAR:
+            // elapsedRealtime é monotônico MAS reseta quando o aparelho desliga/reinicia.
+            // Se agora < elapsedRealtimeInicio salvo, o celular foi reiniciado e o cronômetro
+            // ficaria negativo ou bizarro. Nesse caso, recalculamos a âncora usando o wall
+            // clock (currentTimeMillis), que persiste entre reinícios via RTC do hardware.
+            val agora = SystemClock.elapsedRealtime()
+            if (agora < checkpoint.elapsedRealtimeInicio) {
+                // Celular reiniciou: reconstrói âncora elapsedRealtime a partir do wall clock.
+                // duracaoReal = quanto tempo de corrida (descontando pausas) já havia passado.
+                val duracaoRealMs = (System.currentTimeMillis() - checkpoint.timestampInicioWall
+                    - checkpoint.tempoPausadoTotalMs).coerceAtLeast(0L)
+                elapsedRealtimeInicio = (agora - duracaoRealMs).coerceAtMost(agora)
+                Log.w(TAG, "📱 Reinício do celular detectado! Recalibrando âncora: " +
+                    "elapsed salvo=${checkpoint.elapsedRealtimeInicio}ms > agora=${agora}ms. " +
+                    "Nova âncora: ${elapsedRealtimeInicio}ms (baseada em wall clock)")
+            } else {
+                elapsedRealtimeInicio = checkpoint.elapsedRealtimeInicio
+            }
+            _distanciaMetros.value    = checkpoint.distanciaMetros
+            _tempoTotalSegundos.value = checkpoint.tempoTotalSegundos
+            _paceMedia.value    = checkpoint.paceMedia
+            estaPausado         = false
+            estaCorrendo        = true
+
+            // Restaurar rota do Room (I/O assíncrono)
+            val pontosRecuperados = withContext(Dispatchers.IO) {
+                database.routePointDao()
+                    .getSessionPoints(checkpoint.sessionId)
+                    .map { it.toLatLngPonto() }
+            }
+            rota.addAll(pontosRecuperados)
+            if (pontosRecuperados.isNotEmpty()) {
+                _rotaAtual.value = rota.toList()
+                _posicaoAtual.value = pontosRecuperados.last()
+            }
+
+            // PONTO 3 — RECONCILIAÇÃO distância checkpoint vs Room:
+            // Se o processo morreu após um insert no Room mas antes do próximo checkpoint (30s),
+            // o checkpoint tem distância N-1 enquanto o Room tem N pontos.
+            // Solução: recalcular haversine sobre os pontos do Room e usar o maior valor.
+            if (pontosRecuperados.size >= 2) {
+                var distanciaRoom = 0.0
+                for (i in 1 until pontosRecuperados.size) {
+                    distanciaRoom += calcularDistancia(
+                        pontosRecuperados[i-1].lat, pontosRecuperados[i-1].lng,
+                        pontosRecuperados[i].lat,   pontosRecuperados[i].lng
+                    )
+                }
+                // Usa máximo: protege contra spike GPS que inflasse o recalculado
+                val distanciaFinal = maxOf(checkpoint.distanciaMetros, distanciaRoom)
+                if (kotlin.math.abs(distanciaFinal - checkpoint.distanciaMetros) > 1.0) {
+                    Log.d(TAG, "📐 Distância reconciliada: ${checkpoint.distanciaMetros.toInt()}m → ${distanciaFinal.toInt()}m")
+                    _distanciaMetros.value = distanciaFinal
+                }
+            }
+
+            Log.d(TAG, "✅ ${pontosRecuperados.size} pontos GPS recuperados do Room")
+
+            // FIX 4 — GPS COLD START: ativa modo de recuperação para filtrar os primeiros
+            // pontos GPS que chegam com precisão ruim (torre de celular, fix desatualizado).
+            if (pontosRecuperados.isNotEmpty()) {
+                modoRecuperacaoGps = true
+                contadorPontosRecuperacao = 0
+                Log.d(TAG, "🛡️ Modo GPS recovery ativado — filtrando saltos impossíveis nos primeiros pontos")
+            }
+
+            // Reiniciar como se fosse nova corrida (WakeLock, GPS, Timer, Sensores)
+            iniciarForeground("♻️ Corrida recuperada — ${String.format("%.2f", checkpoint.distanciaMetros / 1000)}km já registrados")
+            wakeLock?.acquire(6 * 60 * 60 * 1000L)
+
+            // Registrar sensor de cadência
+            if (usandoStepDetector) {
+                stepDetector?.let { sensorManager.registerListener(this@RunningService, it, SensorManager.SENSOR_DELAY_NORMAL) }
+            } else {
+                acelerometro?.let { sensorManager.registerListener(this@RunningService, it, SensorManager.SENSOR_DELAY_GAME) }
+            }
+
+            iniciarAtualizacoesGPS()
+            iniciarTimer()
+        }
     }
 
     private fun iniciarRastreamento() {
@@ -364,13 +617,37 @@ class RunningService : Service(), SensorEventListener {
             Log.d(TAG, "⚙️ Auto-pause ${if (autoPauseFuncaoAtiva) "ativado" else "desativado"}")
         }
         
+        // Gerar novo sessionId único para esta corrida
+        // Usado como chave no Room para separar sessões diferentes no mesmo banco
+        sessionId = UUID.randomUUID().toString()
+        Log.d(TAG, "🆔 Sessão iniciada: $sessionId")
+
+        // FIX 2 — HIGIENE DO BANCO DE DADOS:
+        // Deleta pontos de sessões anteriores (crashes, testes, corridas incompletas) que
+        // não foram limpos normalmente. O banco só precisa ter dados da sessão ATIVA.
+        // Feito de forma assíncrona para não bloquear o início da corrida.
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                database.routePointDao().deleteOtherSessions(sessionId)
+                Log.d(TAG, "🗑️ Sessões órfãs removidas do Room (mantendo: $sessionId)")
+            } catch (e: Exception) {
+                Log.w(TAG, "⚠️ Falha ao limpar sessões órfãs: ${e.message}")
+            }
+        }
+
+        // Resetar modo GPS recovery (nova corrida sempre começa limpa)
+        modoRecuperacaoGps = false
+        contadorPontosRecuperacao = 0
+
         // Resetar dados
         rota.clear()
         ultimasLocalizacoes.clear()
         ultimoPaceEmaInterno = null  // FIX 7: reset completo intencional no início de NOVA corrida
         janelaAtualSegundos = 12
-        timestampInicio = System.currentTimeMillis()
-        tempoPausadoTotal = 0
+        // Capturar ambas âncoras no mesmo instante
+        timestampInicioWall   = System.currentTimeMillis()     // para display
+        elapsedRealtimeInicio = SystemClock.elapsedRealtime()  // para cronômetro
+        tempoPausadoTotalMs   = 0
         _distanciaMetros.value = 0.0
         _tempoTotalSegundos.value = 0
         estaPausado = false
@@ -411,7 +688,7 @@ class RunningService : Service(), SensorEventListener {
     private fun pausarRastreamento() {
         Log.d(TAG, "⏸️ Pausando rastreamento")
         estaPausado = true
-        timestampPausaInicio = System.currentTimeMillis()
+        elapsedRealtimePausaInicio = SystemClock.elapsedRealtime()
         
         // Atualizar notificação
         atualizarNotificacao("Corrida pausada")
@@ -421,8 +698,8 @@ class RunningService : Service(), SensorEventListener {
         Log.d(TAG, "▶️ Retomando rastreamento")
         
         if (estaPausado) {
-            val tempoPausa = System.currentTimeMillis() - timestampPausaInicio
-            tempoPausadoTotal += tempoPausa
+            val tempoPausaMs = SystemClock.elapsedRealtime() - elapsedRealtimePausaInicio
+            tempoPausadoTotalMs += tempoPausaMs
             estaPausado = false
             
             // Atualizar notificação
@@ -434,6 +711,12 @@ class RunningService : Service(), SensorEventListener {
         Log.d(TAG, "⏹️ Parando rastreamento")
 
         estaCorrendo = false
+
+        // Forçar emissão da rota COMPLETA antes de parar.
+        // A emissão a cada 5 pontos pode ter deixado os últimos pontos sem emissão.
+        // Fazemos isso independente de subscriptionCount — ao parar, sempre queremos
+        // que a UI tenha o estado final completo para o ResumoScreen.
+        _rotaAtual.value = rota.toList()
 
         // Parar sensor de cadência
         sensorManager.unregisterListener(this)
@@ -453,6 +736,9 @@ class RunningService : Service(), SensorEventListener {
             }
         }
         
+        // Deletar checkpoint — corrida finalizada normalmente, não há dados a recuperar
+        deletarCheckpoint()
+
         // Parar foreground e service
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -565,10 +851,53 @@ class RunningService : Service(), SensorEventListener {
     // GPS Tracking
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    private var gpsDisponivel = true
+
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
+            if (!gpsDisponivel) {
+                gpsDisponivel = true
+                Log.d(TAG, "✅ GPS recuperado")
+                getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_GPS_ERROR_ID)
+                atualizarNotificacao()
+            }
             result.lastLocation?.let { location ->
                 processarNovaLocalizacao(location)
+            }
+        }
+
+        /**
+         * Disparado quando o GPS fica indisponível: avião, GPS desativado ou
+         * permissão revogada enquanto a corrida está ativa.
+         * Emite notificação de erro crítico imediatamente para alertar o usuário.
+         */
+        override fun onLocationAvailability(availability: LocationAvailability) {
+            val disponivel = availability.isLocationAvailable
+            if (disponivel == gpsDisponivel) return
+            gpsDisponivel = disponivel
+
+            if (!disponivel && estaCorrendo) {
+                Log.w(TAG, "⚠️ GPS indisponível durante corrida")
+                val temPermissao = checkSelfPermission(
+                    android.Manifest.permission.ACCESS_FINE_LOCATION
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+                val msg = if (!temPermissao)
+                    "⚠️ Permissão de GPS revogada — corrida pausada!"
+                else
+                    "⚠️ Sinal GPS perdido — aguardando reconexão..."
+
+                val notif = androidx.core.app.NotificationCompat.Builder(this@RunningService, CHANNEL_ID)
+                    .setContentTitle("RunApp — GPS Interrompido 🛑")
+                    .setContentText(msg)
+                    .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                    .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
+                    .setAutoCancel(true)
+                    .build()
+                getSystemService(NotificationManager::class.java).notify(NOTIFICATION_GPS_ERROR_ID, notif)
+
+                // Salvar checkpoint imediatamente — preserva dados até o momento da perda
+                salvarCheckpoint()
             }
         }
     }
@@ -604,10 +933,59 @@ class RunningService : Service(), SensorEventListener {
         // Não processar se pausado
         if (estaPausado) return
         
+        // FILTRO DE PONTO "ZUMBI" (GPS Stale):
+        // Após sair de um túnel ou reiniciar o GPS, o FusedLocationProvider pode enviar
+        // o último ponto cacheado com um timestamp antigo antes de obter a posição real.
+        // Esses pontos têm `location.time` (wall clock do momento da medição) muito
+        // defasado em relação ao `System.currentTimeMillis()`.
+        // Se deixarmos passar, o dtMs entre o ponto anterior e este "zumbi" vai parecer
+        // pequeno (pois o timestamp é antigo), mas a distância pode ser enorme — produzindo
+        // um pace impossível ou quebrando o filtro de gap de 30s do heatmap.
+        // Limiar de 10s cobre atrasos normais de processamento do chip GPS (~1-3s)
+        // sem descartar pontos legítimos em hardware mais lento.
+        // Usa elapsedRealtimeNanos em vez de location.time (wall clock) para consistência:
+        // todo o cronômetro do app já opera em elapsedRealtime, imune a saltos de NTP
+        // ou mudanças de fuso que podem ocorrer no meio de uma corrida longa.
+        val idadeMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+            SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos
+        )
+        if (idadeMs > 10_000L) {
+            Log.d(TAG, "👻 Ponto GPS 'zumbi' descartado: ${idadeMs}ms de atraso (elapsedRealtimeNanos)")
+            return
+        }
+
         // Filtro básico de qualidade
         if (location.accuracy > MAX_ACCURACY_METERS) {
             Log.d(TAG, "⚠️ Localização descartada: accuracy=${location.accuracy}m")
             return
+        }
+
+        // FIX 4 — FILTRO DE SALTO INICIAL (GPS Cold Start após recovery):
+        // Os primeiros pings pós-recuperação podem vir de torre de celular, muito longe da
+        // posição real. Descartamos qualquer ponto onde a velocidade implícita desde o último
+        // ponto salvo seja humanamente impossível (> MAX_VELOCIDADE_HUMANA_MS m/s).
+        if (modoRecuperacaoGps && rota.isNotEmpty()) {
+            val ultimoPontoSalvo = rota.last()
+            val distJump = calcularDistancia(
+                ultimoPontoSalvo.lat, ultimoPontoSalvo.lng,
+                location.latitude, location.longitude
+            )
+            val deltaTempoS = ((System.currentTimeMillis() - ultimoPontoSalvo.tempo) / 1000.0).coerceAtLeast(1.0)
+            val velocidadeMs = distJump / deltaTempoS
+
+            if (velocidadeMs > MAX_VELOCIDADE_HUMANA_MS) {
+                contadorPontosRecuperacao++
+                Log.w(TAG, "🚫 Ponto GPS descartado por salto impossível: " +
+                    "${distJump.toInt()}m em ${deltaTempoS.toInt()}s " +
+                    "(${String.format("%.1f", velocidadeMs)} m/s). " +
+                    "Ponto ${contadorPontosRecuperacao} descartado.")
+                return
+            } else {
+                // Ponto plausível: desativa modo de recuperação
+                modoRecuperacaoGps = false
+                Log.d(TAG, "✅ GPS recovery: primeiro ponto válido aceito (${distJump.toInt()}m, " +
+                    "${String.format("%.1f", velocidadeMs)} m/s)")
+            }
         }
 
         val agora = System.currentTimeMillis()
@@ -651,9 +1029,37 @@ class RunningService : Service(), SensorEventListener {
             pontoNovo.lat, pontoNovo.lng
         )
 
-        // Adicionar ponto à rota
+        // Adicionar ponto à rota em memória
         rota.add(pontoNovo)
-        _rotaAtual.value = rota.toList()
+
+        // PERSISTÊNCIA IMEDIATA NO ROOM — só pontos com GPS confiável (< 20m)
+        // O limiar é mais rígido que o da UI (50m) para evitar "saltos" que inflam
+        // distância e sujam o heatmap. Pontos ruins continuam visíveis na tela, mas
+        // não entram no histórico permanente.
+        if (location.accuracy <= ROOM_ACCURACY_METERS) {
+            serviceScope.launch(Dispatchers.IO) {
+                try {
+                    database.routePointDao().insert(RoutePointEntity.from(pontoNovo, sessionId))
+                } catch (e: Exception) {
+                    Log.e(TAG, "⚠️ Falha ao inserir ponto no Room", e)
+                }
+            }
+        } else {
+            Log.d(TAG, "📍 Ponto não persistido (accuracy=${location.accuracy}m > ${ROOM_ACCURACY_METERS}m)")
+        }
+
+        // EMISSÃO INTELIGENTE DO STATEFLOW
+        // subscriptionCount == 0 significa que a UI está em background (tela bloqueada).
+        // Nesse caso, NÃO geramos a cópia toList() — eliminamos 100% da alocação de RAM
+        // enquanto o usuário corre com tela bloqueada, que é exatamente quando o OOM
+        // killer atacava. Quando a UI voltar, onServiceConnected lê getRotaCompleta()
+        // diretamente da lista em memória, sem depender do StateFlow.
+        if (_rotaAtual.subscriptionCount.value > 0) {
+            // Emitir a cada 5 pontos (5s) para reduzir pressão no GC quando UI está ativa
+            if (rota.size == 1 || rota.size % 5 == 0) {
+                _rotaAtual.value = rota.toList()
+            }
+        }
 
         // Atualizar distância total
         _distanciaMetros.value += distancia
@@ -863,12 +1269,22 @@ class RunningService : Service(), SensorEventListener {
                 delay(1000)
                 
                 if (!estaPausado && !_autoPausado.value) {
-                    val tempoDecorrido = (System.currentTimeMillis() - timestampInicio - tempoPausadoTotal) / 1000
+                    // ElapsedRealtime: monotônico, nunca salta com NTP/DST/fuso
+                    val tempoDecorrido = (SystemClock.elapsedRealtime() - elapsedRealtimeInicio - tempoPausadoTotalMs) / 1000
                     _tempoTotalSegundos.value = tempoDecorrido
                     
                     // Atualizar notificação a cada 5 segundos
                     if (tempoDecorrido % 5 == 0L) {
                         atualizarNotificacao()
+                    }
+
+                    // CHECKPOINT PERIÓDICO A CADA 30 SEGUNDOS NO DISCO
+                    // Salvo pelo SERVICE (não pelo ViewModel), garantindo persistência
+                    // mesmo quando a Activity e o ViewModel são destruídos pelo sistema
+                    // durante corridas longas com tela bloqueada. O ViewModel lê este
+                    // arquivo ao abrir o app e restaura o estado FINALIZADO automaticamente.
+                    if (tempoDecorrido % 30 == 0L && tempoDecorrido > 0) {
+                        salvarCheckpoint()
                     }
                 }
             }
@@ -961,6 +1377,29 @@ class RunningService : Service(), SensorEventListener {
 
         val conteudo = texto ?: "GPS registrando sua corrida..."
 
+        // FIX 3 — PENDINGINTENT ROBUSTO: botões apontam para o SERVICE, não Activity.
+        // getService() garante que o comando é processado mesmo com o app morto em background
+        // (process death). O Service está vivo (foreground) e processa imediatamente.
+        val pausaResumeIntent = Intent(this, RunningService::class.java).apply {
+            action = if (estaPausado || _autoPausado.value) ACTION_RESUME else ACTION_PAUSE
+        }
+        val pausaResumePendingIntent = PendingIntent.getService(
+            this, 1, pausaResumeIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val pararIntent = Intent(this, RunningService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val pararPendingIntent = PendingIntent.getService(
+            this, 2, pararIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val pausaResumeLabel = if (estaPausado || _autoPausado.value) "▶ Retomar" else "⏸ Pausar"
+        val pausaResumeIcon  = if (estaPausado || _autoPausado.value)
+            android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("RunApp — Corrida Ativa 🏃")
             .setContentText(conteudo)
@@ -968,6 +1407,10 @@ class RunningService : Service(), SensorEventListener {
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setSilent(true)
+            // Botão 1: Pausar / Retomar — aponta direto ao Service (não à Activity)
+            .addAction(pausaResumeIcon, pausaResumeLabel, pausaResumePendingIntent)
+            // Botão 2: Parar — aponta direto ao Service, funciona mesmo com UI morta
+            .addAction(android.R.drawable.ic_media_next, "⏹ Parar", pararPendingIntent)
             .build()
     }
 
@@ -1045,6 +1488,7 @@ class RunningService : Service(), SensorEventListener {
         private const val TAG = "RunningService"
         const val CHANNEL_ID = "running_channel"
         const val NOTIFICATION_ID = 42
+        const val NOTIFICATION_GPS_ERROR_ID = 43
         
         const val ACTION_START = "START"
         const val ACTION_PAUSE = "PAUSE"
@@ -1055,6 +1499,17 @@ class RunningService : Service(), SensorEventListener {
         const val ACTION_SHOW_RUNNING = "ACTION_SHOW_RUNNING_SCREEN"
         const val EXTRA_EVENT_ID = "EVENT_ID"
         
-        const val MAX_ACCURACY_METERS = 50f
+        // DOIS LIMIARES DE ACCURACY — comportamento diferente por contexto:
+        //
+        // IN_MEMORY_ACCURACY (50m): limiar permissivo para o StateFlow / UI.
+        //   Mantém o ponto "visível" no mapa mesmo com GPS ruim (ex: túnel, prédios).
+        //   O usuário vê a posição continuar atualizada, reduzindo a sensação de "freeze".
+        //
+        // ROOM_ACCURACY (20m): limiar rígido para persistência no banco de dados.
+        //   Só salva pontos com leitura GPS confiável — evita "saltos" de 50-100m no
+        //   histórico que inflam a distância total e sujam o heatmap de pace.
+        //   20m é o padrão usado pelo Strava/Garmin para corridas urbanas.
+        const val MAX_ACCURACY_METERS = 50f       // descarta da UI
+        const val ROOM_ACCURACY_METERS = 20f      // descarta da persistência
     }
 }

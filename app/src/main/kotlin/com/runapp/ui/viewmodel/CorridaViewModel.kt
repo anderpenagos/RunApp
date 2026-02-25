@@ -30,6 +30,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.runapp.RunApp
+import com.runapp.data.db.RunDatabase
+import com.runapp.util.DouglasPeucker
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Enums
@@ -65,7 +68,11 @@ private data class BackupEmergencia(
     val distanciaMetros: Double,
     val tempoTotalSegundos: Long,
     val paceMedia: String,
-    val rota: List<LatLngPonto>,
+    // v2: rota armazenada no Room (via sessionId). Campo mantido para retrocompatibilidade
+    // com backups antigos que salvavam a lista inteira em JSON.
+    val rota: List<LatLngPonto>? = null,
+    // v2: ID da sessão Room para recuperar rota sem carregar JSON inteiro
+    val sessionId: String? = null,
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -104,6 +111,9 @@ data class CorridaUiState(
     // Formatação
     val tempoFormatado: String = "00:00:00",
     
+    // Carregando rota após recovery (Douglas-Peucker rodando em background)
+    val carregandoRota: Boolean = false,
+
     // Erro
     val erro: String? = null
 )
@@ -122,10 +132,20 @@ class CorridaViewModel(
 
     private var workoutRepo: WorkoutRepository? = null
     private var arquivoGpxSalvo: File? = null
+
+    // Rota completa sem simplificação Douglas-Peucker — usada para export GPX fiel.
+    // A UI exibe rota simplificada (rotaParaDisplay) para performance do mapa.
+    // O GPX exporta esta versão para precisão máxima na análise de treino.
+    private var rotaCompleataParaExport: List<LatLngPonto>? = null
     private var paceZonesSalvas: List<com.runapp.data.model.PaceZone> = emptyList()
 
     // Gson para backup de emergência
     private val gson = Gson()
+
+    // Banco Room — acessado via AppContainer (singleton compartilhado com o Service)
+    private val runDatabase: RunDatabase by lazy {
+        (context.applicationContext as RunApp).container.runDatabase
+    }
 
     // Arquivo de backup de emergência no diretório privado do app
     // FIX: salvo em cache interno — não precisa de permissão de armazenamento externo
@@ -184,9 +204,10 @@ class CorridaViewModel(
                         treino             = treinoRecuperado,
                         passos             = passosRecuperados,
                         passoAtual         = passosRecuperados.getOrNull(indexRecuperado.coerceAtLeast(0)),
-                        // GPS — lê StateFlow.value diretamente (síncrono, sem piscar para África)
+                        // GPS — lê lista completa via getRotaCompleta() (não o StateFlow que pode estar
+                        // desatualizado se a UI estava em background durante a corrida)
                         posicaoAtual       = s.posicaoAtual.value,
-                        rota               = s.rotaAtual.value,
+                        rota               = simplificarParaDisplay(s.getRotaCompleta()),
                         // Métricas — snapshot imediato do service, evita flicker de zeros
                         distanciaMetros    = s.distanciaMetros.value,
                         tempoTotalSegundos = s.tempoTotalSegundos.value,
@@ -262,18 +283,29 @@ class CorridaViewModel(
         distancia: Double,
         tempo: Long,
         paceMedia: String,
-        rota: List<LatLngPonto>
+        rota: List<LatLngPonto>,
+        sessionId: String = ""
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val backup = BackupEmergencia(
-                    distanciaMetros = distancia,
+                    distanciaMetros    = distancia,
                     tempoTotalSegundos = tempo,
-                    paceMedia = paceMedia,
-                    rota = rota
+                    paceMedia          = paceMedia,
+                    // v2: não serializa rota no JSON — está no Room via sessionId
+                    // v1 legacy: mantém rota como fallback se sessionId for vazio (backups antigos)
+                    rota               = if (sessionId.isEmpty()) rota else null,
+                    sessionId          = sessionId.ifEmpty { null }
                 )
-                backupFile.writeText(gson.toJson(backup))
-                android.util.Log.d("CorridaVM", "🛡️ Backup emergência salvo: ${rota.size} pontos GPS")
+                // ESCRITA ATÔMICA: tmp → rename para evitar corrupção em crash
+                val json = gson.toJson(backup)
+                val tmpFile = File(context.filesDir, "emergency_run_backup.tmp")
+                tmpFile.writeText(json)
+                if (!tmpFile.renameTo(backupFile)) {
+                    backupFile.writeText(json)
+                    tmpFile.delete()
+                }
+                android.util.Log.d("CorridaVM", "🛡️ Backup atômico: ${distancia.toInt()}m, sessionId=${sessionId.take(8)}")
             } catch (e: Exception) {
                 android.util.Log.e("CorridaVM", "⚠️ Falha ao salvar backup emergência", e)
             }
@@ -282,7 +314,13 @@ class CorridaViewModel(
 
     /**
      * Verifica na inicialização se existe um backup de uma sessão que travou.
-     * Se encontrar, restaura os dados para que o usuário possa salvar normalmente.
+     *
+     * FLUXO v2 (com Room):
+     * 1. Lê metadados do JSON (rápido — arquivo < 1KB)
+     * 2. Se tem sessionId: busca rota completa no Room (pode ter 2400+ pontos)
+     * 3. Se não tem sessionId (backup antigo): usa rota do JSON como fallback
+     * 4. Aplica Douglas-Peucker para exibição no mapa (evita ANR)
+     * 5. Mantém rota COMPLETA no estado para export GPX fiel
      */
     private fun verificarBackupEmergencia() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -298,19 +336,73 @@ class CorridaViewModel(
                     return@launch
                 }
 
-                android.util.Log.w("CorridaVM", "🔄 Backup encontrado! ${backup.rota.size} pontos, ${backup.distanciaMetros.toInt()}m")
+                // RECOVERY DA ROTA: preferir Room (sessionId) sobre JSON (campo legacy)
+                val rotaRecuperada: List<LatLngPonto> = when {
+                    backup.sessionId != null -> {
+                        // v2: busca pontos no Room via sessionId
+                        val pontos = runDatabase.routePointDao()
+                            .getSessionPoints(backup.sessionId)
+                            .map { it.toLatLngPonto() }
+                        android.util.Log.w("CorridaVM", "🔄 Recovery via Room: ${pontos.size} pts, ${backup.distanciaMetros.toInt()}m")
+                        pontos
+                    }
+                    backup.rota != null -> {
+                        // v1 legacy: rota estava no JSON
+                        android.util.Log.w("CorridaVM", "🔄 Recovery via JSON (legado): ${backup.rota.size} pts")
+                        backup.rota
+                    }
+                    else -> {
+                        backupFile.delete()
+                        return@launch
+                    }
+                }
 
-                // Restaura estado para que o ResumoScreen mostre os dados salvos
-                _uiState.value = _uiState.value.copy(
-                    fase               = FaseCorrida.FINALIZADO,
-                    distanciaMetros    = backup.distanciaMetros,
-                    tempoTotalSegundos = backup.tempoTotalSegundos,
-                    tempoFormatado     = formatarTempo(backup.tempoTotalSegundos),
-                    paceMedia          = backup.paceMedia,
-                    rota               = backup.rota,
-                    salvamentoEstado   = SalvamentoEstado.NAO_SALVO
-                )
-                android.util.Log.d("CorridaVM", "✅ Estado restaurado do backup de emergência")
+                if (rotaRecuperada.isEmpty()) {
+                    android.util.Log.w("CorridaVM", "⚠️ Rota vazia no backup — descartando")
+                    backupFile.delete()
+                    return@launch
+                }
+
+                android.util.Log.d("CorridaVM", "✅ Recovery: ${rotaRecuperada.size} pontos GPS — simplificando para display...")
+
+                // FASE 1: mostra métricas imediatamente (sem rota) com indicador de loading.
+                // O usuário vê distância, tempo e pace enquanto D-P processa em background.
+                // Isso substitui a "tela preta/paralisada" por uma UI responsiva.
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        fase               = FaseCorrida.FINALIZADO,
+                        distanciaMetros    = backup.distanciaMetros,
+                        tempoTotalSegundos = backup.tempoTotalSegundos,
+                        tempoFormatado     = formatarTempo(backup.tempoTotalSegundos),
+                        paceMedia          = backup.paceMedia,
+                        rota               = emptyList(),   // mapa vazio enquanto processa
+                        carregandoRota     = rotaRecuperada.size > 500,  // só mostra loading se vai demorar
+                        salvamentoEstado   = SalvamentoEstado.NAO_SALVO
+                    )
+                }
+
+                // FASE 2: Douglas-Peucker em Dispatchers.Default (CPU-bound, não bloqueia IO).
+                // Com 2400 pontos (40min), reduz para ~200-400 pts em ~5-15ms.
+                val rotaParaDisplay = if (rotaRecuperada.size > 500) {
+                    withContext(kotlinx.coroutines.Dispatchers.Default) {
+                        DouglasPeucker.simplify(rotaRecuperada, toleranceMeters = 5.0)
+                            .also { android.util.Log.d("CorridaVM", "📐 D-P: ${rotaRecuperada.size} → ${it.size} pontos") }
+                    }
+                } else {
+                    rotaRecuperada
+                }
+
+                // Guardar rota completa para export GPX (sem simplificação)
+                rotaCompleataParaExport = rotaRecuperada
+
+                // FASE 3: atualiza mapa e remove loading indicator
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        rota           = rotaParaDisplay,
+                        carregandoRota = false
+                    )
+                }
+                android.util.Log.d("CorridaVM", "✅ Recovery completo e mapa pronto")
             } catch (e: Exception) {
                 android.util.Log.e("CorridaVM", "Erro ao ler backup emergência", e)
                 // Backup corrompido — deleta para não travar a próxima sessão
@@ -380,33 +472,10 @@ class CorridaViewModel(
             }
         }
 
-        // FIX CRÍTICO: Backup periódico a cada 60 segundos durante a corrida.
-        //
-        // Cenário coberto: o SERVICE morre sozinho durante a corrida (OOM killer,
-        // crash de coroutine não tratado, agressividade do fabricante do dispositivo).
-        // Nesse caso, finalizarCorrida() NUNCA é chamado — o usuário não aperta Stop
-        // porque o app travou ou sumiu. Sem esse backup, TODOS os dados seriam perdidos.
-        //
-        // Com o backup periódico: no máximo 60 segundos de dados são perdidos.
-        // Na próxima abertura do app, verificarBackupEmergencia() detecta o arquivo
-        // e restaura o estado FINALIZADO para que o usuário possa salvar normalmente.
-        viewModelScope.launch(Dispatchers.IO) {
-            while (true) {
-                delay(60_000L) // salva a cada 60 segundos
-                val s = runningService ?: break
-                if (!s.isCorrendo()) break
-
-                val distancia = s.distanciaMetros.value
-                val tempo = s.tempoTotalSegundos.value
-                val paceMedia = s.paceMedia.value
-                val rota = s.rotaAtual.value
-
-                if (distancia >= 50 && tempo >= 30) {
-                    salvarBackupEmergencia(distancia, tempo, paceMedia, rota)
-                    android.util.Log.d("CorridaVM", "⏰ Backup periódico: ${rota.size} pontos, ${distancia.toInt()}m")
-                }
-            }
-        }
+        // NOTA: O backup periódico foi movido para o RunningService (salvarCheckpoint a cada 30s).
+        // Isso é essencial porque o viewModelScope pode ser cancelado quando a Activity morre
+        // durante corridas longas com tela bloqueada, enquanto o Service permanece vivo.
+        // O ViewModel ainda faz backup imediato ao finalizar (finalizarCorrida) como segurança extra.
     }
 
     private fun verificarAnuncioDistancia(distanciaMetros: Double) {
@@ -676,13 +745,18 @@ class CorridaViewModel(
         val tempoFinal       = service?.tempoTotalSegundos?.value ?: _uiState.value.tempoTotalSegundos
         val paceAtualFinal   = service?.paceAtual?.value         ?: _uiState.value.paceAtual
         val paceMediaFinal   = service?.paceMedia?.value         ?: _uiState.value.paceMedia
-        val rotaFinal        = service?.rotaAtual?.value         ?: _uiState.value.rota
+        val rotaCompletaFinal = service?.getRotaCompleta()         ?: _uiState.value.rota
+        val rotaFinal         = simplificarParaDisplay(rotaCompletaFinal)
+        // Guarda rota completa para GPX export — o mapa usa a simplificada
+        rotaCompleataParaExport = rotaCompletaFinal
 
         // FIX: Salvar backup de emergência IMEDIATAMENTE, antes de qualquer outra operação.
         // Isso garante que, mesmo que o app trave durante o salvamento normal, os dados
         // da corrida estão persistidos em disco e serão recuperados na próxima abertura.
         if (distanciaFinal >= 50 && tempoFinal >= 30) {
-            salvarBackupEmergencia(distanciaFinal, tempoFinal, paceMediaFinal, rotaFinal)
+            // Passa sessionId para que o backup use Room (v2) em vez de JSON com rota
+            val sid = service?.getSessionId() ?: ""
+            salvarBackupEmergencia(distanciaFinal, tempoFinal, paceMediaFinal, rotaCompletaFinal, sid)
         }
 
         // Gravar snapshot no uiState ANTES de parar tudo
@@ -695,6 +769,15 @@ class CorridaViewModel(
             rota              = rotaFinal,
             fase              = FaseCorrida.FINALIZADO
         )
+
+        // Antes de parar o service, forçar emissão da rota completa final
+        // (pode haver até 4 pontos que não foram emitidos pela otimização de 5-em-5)
+        service?.let { s ->
+            val rotaCompleta = s.rotaAtual.value
+            if (rotaCompleta.size != rotaFinal.size) {
+                _uiState.value = _uiState.value.copy(rota = rotaCompleta)
+            }
+        }
 
         // Agora sim pode parar o service
         val intent = Intent(context, RunningService::class.java).apply {
@@ -753,11 +836,18 @@ class CorridaViewModel(
         ultimoPaceFeedback = 0L
         indexPassoAnunciado = -1
 
-        // FIX 2: Deleta o backup de emergência ao descartar a corrida.
-        // Sem isso, o arquivo permaneceria e na próxima abertura o app tentaria
-        // "restaurar" uma corrida que o usuário já descartou intencionalmente.
+        // Deleta backup de emergência E dados do Room ao descartar intencionalmente.
+        // Sem isso, na próxima abertura o app tentaria "restaurar" uma corrida descartada.
         viewModelScope.launch(Dispatchers.IO) {
-            try { if (backupFile.exists()) backupFile.delete() } catch (_: Exception) {}
+            try {
+                if (backupFile.exists()) backupFile.delete()
+                File(context.filesDir, "emergency_run_backup.tmp").delete()
+                // Limpa também dados do Room para não deixar sessões órfãs
+                val latestSession = runDatabase.routePointDao().getLatestSessionId()
+                if (latestSession != null) {
+                    runDatabase.routePointDao().deleteSession(latestSession)
+                }
+            } catch (_: Exception) {}
         }
 
         // Voltar ao estado inicial — preservando apenas treino e passos carregados
@@ -860,6 +950,11 @@ class CorridaViewModel(
                 // do backup de emergência caso o app tenha sido morto anteriormente.
                 val stateAtual = _uiState.value
 
+                // Para o GPX, usar a rota COMPLETA (sem simplificação D-P) se disponível.
+                // A rota no uiState pode estar simplificada para o mapa — o export
+                // deve ser o mais preciso possível para análise no intervals.icu.
+                val rotaParaExport = rotaCompleataParaExport ?: stateAtual.rota
+
                 val result = repo.salvarAtividade(
                     context = context,
                     athleteId = athleteId,
@@ -867,7 +962,7 @@ class CorridaViewModel(
                     distanciaMetros = stateAtual.distanciaMetros,
                     tempoSegundos = stateAtual.tempoTotalSegundos,
                     paceMedia = stateAtual.paceMedia,
-                    rota = stateAtual.rota,
+                    rota = rotaParaExport,
                     paceZones = paceZonesSalvas
                 )
                 
@@ -952,6 +1047,25 @@ class CorridaViewModel(
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Factory
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * Aplica Douglas-Peucker para display no mapa.
+     *
+     * Rotas grandes (> 500 pontos) são simplificadas para evitar ANR ao renderizar.
+     * O threshold de 500 pontos cobre ~8min de corrida — abaixo disso, a simplificação
+     * seria perceptível visualmente; acima, o ganho de performance justifica.
+     *
+     * @param rota Rota completa com todos os pontos GPS
+     * @return Rota simplificada para exibição (ou original se pequena o suficiente)
+     */
+    private fun simplificarParaDisplay(rota: List<LatLngPonto>): List<LatLngPonto> {
+        return if (rota.size > 500) {
+            DouglasPeucker.simplify(rota, toleranceMeters = 5.0)
+                .also { android.util.Log.d("CorridaVM", "📐 D-P mapa: ${rota.size} → ${it.size} pontos") }
+        } else {
+            rota
+        }
+    }
 
     companion object {
         val Factory: ViewModelProvider.Factory = viewModelFactory {

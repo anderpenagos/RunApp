@@ -340,17 +340,76 @@ fun CorridaScreen(
     //     em Dispatchers.Default, imperceptível ao usuário.
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     var polylinesProcessadas by remember { mutableStateOf<List<Pair<List<LatLng>, Color>>>(emptyList()) }
-    LaunchedEffect(state.rota) {
-        if (state.rota.size < 2) {
+    // Quantos pontos da rota já foram incorporados nas polylines atuais.
+    var ultimoIndexProcessado by remember { mutableStateOf(0) }
+
+    // Reset completo quando a fase volta para PREPARANDO (nova corrida iniciada)
+    LaunchedEffect(state.fase) {
+        if (state.fase == FaseCorrida.PREPARANDO) {
             polylinesProcessadas = emptyList()
-            return@LaunchedEffect
+            ultimoIndexProcessado = 0
         }
-        // withContext suspende a coroutine principal e roda o cálculo em CPU thread pool
-        val resultado = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            val segmentos = calcularSegmentosHeatmap(state.rota)
-            mesclarPolylinesPorCor(segmentos)
+    }
+
+    // FIX 2 — POLYLINE INCREMENTAL:
+    // Antes: recalculava TODOS os N segmentos a cada novo ponto GPS (O(N) por tick).
+    // Depois: guarda `ultimoIndexProcessado` e calcula APENAS os pontos novos (O(1) amortizado).
+    //
+    // Chave = rota.size: dispara apenas quando um novo ponto chega — o tick do timer
+    // muda tempoFormatado mas NÃO muda rota.size, então não há trabalho desnecessário.
+    //
+    // Casos especiais:
+    //   • rota.size < ultimoIndexProcessado → rota substituída (recovery): recalculo total (1x)
+    //   • fase mudou para PREPARANDO         → reset via LaunchedEffect acima
+    LaunchedEffect(state.rota.size) {
+        val rota = state.rota
+
+        when {
+            rota.size < 2 -> {
+                polylinesProcessadas = emptyList()
+                ultimoIndexProcessado = 0
+            }
+            rota.size < ultimoIndexProcessado -> {
+                // RESET: rota foi substituída inteira (recovery de process death)
+                // Recalcula tudo de uma vez — acontece no máximo uma vez por sessão
+                val resultado = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    mesclarPolylinesPorCor(calcularSegmentosHeatmap(rota))
+                }
+                polylinesProcessadas = resultado
+                ultimoIndexProcessado = rota.size
+            }
+            else -> {
+                // CAMINHO NORMAL: processa apenas os pontos novos desde a última passagem.
+                // Overlap de 1 ponto (novoInicio - 1) garante que o segmento de conexão
+                // entre o último ponto antigo e o primeiro novo seja calculado.
+                val novoInicio = (ultimoIndexProcessado - 1).coerceAtLeast(0)
+                if (novoInicio >= rota.size - 1) return@LaunchedEffect
+
+                val subRota = rota.subList(novoInicio, rota.size)
+                val novosSegmentos = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    mesclarPolylinesPorCor(calcularSegmentosHeatmap(subRota))
+                }
+                ultimoIndexProcessado = rota.size
+
+                if (novosSegmentos.isEmpty()) return@LaunchedEffect
+
+                // Mescla os novos segmentos na lista existente.
+                // Se a cor do primeiro novo segmento coincide com a do último existente,
+                // estende essa polyline (equivalente ao addPoint). Caso contrário, appenda.
+                val result = polylinesProcessadas.toMutableList()
+                for ((pontos, cor) in novosSegmentos) {
+                    if (result.isNotEmpty() && coresSimilares(result.last().second, cor)) {
+                        val ultima = result.last()
+                        // drop(1): o 1º ponto do novo segmento é idêntico ao último da polyline
+                        // existente (overlap de 1) — evita duplicata de vértice
+                        result[result.lastIndex] = Pair(ultima.first + pontos.drop(1), cor)
+                    } else {
+                        result.add(Pair(pontos, cor))
+                    }
+                }
+                polylinesProcessadas = result
+            }
         }
-        polylinesProcessadas = resultado
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1070,6 +1129,17 @@ private fun calcularSegmentosHeatmap(
 
         val dtMs = p2.tempo - p1.tempo
         if (dtMs <= 0) continue  // timestamp igual ou invertido → pula
+
+        // FIX 1 — GAP DE DISTÂNCIA ("Linha Reta"):
+        // Se o intervalo entre dois pontos consecutivos for > 30s, o usuário provavelmente
+        // correu uma curva enquanto o app estava morto (process death, GPS perdido, etc.).
+        // Conectar esses dois pontos com uma linha reta produziria: (a) uma "linha fantasma"
+        // sobre o mapa ignorando o percurso real, e (b) um pace instantâneo errado para
+        // aquele segmento (muito lento, pois a distância em linha reta < distância real).
+        // Solução: skip do segmento → a polyline simplesmente não fecha o gap visual.
+        // O trecho reaparece normalmente quando os próximos pontos chegam em sequência normal.
+        val GAP_MAXIMO_MS = 30_000L  // 30s: gap maior que isso = segmento interrompido
+        if (dtMs > GAP_MAXIMO_MS) continue
 
         val distM = haversineMetros(p1.lat, p1.lng, p2.lat, p2.lng)
         if (distM < 1.0) continue  // pontos praticamente iguais → pula
