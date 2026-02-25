@@ -30,7 +30,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import com.runapp.RunApp
 import com.runapp.data.db.RunDatabase
 import com.runapp.util.DouglasPeucker
 
