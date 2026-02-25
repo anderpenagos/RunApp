@@ -130,10 +130,17 @@ fun DetalheAtividadeScreen(
 
 @Composable
 private fun CartaoMapa(rota: List<LatLngPonto>, pontoSelecionado: LatLngPonto?) {
-    // FIX PERFORMANCE: Mescla segmentos para reduzir milhares de polylines para dezenas
-    val polylinesMescladas = remember(rota) { 
-        val segmentos = calcularSegmentosHeatmapDetalhe(rota)
-        mesclarPolylinesDetalhe(segmentos)
+    // FIX 1 — HEATMAP ASSÍNCRONO:
+    // O cálculo anterior rodava dentro de remember() na main thread — para 2400+ pontos
+    // (~2400 haversines) isso bloqueava o compositor antes do mapa aparecer, causando
+    // tela branca e congelamento. Movido para LaunchedEffect + Dispatchers.Default.
+    var polylinesMescladas by remember { mutableStateOf<List<Pair<List<LatLng>, Color>>>(emptyList()) }
+    LaunchedEffect(rota) {
+        val resultado = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val segmentos = calcularSegmentosHeatmapDetalhe(rota)
+            mesclarPolylinesDetalhe(segmentos)
+        }
+        polylinesMescladas = resultado
     }
     
     val bounds = remember(rota) {
@@ -164,7 +171,12 @@ private fun CartaoMapa(rota: List<LatLngPonto>, pontoSelecionado: LatLngPonto?) 
                     properties = MapProperties(mapType = MapType.NORMAL),
                     uiSettings = MapUiSettings(
                         zoomControlsEnabled = false,
-                        scrollGesturesEnabled = true,
+                        // FIX 2 — SCROLL BLOQUEADO:
+                        // GoogleMap com scrollGesturesEnabled=true dentro de LazyColumn
+                        // consome todos os eventos de toque verticais, impedindo o scroll
+                        // da tela. Como a câmera já auto-centra na rota via LaunchedEffect,
+                        // o usuário não precisa arrastar o mapa — apenas fazer zoom.
+                        scrollGesturesEnabled = false,
                         zoomGesturesEnabled = true
                     )
                 ) {

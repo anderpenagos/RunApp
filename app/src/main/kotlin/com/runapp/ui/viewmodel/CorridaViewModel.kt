@@ -945,6 +945,25 @@ class CorridaViewModel(
                     )
                 }"
 
+                // FIX ZONAS: paceZonesSalvas é preenchido em carregarTreino(), mas pode
+                // estar vazio se: (a) o ViewModel foi recriado após process death entre
+                // correr e salvar, (b) a corrida foi iniciada sem treino estruturado.
+                // Busca as zonas agora se ainda não foram carregadas — é uma chamada leve
+                // (apenas metadados do perfil, não pontos GPS) e garante que o gráfico
+                // de zonas sempre aparece no histórico independente do fluxo seguido.
+                if (paceZonesSalvas.isEmpty()) {
+                    val zonasResult = runCatching { repo.getZonas(athleteId) }
+                    zonasResult.getOrNull()?.fold(
+                        onSuccess = { zonesResponse ->
+                            paceZonesSalvas = repo.processarZonas(zonesResponse)
+                            android.util.Log.d("CorridaVM", "✅ Zonas buscadas no save: ${paceZonesSalvas.size} zonas")
+                        },
+                        onFailure = {
+                            android.util.Log.w("CorridaVM", "⚠️ Zonas não disponíveis no save — salvando sem zonas")
+                        }
+                    )
+                }
+
                 // FIX: usa os dados do uiState atual, que podem ter sido restaurados
                 // do backup de emergência caso o app tenha sido morto anteriormente.
                 val stateAtual = _uiState.value
