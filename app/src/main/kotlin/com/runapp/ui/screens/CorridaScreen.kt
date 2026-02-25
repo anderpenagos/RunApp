@@ -735,7 +735,23 @@ fun CorridaScreen(
             val posicaoGpsValida = state.posicaoAtual?.let {
                 Math.abs(it.lat) > 1.0 && Math.abs(it.lng) > 1.0
             } ?: false
-            val mostrarOverlay = state.treino == null || !cameraSnapRealizado || !posicaoGpsValida
+
+            // OVERLAY DE TRANSIÇÃO — dois cenários distintos:
+            //
+            // 1. PREPARANDO (corrida nova): só bloqueia enquanto o treino não carregou da rede.
+            //    GPS ainda não ter fix é NORMAL nessa fase — o banner amarelo no topo já informa
+            //    o status. Mostrar "Restaurando sua corrida..." aqui era enganoso e assustava o usuário.
+            //
+            // 2. CORRENDO/PAUSADO (recovery de process death): bloqueia até o snap da câmera
+            //    E GPS válido, pois precisamos centralizar o mapa no ponto exato da corrida.
+            val mostrarOverlay = when (state.fase) {
+                FaseCorrida.PREPARANDO ->
+                    // Só espera o treino carregar; GPS é gerenciado pelo banner
+                    state.treino == null
+                else ->
+                    // Recovery ou corrida ativa: espera câmera + GPS
+                    state.treino == null || !cameraSnapRealizado || !posicaoGpsValida
+            }
 
             val overlayAlpha by androidx.compose.animation.core.animateFloatAsState(
                 targetValue = if (mostrarOverlay) 1f else 0f,
@@ -768,7 +784,11 @@ fun CorridaScreen(
                                     modifier = Modifier.size(48.dp)
                                 )
                                 Text(
-                                    text = if (state.treino == null) "Carregando treino..." else "Restaurando sua corrida...",
+                                    text = when {
+                                        state.treino == null -> "Carregando treino..."
+                                        state.fase == FaseCorrida.PREPARANDO -> "Carregando treino..."
+                                        else -> "Restaurando sua corrida..."
+                                    },
                                     color = Color.White,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Medium
