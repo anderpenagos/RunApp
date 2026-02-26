@@ -603,7 +603,10 @@ private fun CartaoAnaliseTreino(corrida: CorridaHistorico) {
 
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.width(if (barras.size <= 8) IntrinsicSize.Min else barW)
+                        modifier = if (barras.size <= 8)
+                            Modifier.width(IntrinsicSize.Min)
+                        else
+                            Modifier.width(barW)
                     ) {
                         // Pace em cima da barra (apenas nas rápidas ou na melhor)
                         if (!barra.isDescanso || isBest) {
