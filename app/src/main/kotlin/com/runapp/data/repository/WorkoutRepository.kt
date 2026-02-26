@@ -441,6 +441,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             val ganhoElevacao = calcularGanhoElevacao(rota)
             val cadenciaMedia = calcularCadenciaMedia(rota)
             val splits = calcularSplits(rota)
+            val voltas = calcularVoltasAnalise(rota)
 
             // Converte PaceZone (seg/metro) → ZonaFronteira (seg/km) para persistir
             // os limites reais do perfil do atleta junto com a corrida.
@@ -460,12 +461,13 @@ class WorkoutRepository(private val api: IntervalsApi) {
                 ganhoElevacaoM = ganhoElevacao,
                 cadenciaMedia = cadenciaMedia,
                 splitsParciais = splits,
-                zonasFronteira = zonasFronteira
+                zonasFronteira = zonasFronteira,
+                voltasAnalise = voltas
             )
             val jsonFile = java.io.File(pastaGpx, "corrida_$timestamp.json")
             jsonFile.writeText(Gson().toJson(meta))
 
-            Log.d(TAG, "✅ Salvo: ${arquivo.absolutePath} | D+=${ganhoElevacao}m | SPM=$cadenciaMedia | ${splits.size} splits")
+            Log.d(TAG, "✅ Salvo: ${arquivo.absolutePath} | D+=${ganhoElevacao}m | SPM=$cadenciaMedia | ${splits.size} splits | ${voltas.size} voltas")
             Result.success(arquivo)
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao salvar atividade", e)
@@ -541,6 +543,106 @@ class WorkoutRepository(private val api: IntervalsApi) {
             }
         }
         return splits
+    }
+
+    /**
+     * Detecta automaticamente laps/intervalos a partir de variações de pace na rota GPS.
+     *
+     * Algoritmo em 5 etapas:
+     *  1. Suaviza o pace com janela deslizante de 30 segundos em cada ponto.
+     *  2. Mede a dispersão global: se o ratio p75/p25 < 1.15 (variação < 15%)
+     *     considera a corrida uniforme e retorna vazio (splits por km já cobrem isso).
+     *  3. Classifica cada ponto como rápido/lento usando limiar = média (p25+p75)/2.
+     *  4. Detecta transições com debounce de 8 pontos consecutivos para evitar
+     *     ruídos de GPS ou desacelerações momentâneas serem interpretados como laps.
+     *  5. Constrói VoltaAnalise para cada segmento com distância e pace reais.
+     *
+     * @return lista de VoltaAnalise; vazia se a corrida for uniforme (usar splitsParciais).
+     */
+    private fun calcularVoltasAnalise(
+        rota: List<com.runapp.data.model.LatLngPonto>
+    ): List<com.runapp.data.model.VoltaAnalise> {
+        if (rota.size < 40) return emptyList()
+
+        // 1. Pace em janela deslizante de 30 segundos
+        val rollingPace = DoubleArray(rota.size) { idx ->
+            rota[idx].paceNoPonto.coerceIn(60.0, 1500.0)
+        }
+        for (i in rota.indices) {
+            val tInicio = rota[i].tempo - 30_000L
+            val jInicio = (0 until i).lastOrNull { rota[it].tempo >= tInicio } ?: 0
+            val seg = rota.subList(jInicio, i + 1)
+            if (seg.size < 3) continue
+            val dist = seg.zipWithNext().sumOf { (a, b) -> haversine(a.lat, a.lng, b.lat, b.lng) }
+            val time = (seg.last().tempo - seg.first().tempo) / 1000.0
+            if (dist > 5 && time > 5) {
+                rollingPace[i] = (time / dist * 1000).coerceIn(60.0, 1500.0)
+            }
+        }
+
+        // 2. Avaliar dispersão — corrida uniforme = sem intervalos detectáveis
+        val validos = rollingPace.filter { it in 60.0..1200.0 }.sorted()
+        if (validos.size < 30) return emptyList()
+        val p25 = validos[(validos.size * 0.25).toInt()]
+        val p75 = validos[(validos.size * 0.75).toInt()]
+        if (p25 < 1.0 || p75 / p25 < 1.15) return emptyList() // variação < 15% → uniforme
+
+        // 3. Classificar pontos: true = rápido, false = lento/descanso
+        val limiar = (p25 + p75) / 2.0
+        val isFast = BooleanArray(rota.size) { rollingPace[it] < limiar }
+
+        // 4. Transições com debounce de 8 pontos consecutivos
+        val transicoes = mutableListOf(0)
+        var estadoAtual = isFast[0]
+        var contagem = 1
+        for (i in 1 until isFast.size) {
+            if (isFast[i] == estadoAtual) {
+                contagem++
+            } else {
+                if (contagem >= 8) {
+                    transicoes.add(i)
+                    estadoAtual = isFast[i]
+                    contagem = 1
+                } else {
+                    // Ruído curto — forçar o bloco anterior para o estado dominante
+                    for (k in (i - contagem) until i) isFast[k] = estadoAtual
+                    contagem = 1
+                }
+            }
+        }
+        transicoes.add(rota.lastIndex)
+
+        // 5. Construir VoltaAnalise por segmento
+        val voltas = mutableListOf<com.runapp.data.model.VoltaAnalise>()
+        for (t in 0 until transicoes.size - 1) {
+            val startIdx = transicoes[t]
+            val endIdx   = (transicoes[t + 1]).coerceAtMost(rota.lastIndex)
+            if (endIdx <= startIdx) continue
+
+            val seg = rota.subList(startIdx, endIdx + 1)
+            val dist = seg.zipWithNext().sumOf { (a, b) -> haversine(a.lat, a.lng, b.lat, b.lng) }
+            val tempo = (seg.last().tempo - seg.first().tempo) / 1000L
+
+            if (dist < 30 || tempo < 10) continue // muito curto = ruído GPS
+
+            val pace = if (dist > 0) (tempo.toDouble() / dist * 1000).coerceIn(60.0, 1200.0) else 600.0
+            val min = (pace / 60).toInt()
+            val sec = (pace % 60).toInt()
+
+            voltas.add(
+                com.runapp.data.model.VoltaAnalise(
+                    numero        = voltas.size + 1,
+                    distanciaKm   = dist / 1000.0,
+                    tempoSegundos = tempo,
+                    paceSegKm     = pace,
+                    paceFormatado = "%d:%02d".format(min, sec),
+                    isDescanso    = !isFast[startIdx]
+                )
+            )
+        }
+
+        // Exige mínimo de 3 laps para considerar a corrida estruturada
+        return if (voltas.size >= 3) voltas else emptyList()
     }
 
     private fun haversine(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {

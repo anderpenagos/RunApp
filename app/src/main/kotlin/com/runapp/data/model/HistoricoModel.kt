@@ -30,7 +30,11 @@ data class CorridaHistorico(
     val splitsParciais: List<SplitParcial> = emptyList(), // pace por km completo
     // Fronteiras de pace do perfil do atleta no Intervals.icu, capturadas no momento do save.
     // Usadas pelo gráfico de zonas de ritmo para mostrar dados reais em vez de heurísticas.
-    val zonasFronteira: List<ZonaFronteira> = emptyList()
+    val zonasFronteira: List<ZonaFronteira> = emptyList(),
+    // Voltas/laps detectados automaticamente para "Análise do Treino" na DetalheAtividadeScreen.
+    // Vazio  = corrida uniforme (sem intervalos claros) → o card usará splitsParciais por km.
+    // Preenchido = intervalos detectados → mostra barra por volta com destaque rápido/lento.
+    val voltasAnalise: List<VoltaAnalise> = emptyList()
 )
 
 /**
@@ -49,4 +53,26 @@ data class SplitParcial(
     val km: Int,            // qual km (1, 2, 3...)
     val paceSegKm: Double,  // pace em seg/km
     val paceFormatado: String // "5:30"
+)
+
+/**
+ * Representa uma volta/lap detectado automaticamente na análise do treino.
+ *
+ * Gerado por [WorkoutRepository.calcularVoltasAnalise] a partir das variações
+ * de pace da rota GPS. Laps de corrida uniforme não são detectados (lista vazia).
+ *
+ * @param numero        número sequencial (1, 2, 3…)
+ * @param distanciaKm   distância percorrida nesta volta em km
+ * @param tempoSegundos duração em segundos
+ * @param paceSegKm     pace médio em seg/km
+ * @param paceFormatado pace formatado "M:SS"
+ * @param isDescanso    true = recuperação (pace acima do limiar rápido/lento)
+ */
+data class VoltaAnalise(
+    val numero: Int,
+    val distanciaKm: Double,
+    val tempoSegundos: Long,
+    val paceSegKm: Double,
+    val paceFormatado: String,
+    val isDescanso: Boolean = false
 )

@@ -7,6 +7,8 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -35,6 +37,7 @@ import com.google.maps.android.compose.*
 import com.runapp.data.model.CorridaHistorico
 import com.runapp.data.model.LatLngPonto
 import com.runapp.data.model.SplitParcial
+import com.runapp.data.model.VoltaAnalise
 import com.runapp.data.model.ZonaFronteira
 import kotlin.math.*
 
@@ -120,7 +123,10 @@ fun DetalheAtividadeScreen(
             }
             
             if (zonas.any { it.percentagem > 0f }) { item { CartaoZonas(zonas) } }
-            
+
+            // ── Análise do Treino ─────────────────────────────────────────────
+            item { CartaoAnaliseTreino(corrida) }
+
             if (corrida.splitsParciais.isNotEmpty()) { 
                 item { CartaoParciais(corrida.splitsParciais) } 
             }
@@ -466,6 +472,230 @@ private fun CartaoZonas(zonas: List<InfoZona>) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CartaoAnaliseTreino(corrida: CorridaHistorico) {
+    // Decide qual fonte de dados usar:
+    // 1. voltasAnalise preenchido → corrida com intervalos detectados → mostra por volta
+    // 2. Só splitsParciais → corrida uniforme → mostra pace por km
+    // 3. Sem nenhum dos dois → nada a mostrar
+    val hasVoltas  = corrida.voltasAnalise.isNotEmpty()
+    val hasSplits  = corrida.splitsParciais.isNotEmpty()
+    if (!hasVoltas && !hasSplits) return
+
+    // Unifica em uma lista de "barras" com a mesma estrutura visual
+    data class Barra(
+        val label: String,      // "V1", "V2" / "1km", "2km"
+        val pace: Double,       // seg/km — para calcular altura
+        val paceStr: String,    // "5:30"
+        val tempo: String,      // "2:14"
+        val dist: String,       // "0.4 km"
+        val isDescanso: Boolean
+    )
+
+    val barras: List<Barra> = if (hasVoltas) {
+        corrida.voltasAnalise.map { v ->
+            val t = v.tempoSegundos
+            Barra(
+                label     = "V${v.numero}",
+                pace      = v.paceSegKm,
+                paceStr   = v.paceFormatado,
+                tempo     = "%d:%02d".format(t / 60, t % 60),
+                dist      = "%.2f km".format(v.distanciaKm),
+                isDescanso = v.isDescanso
+            )
+        }
+    } else {
+        corrida.splitsParciais.map { s ->
+            val t = (s.paceSegKm).toLong()  // pace ≈ tempo do km
+            Barra(
+                label     = "${s.km}km",
+                pace      = s.paceSegKm,
+                paceStr   = s.paceFormatado,
+                tempo     = "%d:%02d".format(t / 60, t % 60),
+                dist      = "1.00 km",
+                isDescanso = false
+            )
+        }
+    }
+
+    if (barras.isEmpty()) return
+
+    // Escala de altura: pace MENOR (mais rápido) → barra MAIS ALTA
+    val paceMin = barras.minOf { it.pace }
+    val paceMax = barras.maxOf { it.pace }
+    val paceRange = (paceMax - paceMin).coerceAtLeast(1.0)
+
+    // Conta rápidas/lentas para o resumo de topo
+    val nRapidas  = if (hasVoltas) corrida.voltasAnalise.count { !it.isDescanso } else 0
+    val nLentas   = if (hasVoltas) corrida.voltasAnalise.count {  it.isDescanso } else 0
+    val melhorPace = barras.minByOrNull { it.pace }
+
+    val CorRapida  = Color(0xFF4A90D9)
+    val CorLenta   = Color(0xFF3D5A73)
+    val CorSplit   = Color(0xFF4FC3F7)
+    val CorDestaque = Color(0xFFFFD54F)  // amarelo — volta mais rápida
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = CorCard),
+        shape  = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+
+            // ── Cabeçalho ──────────────────────────────────────────────────
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = if (hasVoltas) "Análise do Treino" else "Análise do Treino",
+                        fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White
+                    )
+                    Text(
+                        text = if (hasVoltas)
+                            "${corrida.voltasAnalise.size} intervalos detectados  •  $nRapidas rápidos  •  $nLentas recuperação"
+                        else
+                            "${barras.size} km  •  pace por parcial",
+                        fontSize = 11.sp,
+                        color = Color.White.copy(alpha = 0.4f),
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+                // Pílula com o melhor pace
+                melhorPace?.let { m ->
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("melhor", fontSize = 9.sp, color = Color.White.copy(alpha = 0.35f))
+                        Text(
+                            text = m.paceStr,
+                            fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                            color = CorDestaque
+                        )
+                        Text("/km", fontSize = 9.sp, color = Color.White.copy(alpha = 0.35f))
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // ── Gráfico de barras scrollável ────────────────────────────────
+            val barW = if (barras.size <= 8) 0.dp else 48.dp  // fixo se couber, senão scroll
+            val contentPadH = 4.dp
+            val chartH = 120.dp
+
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(horizontal = contentPadH)
+            ) {
+                items(barras) { barra ->
+                    val isBest = barra.pace == paceMin
+                    val heightFrac = (1.0 - (barra.pace - paceMin) / paceRange).toFloat()
+                        .coerceIn(0.15f, 1f)
+                    val corBarra = when {
+                        isBest      -> CorDestaque
+                        barra.isDescanso -> CorLenta
+                        !hasVoltas  -> CorSplit
+                        else        -> CorRapida
+                    }
+
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.width(if (barras.size <= 8) IntrinsicSize.Min else barW)
+                    ) {
+                        // Pace em cima da barra (apenas nas rápidas ou na melhor)
+                        if (!barra.isDescanso || isBest) {
+                            Text(
+                                text = barra.paceStr,
+                                fontSize = 8.sp,
+                                color = if (isBest) CorDestaque else Color.White.copy(alpha = 0.55f),
+                                fontWeight = if (isBest) FontWeight.Bold else FontWeight.Normal
+                            )
+                        } else {
+                            Spacer(Modifier.height(12.dp))
+                        }
+                        Spacer(Modifier.height(2.dp))
+
+                        // Barra com altura proporcional ao pace
+                        Box(
+                            modifier = Modifier
+                                .width(if (barras.size <= 8) 32.dp else 36.dp)
+                                .height(chartH),
+                            contentAlignment = Alignment.BottomCenter
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .fillMaxHeight(heightFrac)
+                                    .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                                    .background(corBarra.copy(alpha = if (barra.isDescanso) 0.5f else 0.9f))
+                            )
+                            // Linha tracejada de referência no topo do container
+                            // (equivalente ao pace médio — baseline visual)
+                        }
+
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = barra.label,
+                            fontSize = 9.sp,
+                            color = if (isBest) CorDestaque else Color.White.copy(alpha = 0.5f),
+                            fontWeight = if (isBest) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
+            }
+
+            // ── Linha de pace médio (Canvas overlay) ───────────────────────
+            // Desenhada separadamente como referência visual horizontal
+            Spacer(Modifier.height(2.dp))
+            if (barras.size > 1) {
+                val paceMediaSegKm = barras.map { it.pace }.average()
+                val fracMedia = (1.0 - (paceMediaSegKm - paceMin) / paceRange).toFloat()
+                    .coerceIn(0f, 1f)
+                Canvas(modifier = Modifier.fillMaxWidth().height(1.dp)) {
+                    // apenas um ponto visual — linha real no chart area
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(Color.White.copy(alpha = 0.2f), CircleShape)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    val min = (paceMediaSegKm / 60).toInt()
+                    val sec = (paceMediaSegKm % 60).toInt()
+                    Text(
+                        text = "Pace médio: %d:%02d /km".format(min, sec),
+                        fontSize = 10.sp,
+                        color = Color.White.copy(alpha = 0.35f)
+                    )
+                }
+            }
+
+            // ── Legenda ─────────────────────────────────────────────────────
+            if (hasVoltas) {
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    LegendaItem(CorRapida, "Rápido")
+                    LegendaItem(CorLenta.copy(alpha = 0.5f), "Recuperação")
+                    LegendaItem(CorDestaque, "Melhor volta")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LegendaItem(cor: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(modifier = Modifier.size(8.dp).background(cor, RoundedCornerShape(2.dp)))
+        Spacer(Modifier.width(4.dp))
+        Text(label, fontSize = 9.sp, color = Color.White.copy(alpha = 0.4f))
     }
 }
 
