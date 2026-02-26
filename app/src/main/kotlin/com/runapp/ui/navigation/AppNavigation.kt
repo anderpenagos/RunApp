@@ -267,7 +267,7 @@ fun AppNavigation(notificationIntent: Intent? = null) {
                                     }
                                 }
                             }.onFailure {
-                                android.util.Log.w("AppNav", "⚠️ Zonas indisponíveis para exibição: $\{it.message}")
+                                android.util.Log.w("AppNav", "⚠️ Zonas indisponíveis para exibição: ${it.message}")
                             }
                         }
 
