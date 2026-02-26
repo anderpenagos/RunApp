@@ -25,6 +25,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.runapp.service.RunningService
+import kotlinx.coroutines.flow.first
 import com.runapp.ui.screens.*
 import com.runapp.ui.viewmodel.ConfigViewModel
 import com.runapp.ui.viewmodel.CorridaViewModel
@@ -231,13 +232,44 @@ fun AppNavigation(notificationIntent: Intent? = null) {
                     runCatching {
                         val app = navController.context.applicationContext as com.runapp.RunApp
                         val repo = com.runapp.data.repository.HistoricoRepository(app)
-                        val corrida = repo.listarCorridas().find { it.arquivoGpx == arquivoGpx }
+                        var corrida = repo.listarCorridas().find { it.arquivoGpx == arquivoGpx }
                             ?: return@runCatching DetalheEstado.Erro
 
                         val gpxFile = repo.obterArquivoGpx(corrida)
                         val rota = if (gpxFile != null)
                             com.runapp.util.GpxParser.parsear(gpxFile)
                         else emptyList()
+
+                        // FALLBACK DE ZONAS: se o JSON foi salvo sem zonasFronteira
+                        // (corridas antigas ou save com falha na busca), busca da API
+                        // agora apenas para esta exibição — sem re-salvar o arquivo.
+                        // Garante que o gráfico de zonas sempre aparece.
+                        if (corrida.zonasFronteira.isEmpty()) {
+                            runCatching {
+                                val apiKey    = app.container.preferencesRepository.apiKey.first()
+                                val athleteId = app.container.preferencesRepository.athleteId.first()
+                                if (athleteId != null) {
+                                    val workoutRepo = app.container.createWorkoutRepository(apiKey ?: "")
+                                    workoutRepo.getZonas(athleteId).getOrNull()?.let { zonesResponse ->
+                                        val paceZones = workoutRepo.processarZonas(zonesResponse)
+                                        if (paceZones.isNotEmpty()) {
+                                            val zonasFronteira = paceZones.map { z ->
+                                                com.runapp.data.model.ZonaFronteira(
+                                                    nome         = z.name,
+                                                    cor          = z.color ?: "",
+                                                    paceMinSegKm = (z.min ?: 0.0) * 1000.0,
+                                                    paceMaxSegKm = z.max?.let { m -> m * 1000.0 }
+                                                )
+                                            }
+                                            corrida = corrida.copy(zonasFronteira = zonasFronteira)
+                                            android.util.Log.d("AppNav", "✅ Zonas buscadas no detalhe: ${zonasFronteira.size}")
+                                        }
+                                    }
+                                }
+                            }.onFailure {
+                                android.util.Log.w("AppNav", "⚠️ Zonas indisponíveis para exibição: $\{it.message}")
+                            }
+                        }
 
                         DetalheEstado.Sucesso(corrida, rota)
                     }.getOrElse { DetalheEstado.Erro }
