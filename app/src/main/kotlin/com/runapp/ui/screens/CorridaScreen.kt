@@ -20,6 +20,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -436,8 +438,28 @@ fun CorridaScreen(
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // ✨ NOVO: Interface com Indicador de GPS
+    // CONTROLE DO MAPA — padrão Strava/Nike Run Club
+    //
+    // Pré-corrida (PREPARANDO): mapa sempre visível para confirmar localização GPS.
+    // Ao dar Play: mapa destruído, transição para métricas fullscreen.
+    // Durante corrida: usuário pode abrir mapa temporariamente via botão de mapa.
+    // Ao fechar: mapa destruído de novo → zero GPU quando não visível.
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    var mapaVisivel by remember { mutableStateOf(false) }
+
+    // Fecha mapa automaticamente ao iniciar a corrida (PREPARANDO → CORRENDO)
+    var faseAnterior by remember { mutableStateOf(state.fase) }
+    LaunchedEffect(state.fase) {
+        if (faseAnterior == FaseCorrida.PREPARANDO && state.fase == FaseCorrida.CORRENDO) {
+            mapaVisivel = false
+        }
+        faseAnterior = state.fase
+    }
+
+    // Mapa existe na composição apenas quando necessário:
+    // • Antes do Play (confirmar GPS)   → sempre
+    // • Durante corrida                 → só se usuário abriu explicitamente
+    val mostrarMapa = state.fase == FaseCorrida.PREPARANDO || mapaVisivel
     Column(modifier = Modifier
         .fillMaxSize()
         // Fundo preto no container mais externo — elimina o flash da tela Home
@@ -483,275 +505,171 @@ fun CorridaScreen(
         
         // Resto da interface (mapa + controles)
         Box(modifier = Modifier.fillMaxSize()) {
-            // Mapa invisível até o snap estar concluído — o alpha animado impede que
-            // qualquer frame de África/oceano vaze por baixo da máscara preta.
-            val alphaMap by androidx.compose.animation.core.animateFloatAsState(
-                targetValue = if (cameraSnapRealizado) 1f else 0f,
-                animationSpec = androidx.compose.animation.core.tween(durationMillis = 400),
-                label = "alphaMap"
-            )
-            Box(modifier = Modifier.fillMaxSize().alpha(alphaMap)) {
-            GoogleMap(
-                modifier = Modifier.fillMaxSize(),
-                cameraPositionState = cameraPositionState,
-                properties = MapProperties(isMyLocationEnabled = permissaoGps),
-                uiSettings = MapUiSettings(
-                    compassEnabled = true,
-                    myLocationButtonEnabled = false,
-                    zoomControlsEnabled = false
+
+            // ── MAPA ────────────────────────────────────────────────────────────
+            // Só existe na composição quando realmente necessário.
+            // Quando mostrarMapa = false, o GoogleMap é destruído → zero GPU/memória.
+            if (mostrarMapa) {
+                val alphaMap by androidx.compose.animation.core.animateFloatAsState(
+                    targetValue = if (cameraSnapRealizado) 1f else 0f,
+                    animationSpec = androidx.compose.animation.core.tween(durationMillis = 400),
+                    label = "alphaMap"
                 )
-            ) {
-                // FIX 1: Usa polylinesProcessadas — calculado em background thread via LaunchedEffect.
-                // Main thread nunca bloqueia, mesmo em maratonas com 5000+ pontos GPS.
-                polylinesProcessadas.forEach { (pontos, cor) ->
-                    Polyline(
-                        points = pontos,
-                        color = cor,
-                        width = 12f
-                    )
-                }
-
-                if (state.rota.size == 1) {
-                    Circle(
-                        center = LatLng(state.rota[0].lat, state.rota[0].lng),
-                        radius = 5.0,
-                        fillColor = Color(0xFF00BCD4),
-                        strokeColor = Color(0xFF00BCD4)
-                    )
-                }
-            }
-            } // Fim do Box alpha do mapa
-
-            // UI de métricas, máscara e botões — tudo ganha alpha junto com o mapa
-            // para que nenhum elemento apareça "solto" sobre a África durante a transição.
-            val alphaUI by androidx.compose.animation.core.animateFloatAsState(
-                // SÓ mostra a UI quando o treino existir E o mapa estiver posicionado
-                targetValue = if (cameraSnapRealizado && state.treino != null) 1f else 0f,
-                animationSpec = androidx.compose.animation.core.tween(durationMillis = 400),
-                label = "alphaUI"
-            )
-            Box(modifier = Modifier.fillMaxSize().alpha(alphaUI)) {
-
-            // Informações no topo (apenas passo atual)
-            state.passoAtual?.let { passo ->
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.TopCenter)
-                        .padding(16.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = corZona(passo.zona).copy(alpha = 0.9f)
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                Box(modifier = Modifier.fillMaxSize().alpha(alphaMap)) {
+                    GoogleMap(
+                        modifier = Modifier.fillMaxSize(),
+                        cameraPositionState = cameraPositionState,
+                        properties = MapProperties(isMyLocationEnabled = permissaoGps),
+                        uiSettings = MapUiSettings(
+                            compassEnabled = true,
+                            myLocationButtonEnabled = false,
+                            zoomControlsEnabled = false
+                        )
                     ) {
-                        // Botão voltar passo — só visível durante corrida ativa
-                        if (state.fase == FaseCorrida.CORRENDO || state.fase == FaseCorrida.PAUSADO) {
-                            IconButton(onClick = { viewModel.voltarPasso() }) {
-                                Icon(
-                                    Icons.Default.SkipPrevious,
-                                    contentDescription = "Passo anterior",
-                                    tint = Color.White.copy(alpha = 0.85f),
-                                    modifier = Modifier.size(28.dp)
-                                )
-                            }
+                        polylinesProcessadas.forEach { (pontos, cor) ->
+                            Polyline(points = pontos, color = cor, width = 12f)
                         }
-
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 4.dp)
-                        ) {
-                            Text(
-                                text = passo.nome,
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
+                        if (state.rota.size == 1) {
+                            Circle(
+                                center = LatLng(state.rota[0].lat, state.rota[0].lng),
+                                radius = 5.0,
+                                fillColor = Color(0xFF00BCD4),
+                                strokeColor = Color(0xFF00BCD4)
                             )
-                            if (!passo.isDescanso) {
-                                Text(
-                                    text = "🎯 ${passo.paceAlvoMin}—${passo.paceAlvoMax}/km",
-                                    fontSize = 14.sp,
-                                    color = Color.White.copy(alpha = 0.9f)
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            // Barra de progresso
-                            LinearProgressIndicator(
-                                progress = { state.progressoPasso },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(8.dp)
-                                    .clip(RoundedCornerShape(4.dp)),
-                                color = Color.White,
-                                trackColor = Color.White.copy(alpha = 0.3f)
-                            )
-
-                            Text(
-                                text = "${state.tempoPassoRestante}s restantes",
-                                fontSize = 12.sp,
-                                color = Color.White.copy(alpha = 0.9f),
-                                modifier = Modifier.padding(top = 4.dp)
-                            )
-                        }
-
-                        // Botão próximo passo — só visível durante corrida ativa
-                        if (state.fase == FaseCorrida.CORRENDO || state.fase == FaseCorrida.PAUSADO) {
-                            IconButton(onClick = { viewModel.pularPasso() }) {
-                                Icon(
-                                    Icons.Default.SkipNext,
-                                    contentDescription = "Próximo passo",
-                                    tint = Color.White.copy(alpha = 0.85f),
-                                    modifier = Modifier.size(28.dp)
-                                )
-                            }
                         }
                     }
                 }
-            }
-            
-            // Indicador de auto-pause no topo (se ativo)
-            if (state.autoPausado) {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.TopCenter)
-                        .padding(horizontal = 16.dp, vertical = if (state.passoAtual != null) 100.dp else 16.dp),
-                    color = Color(0xFFFFBE0B).copy(alpha = 0.95f),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Row(
+
+                // Botão "Fechar mapa" — só aparece durante corrida ativa (não em PREPARANDO)
+                if (state.fase == FaseCorrida.CORRENDO || state.fase == FaseCorrida.PAUSADO) {
+                    IconButton(
+                        onClick = { mapaVisivel = false },
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
+                            .align(Alignment.TopEnd)
+                            .padding(top = 8.dp, end = 8.dp)
+                            .background(Color(0xFF1E1E1E).copy(alpha = 0.85f), CircleShape)
                     ) {
-                        Text(
-                            text = "⏸️ Auto-pause • Aguardando movimento...",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Fechar mapa",
+                            tint = Color.White
                         )
                     }
-                }
-            }
 
-            // Painel de métricas EMBAIXO (card preto)
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.BottomCenter)
-                    .padding(16.dp)
-                    .padding(bottom = 80.dp) // Espaço para os botões
-            ) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = Color(0xFF2C2C2C).copy(alpha = 0.95f)
-                    ),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    // Mini-barra de métricas no fundo do mapa (para não perder referência)
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.BottomCenter)
+                            .padding(horizontal = 12.dp)
+                            .padding(bottom = 90.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFF1E1E1E).copy(alpha = 0.92f)
+                        ),
+                        shape = RoundedCornerShape(14.dp)
                     ) {
-                        // Grid 2x2 com métricas
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 14.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
-                            // Distância
-                            MetricaCompacta(
-                                label = "DISTÂNCIA",
-                                value = "%.2f".format(state.distanciaMetros / 1000),
-                                unit = "km",
-                                modifier = Modifier.weight(1f)
-                            )
-                            
-                            // Tempo
-                            MetricaCompacta(
-                                label = "TEMPO",
-                                value = state.tempoFormatado,
-                                unit = "",
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                        
-                        Divider(color = Color.White.copy(alpha = 0.2f))
-                        
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            // Pace atual
-                            MetricaCompacta(
-                                label = "PACE ATUAL",
-                                value = state.paceAtual,
-                                unit = "/km",
-                                modifier = Modifier.weight(1f)
-                            )
-                            
-                            // Pace médio
-                            MetricaCompacta(
-                                label = "PACE MÉDIO",
-                                value = state.paceMedia,
-                                unit = "/km",
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-
-                        // Linha de cadência — só aparece quando há leitura válida do sensor
-                        if (state.cadencia > 0) {
-                            Divider(color = Color.White.copy(alpha = 0.2f))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                MetricaCompacta(
-                                    label = "CADÊNCIA",
-                                    value = state.cadencia.toString(),
-                                    unit = "spm",
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
+                            MetricaMiniMapa("TEMPO",    state.tempoFormatado)
+                            VerticalDivider(modifier = Modifier.height(32.dp), color = Color.White.copy(alpha = 0.15f))
+                            MetricaMiniMapa("DISTÂNCIA", "%.2f km".format(state.distanciaMetros / 1000))
+                            VerticalDivider(modifier = Modifier.height(32.dp), color = Color.White.copy(alpha = 0.15f))
+                            MetricaMiniMapa("PACE",     state.paceMedia + "/km")
                         }
                     }
                 }
             }
-            } // Fim do Box alphaUI (métricas)
 
-            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            // MÁSCARA DE TRANSIÇÃO: esconde mapa até câmera estar no lugar certo.
-            // Fica FORA do alphaUI para manter alpha 1 enquanto carrega.
-            // Tripla trava: treino carregado + snap realizado + GPS longe da África (0,0)
+            // ── MÉTRICAS FULLSCREEN ─────────────────────────────────────────────
+            // Visível durante corrida ativa quando o mapa está fechado.
+            // Animação: slide de baixo para cima ao abrir; fade out ao abrir mapa.
+            androidx.compose.animation.AnimatedVisibility(
+                visible = (state.fase == FaseCorrida.CORRENDO || state.fase == FaseCorrida.PAUSADO) && !mapaVisivel,
+                enter = androidx.compose.animation.fadeIn(
+                    animationSpec = androidx.compose.animation.core.tween(350)
+                ) + androidx.compose.animation.slideInVertically(
+                    animationSpec = androidx.compose.animation.core.tween(350)
+                ) { it / 4 },
+                exit = androidx.compose.animation.fadeOut(
+                    animationSpec = androidx.compose.animation.core.tween(200)
+                )
+            ) {
+                MetricasFullscreen(
+                    state        = state,
+                    onAbrirMapa  = { mapaVisivel = true },
+                    onPausar     = { viewModel.pausar() },
+                    onRetomar    = { viewModel.retomar() },
+                    onFinalizar  = { viewModel.finalizarCorrida() },
+                    onPularPasso = { viewModel.pularPasso() },
+                    onVoltarPasso = { viewModel.voltarPasso() }
+                )
+            }
+
+            // ── PASSO ATUAL (overlay no topo — visível com mapa aberto) ────────
+            // Quando o mapa está aberto durante corrida, o card de passo ainda aparece
+            // para o atleta não perder o contexto do treino estruturado.
+            if (mostrarMapa && (state.fase == FaseCorrida.CORRENDO || state.fase == FaseCorrida.PAUSADO)) {
+                state.passoAtual?.let { passo ->
+                    val alphaUI by androidx.compose.animation.core.animateFloatAsState(
+                        targetValue = if (cameraSnapRealizado && state.treino != null) 1f else 0f,
+                        animationSpec = androidx.compose.animation.core.tween(durationMillis = 400),
+                        label = "alphaUIMap"
+                    )
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.TopCenter)
+                            .padding(start = 16.dp, end = 56.dp, top = 8.dp) // end = espaço pro botão fechar
+                            .alpha(alphaUI),
+                        colors = CardDefaults.cardColors(
+                            containerColor = corZona(passo.zona).copy(alpha = 0.9f)
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(horizontal = 4.dp)) {
+                                Text(passo.nome, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                if (!passo.isDescanso) {
+                                    Text(
+                                        text = "🎯 ${passo.paceAlvoMin}—${passo.paceAlvoMax}/km",
+                                        fontSize = 12.sp, color = Color.White.copy(alpha = 0.9f)
+                                    )
+                                }
+                                LinearProgressIndicator(
+                                    progress = { state.progressoPasso },
+                                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(4.dp)).padding(top = 4.dp),
+                                    color = Color.White,
+                                    trackColor = Color.White.copy(alpha = 0.3f)
+                                )
+                            }
+                            Text(
+                                text = "${state.tempoPassoRestante}s",
+                                fontSize = 13.sp, color = Color.White.copy(alpha = 0.9f),
+                                modifier = Modifier.padding(start = 8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // ── OVERLAY DE TRANSIÇÃO (carregamento/restauração) ─────────────────
             val posicaoGpsValida = state.posicaoAtual?.let {
                 Math.abs(it.lat) > 1.0 && Math.abs(it.lng) > 1.0
             } ?: false
 
-            // OVERLAY DE TRANSIÇÃO — dois cenários distintos:
-            //
-            // 1. PREPARANDO (corrida nova): só bloqueia enquanto o treino não carregou da rede.
-            //    GPS ainda não ter fix é NORMAL nessa fase — o banner amarelo no topo já informa
-            //    o status. Mostrar "Restaurando sua corrida..." aqui era enganoso e assustava o usuário.
-            //
-            // 2. CORRENDO/PAUSADO (recovery de process death): bloqueia até o snap da câmera
-            //    E GPS válido, pois precisamos centralizar o mapa no ponto exato da corrida.
             val mostrarOverlay = when (state.fase) {
-                FaseCorrida.PREPARANDO ->
-                    // Só espera o treino carregar; GPS é gerenciado pelo banner
-                    state.treino == null
-                else ->
-                    // Recovery ou corrida ativa: espera câmera + GPS
-                    state.treino == null || !cameraSnapRealizado || !posicaoGpsValida
-            }
+                FaseCorrida.PREPARANDO -> state.treino == null
+                else -> state.treino == null || !cameraSnapRealizado || !posicaoGpsValida
+            } && mostrarMapa  // overlay só faz sentido quando mapa está visível
 
             val overlayAlpha by androidx.compose.animation.core.animateFloatAsState(
                 targetValue = if (mostrarOverlay) 1f else 0f,
@@ -764,7 +682,6 @@ fun CorridaScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(Color(0xFF121212).copy(alpha = overlayAlpha))
-                        // Bloqueia toques na UI por baixo enquanto a máscara está visível
                         .pointerInput(Unit) {},
                     contentAlignment = Alignment.Center
                 ) {
@@ -776,83 +693,29 @@ fun CorridaScreen(
                                 .padding(horizontal = 32.dp),
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            // FIX: Se timeout expirou (15s), não mostra mais o spinner
-                            // e apresenta opções de escape para o usuário.
                             if (!overlayExpirado) {
-                                CircularProgressIndicator(
-                                    color = Color(0xFF4ECDC4),
-                                    modifier = Modifier.size(48.dp)
-                                )
+                                CircularProgressIndicator(color = Color(0xFF4ECDC4), modifier = Modifier.size(48.dp))
                                 Text(
                                     text = when {
                                         state.treino == null -> "Carregando treino..."
                                         state.fase == FaseCorrida.PREPARANDO -> "Carregando treino..."
                                         else -> "Restaurando sua corrida..."
                                     },
-                                    color = Color.White,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium
+                                    color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium
                                 )
                             } else {
-                                // ── TELA DE ESCAPE ───────────────────────────────────────
-                                // Exibida quando a restauração trava por > 15 segundos.
-                                // Impede que o usuário fique preso numa tela preta para sempre.
-                                Text(
-                                    text = "⚠️",
-                                    fontSize = 40.sp
-                                )
-                                Text(
-                                    text = "Não foi possível restaurar a corrida",
-                                    color = Color.White,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    textAlign = TextAlign.Center
-                                )
-                                Text(
-                                    text = "O sinal GPS pode estar fraco ou o serviço de rastreamento foi interrompido.",
-                                    color = Color.White.copy(alpha = 0.7f),
-                                    fontSize = 13.sp,
-                                    textAlign = TextAlign.Center
-                                )
-
+                                Text("⚠️", fontSize = 40.sp)
+                                Text("Não foi possível restaurar a corrida", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                                Text("O sinal GPS pode estar fraco ou o serviço de rastreamento foi interrompido.", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp, textAlign = TextAlign.Center)
                                 Spacer(modifier = Modifier.height(8.dp))
-
-                                // Opção 1: Finalizar e tentar salvar com os dados disponíveis
-                                Button(
-                                    onClick = { viewModel.finalizarCorrida() },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xFF4ECDC4)
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        "Encerrar e salvar dados",
-                                        fontWeight = FontWeight.Bold
-                                    )
+                                Button(onClick = { viewModel.finalizarCorrida() }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4ECDC4)), modifier = Modifier.fillMaxWidth()) {
+                                    Text("Encerrar e salvar dados", fontWeight = FontWeight.Bold)
                                 }
-
-                                // Opção 2: Tentar reconectar com o service novamente
-                                OutlinedButton(
-                                    onClick = { viewModel.carregarTreino(eventId) },
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        contentColor = Color.White
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
+                                OutlinedButton(onClick = { viewModel.carregarTreino(eventId) }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), modifier = Modifier.fillMaxWidth()) {
                                     Text("Tentar novamente")
                                 }
-
-                                // Opção 3: Descartar e voltar ao início
-                                TextButton(
-                                    onClick = {
-                                        viewModel.resetarCorrida()
-                                        onSair()
-                                    }
-                                ) {
-                                    Text(
-                                        "Descartar corrida",
-                                        color = Color(0xFFFF6B6B)
-                                    )
+                                TextButton(onClick = { viewModel.resetarCorrida(); onSair() }) {
+                                    Text("Descartar corrida", color = Color(0xFFFF6B6B))
                                 }
                             }
                         }
@@ -860,155 +723,81 @@ fun CorridaScreen(
                 }
             }
 
-            // Controles de corrida
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(24.dp)
-                    .fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
+            // ── BOTÕES PRÉ-CORRIDA (Play) ──────────────────────────────────────
+            // Só aparecem na fase PREPARANDO, no fundo da tela de mapa
+            androidx.compose.animation.AnimatedVisibility(
+                visible = state.fase == FaseCorrida.PREPARANDO,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(24.dp),
+                enter = androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut()
             ) {
-                AnimatedVisibility(
-                    visible = state.fase == FaseCorrida.PREPARANDO,
-                    enter = fadeIn(),
-                    exit = fadeOut()
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        // Erro de rede: só exibe se estivermos em PREPARANDO e sem treino.
-                        // Se a fase já for CORRENDO/PAUSADO, o service tem os dados — ignora.
-                        if (state.erro != null && state.treino == null && state.fase == FaseCorrida.PREPARANDO) {
-                            Card(
-                                modifier = Modifier
-                                    .padding(horizontal = 24.dp)
-                                    .padding(bottom = 16.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = Color(0xFFB71C1C).copy(alpha = 0.92f)
-                                ),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Text(
-                                        text = "⚠️ ${state.erro}",
-                                        color = Color.White,
-                                        fontSize = 13.sp,
-                                        textAlign = TextAlign.Center
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    TextButton(onClick = { viewModel.carregarTreino(eventId) }) {
-                                        Text("Tentar novamente", color = Color.White, fontWeight = FontWeight.Bold)
-                                    }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (state.erro != null && state.treino == null) {
+                        Card(
+                            modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 16.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFFB71C1C).copy(alpha = 0.92f)),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("⚠️ ${state.erro}", color = Color.White, fontSize = 13.sp, textAlign = TextAlign.Center)
+                                Spacer(modifier = Modifier.height(8.dp))
+                                TextButton(onClick = { viewModel.carregarTreino(eventId) }) {
+                                    Text("Tentar novamente", color = Color.White, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
+                    }
 
-                        // Botão iniciar: só aparece quando o treino já está carregado
-                        if (state.treino != null) {
-                            FloatingActionButton(
-                                onClick = {
-                                    when {
-                                        // Prioridade 1: pedir ACTIVITY_RECOGNITION se não concedida
-                                        // (necessário para startForeground com HEALTH no Android 14+)
-                                        !permissaoAtividade && PermissionHelper.ACTIVITY_RECOGNITION_PERMISSION.isNotEmpty() -> {
-                                            activityRecognitionLauncher.launch(PermissionHelper.ACTIVITY_RECOGNITION_PERMISSION)
-                                        }
-                                        // Prioridade 2: pedir GPS se não concedido
-                                        !permissaoGps -> {
-                                            Toast.makeText(
-                                                context,
-                                                "Conceda permissões de GPS primeiro",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                            permissionLauncher.launch(PermissionHelper.LOCATION_PERMISSIONS)
-                                        }
-                                        // Tudo OK: iniciar corrida
-                                        else -> viewModel.iniciarCorrida()
+                    if (state.treino != null) {
+                        FloatingActionButton(
+                            onClick = {
+                                when {
+                                    !permissaoAtividade && PermissionHelper.ACTIVITY_RECOGNITION_PERMISSION.isNotEmpty() ->
+                                        activityRecognitionLauncher.launch(PermissionHelper.ACTIVITY_RECOGNITION_PERMISSION)
+                                    !permissaoGps -> {
+                                        Toast.makeText(context, "Conceda permissões de GPS primeiro", Toast.LENGTH_SHORT).show()
+                                        permissionLauncher.launch(PermissionHelper.LOCATION_PERMISSIONS)
                                     }
-                                },
-                                containerColor = Color(0xFF4CAF50),
-                                modifier = Modifier.size(72.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = "Iniciar",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(32.dp)
-                                )
-                            }
-                        } else if (state.erro == null) {
-                            // Carregando: spinner enquanto aguarda treino ou service
-                            CircularProgressIndicator(
-                                color = Color.White,
-                                modifier = Modifier.size(48.dp)
-                            )
+                                    else -> viewModel.iniciarCorrida()
+                                }
+                            },
+                            containerColor = Color(0xFF4CAF50),
+                            modifier = Modifier.size(72.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.PlayArrow, contentDescription = "Iniciar", tint = Color.White, modifier = Modifier.size(32.dp))
                         }
+                    } else if (state.erro == null) {
+                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(48.dp))
                     }
                 }
+            }
 
-                AnimatedVisibility(
-                    visible = state.fase == FaseCorrida.CORRENDO,
-                    enter = fadeIn(),
-                    exit = fadeOut()
+            // ── BOTÕES DURANTE CORRIDA COM MAPA ABERTO ─────────────────────────
+            if (mapaVisivel && (state.fase == FaseCorrida.CORRENDO || state.fase == FaseCorrida.PAUSADO)) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 16.dp)
+                        .fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        FloatingActionButton(
-                            onClick = { viewModel.pausar() },
-                            containerColor = Color(0xFFFF9800)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Pause,
-                                contentDescription = "Pausar",
-                                tint = Color.White
-                            )
+                    if (state.fase == FaseCorrida.CORRENDO) {
+                        FloatingActionButton(onClick = { viewModel.pausar() }, containerColor = Color(0xFFFF9800)) {
+                            Icon(Icons.Default.Pause, contentDescription = "Pausar", tint = Color.White)
                         }
-                        FloatingActionButton(
-                            onClick = { viewModel.finalizarCorrida() },
-                            containerColor = Color(0xFFF44336)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Stop,
-                                contentDescription = "Finalizar",
-                                tint = Color.White
-                            )
+                    } else {
+                        FloatingActionButton(onClick = { viewModel.retomar() }, containerColor = Color(0xFF4CAF50)) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = "Retomar", tint = Color.White)
                         }
                     }
-                }
-
-                AnimatedVisibility(
-                    visible = state.fase == FaseCorrida.PAUSADO,
-                    enter = fadeIn(),
-                    exit = fadeOut()
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        FloatingActionButton(
-                            onClick = { viewModel.retomar() },
-                            containerColor = Color(0xFF4CAF50)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "Retomar",
-                                tint = Color.White
-                            )
-                        }
-                        FloatingActionButton(
-                            onClick = { viewModel.finalizarCorrida() },
-                            containerColor = Color(0xFFF44336)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Stop,
-                                contentDescription = "Finalizar",
-                                tint = Color.White
-                            )
-                        }
+                    FloatingActionButton(onClick = { viewModel.finalizarCorrida() }, containerColor = Color(0xFFF44336)) {
+                        Icon(Icons.Default.Stop, contentDescription = "Finalizar", tint = Color.White)
                     }
                 }
             }
         }
     }
 }
-
 @Composable
 private fun MetricaCompacta(
     label: String,
@@ -1229,4 +1018,268 @@ private fun haversineMetros(lat1: Double, lon1: Double, lat2: Double, lon2: Doub
             Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
             Math.sin(dLon / 2).let { it * it }
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Tela de métricas fullscreen — exibida durante a corrida (sem mapa)
+// Padrão Strava/Nike: números grandes, mínimo de distração, foco no ritmo.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@Composable
+private fun MetricasFullscreen(
+    state: com.runapp.ui.viewmodel.CorridaUiState,
+    onAbrirMapa:  () -> Unit,
+    onPausar:     () -> Unit,
+    onRetomar:    () -> Unit,
+    onFinalizar:  () -> Unit,
+    onPularPasso: () -> Unit,
+    onVoltarPasso: () -> Unit
+) {
+    Box(
+        modifier = androidx.compose.ui.Modifier
+            .fillMaxSize()
+            .background(Color(0xFF121212))
+    ) {
+        // ── Card do passo atual (topo) ─────────────────────────────────────
+        state.passoAtual?.let { passo ->
+            Card(
+                modifier = androidx.compose.ui.Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = corZona(passo.zona).copy(alpha = 0.92f)
+                ),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Row(
+                    modifier = androidx.compose.ui.Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (state.fase == FaseCorrida.CORRENDO || state.fase == FaseCorrida.PAUSADO) {
+                        IconButton(onClick = onVoltarPasso) {
+                            Icon(Icons.Default.SkipPrevious, contentDescription = "Voltar passo",
+                                tint = Color.White.copy(alpha = 0.85f), modifier = androidx.compose.ui.Modifier.size(26.dp))
+                        }
+                    }
+                    Column(
+                        modifier = androidx.compose.ui.Modifier.weight(1f).padding(horizontal = 4.dp)
+                    ) {
+                        Text(passo.nome, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        if (!passo.isDescanso) {
+                            Text("🎯 ${passo.paceAlvoMin}—${passo.paceAlvoMax}/km", fontSize = 13.sp, color = Color.White.copy(alpha = 0.9f))
+                        }
+                        Spacer(androidx.compose.ui.Modifier.height(6.dp))
+                        LinearProgressIndicator(
+                            progress = { state.progressoPasso },
+                            modifier = androidx.compose.ui.Modifier.fillMaxWidth().height(7.dp).clip(RoundedCornerShape(4.dp)),
+                            color = Color.White,
+                            trackColor = Color.White.copy(alpha = 0.3f)
+                        )
+                        Text("${state.tempoPassoRestante}s restantes", fontSize = 11.sp, color = Color.White.copy(alpha = 0.9f),
+                            modifier = androidx.compose.ui.Modifier.padding(top = 3.dp))
+                    }
+                    if (state.fase == FaseCorrida.CORRENDO || state.fase == FaseCorrida.PAUSADO) {
+                        IconButton(onClick = onPularPasso) {
+                            Icon(Icons.Default.SkipNext, contentDescription = "Próximo passo",
+                                tint = Color.White.copy(alpha = 0.85f), modifier = androidx.compose.ui.Modifier.size(26.dp))
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Auto-pause banner ──────────────────────────────────────────────
+        if (state.autoPausado) {
+            Surface(
+                modifier = androidx.compose.ui.Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .padding(
+                        horizontal = 16.dp,
+                        vertical = if (state.passoAtual != null) 108.dp else 16.dp
+                    ),
+                color = Color(0xFFFFBE0B).copy(alpha = 0.95f),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Row(
+                    modifier = androidx.compose.ui.Modifier.fillMaxWidth().padding(12.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("⏸️ Auto-pause • Aguardando movimento...", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                }
+            }
+        }
+
+        // ── Métricas centrais (números grandes) ────────────────────────────
+        Column(
+            modifier = androidx.compose.ui.Modifier
+                .fillMaxWidth()
+                .align(Alignment.Center)
+                .padding(horizontal = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(28.dp)
+        ) {
+            // TEMPO — métrica principal, fonte maior
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = state.tempoFormatado,
+                    fontSize = 72.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    letterSpacing = (-2).sp
+                )
+                Text("TEMPO", fontSize = 11.sp, color = Color.White.copy(alpha = 0.45f), letterSpacing = 2.sp)
+            }
+
+            // DISTÂNCIA + PACE MÉDIO
+            Row(
+                modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                MetricaGrande(
+                    label = "DISTÂNCIA",
+                    value = "%.2f".format(state.distanciaMetros / 1000),
+                    unit = "km"
+                )
+                VerticalDivider(
+                    modifier = androidx.compose.ui.Modifier.height(64.dp),
+                    color = Color.White.copy(alpha = 0.12f)
+                )
+                MetricaGrande(
+                    label = "PACE MÉDIO",
+                    value = state.paceMedia,
+                    unit = "/km"
+                )
+            }
+
+            // PACE ATUAL + CADÊNCIA (linha extra, só com dados)
+            if (state.paceAtual != "--:--" || state.cadencia > 0) {
+                Row(
+                    modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    MetricaGrande(
+                        label = "PACE ATUAL",
+                        value = state.paceAtual,
+                        unit = "/km",
+                        destaque = true
+                    )
+                    if (state.cadencia > 0) {
+                        VerticalDivider(
+                            modifier = androidx.compose.ui.Modifier.height(64.dp),
+                            color = Color.White.copy(alpha = 0.12f)
+                        )
+                        MetricaGrande(
+                            label = "CADÊNCIA",
+                            value = state.cadencia.toString(),
+                            unit = "spm"
+                        )
+                    }
+                }
+            }
+        }
+
+        // ── Botão mapa (canto superior direito) ────────────────────────────
+        IconButton(
+            onClick = onAbrirMapa,
+            modifier = androidx.compose.ui.Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 8.dp, end = 8.dp)
+                .background(Color(0xFF2A2A2A), CircleShape)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Map,
+                contentDescription = "Ver mapa",
+                tint = Color.White.copy(alpha = 0.7f)
+            )
+        }
+
+        // ── Botões de controle (fundo) ─────────────────────────────────────
+        Row(
+            modifier = androidx.compose.ui.Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 40.dp)
+                .padding(horizontal = 48.dp)
+                .fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (state.fase == FaseCorrida.CORRENDO) {
+                // PAUSAR — botão maior, destaque
+                FloatingActionButton(
+                    onClick = onPausar,
+                    containerColor = Color(0xFFFF9800),
+                    modifier = androidx.compose.ui.Modifier.size(64.dp)
+                ) {
+                    Icon(Icons.Default.Pause, contentDescription = "Pausar", tint = Color.White, modifier = androidx.compose.ui.Modifier.size(28.dp))
+                }
+                // PARAR — botão menor, secundário
+                FloatingActionButton(
+                    onClick = onFinalizar,
+                    containerColor = Color(0xFF3A3A3A),
+                    modifier = androidx.compose.ui.Modifier.size(52.dp)
+                ) {
+                    Icon(Icons.Default.Stop, contentDescription = "Finalizar", tint = Color(0xFFFF6B6B), modifier = androidx.compose.ui.Modifier.size(22.dp))
+                }
+            } else {
+                // RETOMAR — destaque
+                FloatingActionButton(
+                    onClick = onRetomar,
+                    containerColor = Color(0xFF4CAF50),
+                    modifier = androidx.compose.ui.Modifier.size(64.dp)
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = "Retomar", tint = Color.White, modifier = androidx.compose.ui.Modifier.size(28.dp))
+                }
+                // FINALIZAR — secundário
+                FloatingActionButton(
+                    onClick = onFinalizar,
+                    containerColor = Color(0xFF3A3A3A),
+                    modifier = androidx.compose.ui.Modifier.size(52.dp)
+                ) {
+                    Icon(Icons.Default.Stop, contentDescription = "Finalizar", tint = Color(0xFFFF6B6B), modifier = androidx.compose.ui.Modifier.size(22.dp))
+                }
+            }
+        }
+    }
+}
+
+/** Métrica grande para a tela fullscreen */
+@Composable
+private fun MetricaGrande(
+    label: String,
+    value: String,
+    unit: String,
+    destaque: Boolean = false
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                text = value,
+                fontSize = 38.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (destaque) Color(0xFF4ECDC4) else Color.White
+            )
+            if (unit.isNotEmpty()) {
+                Text(
+                    text = " $unit",
+                    fontSize = 14.sp,
+                    color = Color.White.copy(alpha = 0.5f),
+                    modifier = androidx.compose.ui.Modifier.padding(bottom = 6.dp)
+                )
+            }
+        }
+        Text(label, fontSize = 10.sp, color = Color.White.copy(alpha = 0.4f), letterSpacing = 1.5.sp)
+    }
+}
+
+/** Mini métrica para a barra no fundo do mapa durante corrida */
+@Composable
+private fun MetricaMiniMapa(label: String, value: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        Text(label, fontSize = 9.sp, color = Color.White.copy(alpha = 0.4f), letterSpacing = 1.sp)
+    }
 }
