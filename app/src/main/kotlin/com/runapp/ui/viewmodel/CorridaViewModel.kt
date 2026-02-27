@@ -194,26 +194,39 @@ class CorridaViewModel(
                 if (treinoRecuperado != null && passosRecuperados.isNotEmpty()) {
                     android.util.Log.d("CorridaVM", "♻️ Restaurando treino: ${treinoRecuperado.name}")
                     indexPassoAnunciado = indexRecuperado
-                    // RESTAURAÇÃO COMPLETA E IMEDIATA: entrega posição, rota e métricas
-                    // no primeiro milissegundo da conexão, sem esperar os collects assíncronos.
-                    // Isso impede que o mapa "fuja" para a África (0,0) e que a UI
-                    // mostre zeros antes dos flows chegarem.
+                    // RESTAURAÇÃO IMEDIATA SEM ROTA: entrega métricas e posição no primeiro
+                    // milissegundo, sem bloquear a main thread com D-P de 3000+ pontos.
+                    // carregandoRota=true sinaliza ao mapa para mostrar um loading indicator.
                     _uiState.value = _uiState.value.copy(
                         fase               = if (s.isPausado() || s.autoPausado.value) FaseCorrida.PAUSADO else FaseCorrida.CORRENDO,
                         treino             = treinoRecuperado,
                         passos             = passosRecuperados,
                         passoAtual         = passosRecuperados.getOrNull(indexRecuperado.coerceAtLeast(0)),
-                        // GPS — lê lista completa via getRotaCompleta() (não o StateFlow que pode estar
-                        // desatualizado se a UI estava em background durante a corrida)
                         posicaoAtual       = s.posicaoAtual.value,
-                        rota               = simplificarParaDisplay(s.getRotaCompleta()),
-                        // Métricas — snapshot imediato do service, evita flicker de zeros
                         distanciaMetros    = s.distanciaMetros.value,
                         tempoTotalSegundos = s.tempoTotalSegundos.value,
                         tempoFormatado     = formatarTempo(s.tempoTotalSegundos.value),
                         paceAtual          = s.paceAtual.value,
-                        paceMedia          = s.paceMedia.value
+                        paceMedia          = s.paceMedia.value,
+                        carregandoRota     = true
                     )
+                    // FIX BUG 1: D-P de 3000+ pontos NUNCA pode rodar na main thread.
+                    // onServiceConnected é invocado na main thread — > 16ms causa jank,
+                    // > 5s causa ANR. Movemos para Dispatchers.Default.
+                    viewModelScope.launch {
+                        val rotaCompleta = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            s.getRotaCompleta()
+                        }
+                        val rotaSimplificada = withContext(kotlinx.coroutines.Dispatchers.Default) {
+                            simplificarParaDisplay(rotaCompleta)
+                        }
+                        rotaCompleataParaExport = rotaCompleta
+                        _uiState.value = _uiState.value.copy(
+                            rota           = rotaSimplificada,
+                            carregandoRota = false
+                        )
+                        android.util.Log.d("CorridaVM", "♻️ Rota restaurada: ${rotaCompleta.size} → ${rotaSimplificada.size} pontos")
+                    }
                     android.util.Log.d("CorridaVM", "♻️ Estado recuperado do Service com sucesso")
                 }
             }
@@ -454,8 +467,28 @@ class CorridaViewModel(
         }
         
         viewModelScope.launch {
+            // FIX BUG 2 + 3: quando a UI reconecta após process death, o StateFlow emite
+            // imediatamente seu valor atual (potencialmente vazio/stale, pois o service parou
+            // de emitir com tela bloqueada). Isso apagava a rota restaurada em onServiceConnected.
+            //
+            // Regras:
+            // - Ignora emissões vazias (stale do StateFlow sem subscribers ativos)
+            // - Aplica D-P quando a rota "pula" 50+ pontos (cenário de reconexão com rota grande)
+            //   evitando que 3000+ pontos cheguem ao mapa de uma vez → OOM/crash
+            // - Durante corrida normal (incremento de 5 pontos), passa direto sem D-P
             service.rotaAtual.collect { rota ->
-                _uiState.value = _uiState.value.copy(rota = rota)
+                if (rota.isEmpty()) return@collect  // ignora stale vazio
+
+                val rotaAtualNoUi = _uiState.value.rota
+                val rotaParaDisplay = if (rota.size > rotaAtualNoUi.size + 50) {
+                    // Salto grande = reconexão após process death → aplica D-P em background
+                    withContext(kotlinx.coroutines.Dispatchers.Default) {
+                        simplificarParaDisplay(rota)
+                    }
+                } else {
+                    rota  // incremento normal durante corrida ativa
+                }
+                _uiState.value = _uiState.value.copy(rota = rotaParaDisplay)
             }
         }
         
@@ -596,7 +629,9 @@ class CorridaViewModel(
                         passoAtual   = passos.getOrNull(indexAtual.coerceAtLeast(0)),
                         fase         = if (s.isPausado() || s.autoPausado.value) FaseCorrida.PAUSADO else FaseCorrida.CORRENDO,
                         posicaoAtual = s.posicaoAtual.value,
-                        rota         = s.rotaAtual.value,
+                        // FIX: rotaAtual.value está stale (service parou de emitir com tela bloqueada).
+                        // getRotaCompleta() lê diretamente a lista em memória — sempre atualizada.
+                        rota         = s.getRotaCompleta(),
                         erro         = null
                     )
                     indexPassoAnunciado = indexAtual

@@ -461,6 +461,21 @@ class RunningService : Service(), SensorEventListener {
         // Inicializar banco de dados Room via AppContainer (singleton — thread-safe)
         val app = applicationContext as com.runapp.RunApp
         database = app.container.runDatabase
+
+        // FIX PROCESS DEATH — EMISSÃO NA RECONEXÃO DA UI:
+        // Quando o processo do app morre (Android liberou RAM com tela bloqueada), o Service
+        // sobrevive mas o StateFlow para de emitir (subscriptionCount == 0 → otimização de memória).
+        // Quando a UI reconecta (subscriptionCount 0 → 1), o StateFlow tem valor STALE (desatualizado).
+        // Esse observer detecta a reconexão e força a emissão da rota completa imediatamente,
+        // garantindo que o novo ViewModel receba o trajeto sem esperar o próximo ponto GPS (até 1s).
+        serviceScope.launch {
+            _rotaAtual.subscriptionCount.collect { count ->
+                if (count == 1 && rota.isNotEmpty()) {
+                    _rotaAtual.value = rota.toList()
+                    Log.d(TAG, "📡 UI reconectada — emitindo rota completa: ${rota.size} pontos")
+                }
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
