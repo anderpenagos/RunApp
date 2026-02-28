@@ -633,11 +633,19 @@ fun CorridaScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                                .padding(horizontal = 4.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                                Text(passo.nome, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            IconButton(onClick = { viewModel.voltarPasso() }) {
+                                Icon(
+                                    Icons.Default.SkipPrevious,
+                                    contentDescription = "Voltar passo",
+                                    tint = Color.White.copy(alpha = 0.85f),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f).padding(horizontal = 2.dp)) {
+                                Text(passo.nome, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                 if (!passo.isDescanso) {
                                     Text(
                                         text = "🎯 ${passo.paceAlvoMin}—${passo.paceAlvoMax}/km",
@@ -650,12 +658,20 @@ fun CorridaScreen(
                                     color = Color.White,
                                     trackColor = Color.White.copy(alpha = 0.3f)
                                 )
+                                Text(
+                                    text = "${state.tempoPassoRestante}s",
+                                    fontSize = 11.sp, color = Color.White.copy(alpha = 0.9f),
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
                             }
-                            Text(
-                                text = "${state.tempoPassoRestante}s",
-                                fontSize = 13.sp, color = Color.White.copy(alpha = 0.9f),
-                                modifier = Modifier.padding(start = 8.dp)
-                            )
+                            IconButton(onClick = { viewModel.pularPasso() }) {
+                                Icon(
+                                    Icons.Default.SkipNext,
+                                    contentDescription = "Pular passo",
+                                    tint = Color.White.copy(alpha = 0.85f),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -1182,12 +1198,12 @@ private fun MetricasFullscreen(
             }
         }
 
-        // ── Botão mapa (canto superior direito) ────────────────────────────
+        // ── Botão mapa (canto inferior direito, acima dos controles) ───────
         IconButton(
             onClick = onAbrirMapa,
             modifier = androidx.compose.ui.Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 8.dp, end = 8.dp)
+                .align(Alignment.BottomEnd)
+                .padding(bottom = 120.dp, end = 16.dp)
                 .background(Color(0xFF2A2A2A), CircleShape)
         ) {
             Icon(
