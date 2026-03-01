@@ -15,9 +15,14 @@ val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "ru
 class PreferencesRepository(private val context: Context) {
 
     companion object {
-        val API_KEY = stringPreferencesKey("api_key")
-        val ATHLETE_ID = stringPreferencesKey("athlete_id")
-        val AUTO_PAUSE_ENABLED = booleanPreferencesKey("auto_pause_enabled")
+        val API_KEY                   = stringPreferencesKey("api_key")
+        val ATHLETE_ID                = stringPreferencesKey("athlete_id")
+        val AUTO_PAUSE_ENABLED        = booleanPreferencesKey("auto_pause_enabled")
+        // Modo de Telemetria Reduzida: quando ativo, o AudioCoach só menciona o GAP
+        // no fechamento de km quando o terreno for desafiador (subida real ou descida
+        // técnica). Trechos planos e descidas suaves recebem apenas o pace, sem análise
+        // de esforço ajustado. Ideal para quem prefere menos informação em corridas simples.
+        val GAP_TELEMETRIA_REDUZIDA   = booleanPreferencesKey("gap_telemetria_reduzida")
     }
 
     val apiKey: Flow<String?> = context.dataStore.data.map { prefs ->
@@ -32,9 +37,22 @@ class PreferencesRepository(private val context: Context) {
         prefs[AUTO_PAUSE_ENABLED] ?: true  // Ativado por padrão
     }
 
+    // Desativado por padrão: novos usuários recebem o feedback completo e podem
+    // reduzir quando ficarem confortáveis com o GAP. Inverter o default seria confuso
+    // pois o usuário não saberia por que o app "silenciou".
+    val gapTelemetriaReduzida: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[GAP_TELEMETRIA_REDUZIDA] ?: false
+    }
+
     suspend fun setAutoPauseEnabled(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[AUTO_PAUSE_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setGapTelemetriaReduzida(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[GAP_TELEMETRIA_REDUZIDA] = enabled
         }
     }
 

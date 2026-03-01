@@ -396,6 +396,77 @@ class RunningService : Service(), SensorEventListener {
     val autoPausado: StateFlow<Boolean> = _autoPausado.asStateFlow()
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // GAP — Grade Adjusted Pace (Minetti 2002)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    // Acumuladores ponderados por distância para o km atual
+    // (média simples de pontos seria enviesada por pontos em locais com GPS lento)
+    private var gapSomadoPonderadoKm      = 0.0   // soma de (gap_ponto × distancia)
+    private var gradienteSomadoPonderadoKm = 0.0   // soma de (gradiente × distancia)
+    private var gapDistanciaAcumKm        = 0.0   // denominador compartilhado
+
+    // Resultado que o ViewModel busca no fechamento do km
+    private var ultimoGapMedioSegKm = 0.0
+
+    // GAP suavizado para exibição em tempo real (EMA com α=0.2)
+    private var gapEmaInterno: Double? = null
+    private val _gapAtualSegKm = MutableStateFlow(0.0)
+    val gapAtualSegKm: StateFlow<Double> = _gapAtualSegKm.asStateFlow()
+
+    // Modo Montanha — subida > 4% sustentada por ≥ 100m
+    // Histerese: ativa com 100m, desativa apenas ao sair da subida (< 2%)
+    private var distSubidaAcum = 0.0
+    private val DISTANCIA_ATIVA_MONTANHA = 100.0  // metros subindo > 4%
+    private val LIMIAR_GRADE_MONTANHA    = 0.04   // 4%
+    private val LIMIAR_SAIDA_MONTANHA    = 0.02   // 2% — histerese de saída
+    private var emModoMontanha           = false
+    private val _modoMontanha = MutableStateFlow(false)
+    val modoMontanha: StateFlow<Boolean> = _modoMontanha.asStateFlow()
+
+    // Descida técnica — grade < -15% (Minetti: custo metabólico volta a subir)
+    // A curva de Minetti tem um mínimo em ~-10%. Abaixo de -15% o custo sobe novamente
+    // por frenagem excêntrica. O GAP nessa zona fica > pace real, o que é contraintuitivo
+    // ("você vai rápido mas está sofrendo"). Tratamos isso com mensagem específica.
+    private val LIMIAR_DESCIDA_TECNICA = -0.15
+
+    /**
+     * Carrega o resultado do km que acabou de fechar e zera os acumuladores.
+     *
+     * Retorna null se não houver distância acumulada suficiente (GPS ausente o km todo).
+     * O gradiente médio é essencial para o AudioCoach distinguir:
+     *   gradiente > 0  → subida → "Ótima subida, esforço equivale a X"
+     *   gradiente < -0.15 → descida técnica → "Controle o impacto"
+     *   demais → terreno ondulado → anúncio neutro
+     */
+    data class GapKmResult(
+        val gapMedioSegKm: Double,       // GAP ponderado (s/km)
+        val gradienteMedio: Double        // inclinação média ponderada do km (fração, ex: 0.05 = 5%)
+    )
+
+    fun fecharEObterGapKm(): GapKmResult? {
+        // Proteção contra divisão por zero: GPS pode falhar um km inteiro
+        if (gapDistanciaAcumKm < 10.0) {
+            gapSomadoPonderadoKm       = 0.0
+            gradienteSomadoPonderadoKm = 0.0
+            gapDistanciaAcumKm         = 0.0
+            return null
+        }
+        val gapMedio      = gapSomadoPonderadoKm       / gapDistanciaAcumKm
+        val gradienteMedio = gradienteSomadoPonderadoKm / gapDistanciaAcumKm
+        ultimoGapMedioSegKm        = gapMedio
+        gapSomadoPonderadoKm       = 0.0
+        gradienteSomadoPonderadoKm = 0.0
+        gapDistanciaAcumKm         = 0.0
+        return GapKmResult(gapMedio, gradienteMedio)
+    }
+
+    fun getGapAtualInstantaneo(): Double = _gapAtualSegKm.value
+    fun isModoMontanha(): Boolean = emModoMontanha
+
+    private val _gradienteAtual = MutableStateFlow(0.0)
+    val gradienteAtual: StateFlow<Double> = _gradienteAtual.asStateFlow()
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Binder para comunicação local
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -608,6 +679,18 @@ class RunningService : Service(), SensorEventListener {
         stepLengthAprendido = 0.0
         passosDesdeUltimoGpsBom = 0
         distDesdeUltimoGpsBom = 0.0
+
+        // Reset acumuladores GAP
+        gapSomadoPonderadoKm       = 0.0
+        gradienteSomadoPonderadoKm = 0.0
+        gapDistanciaAcumKm         = 0.0
+        ultimoGapMedioSegKm        = 0.0
+        gapEmaInterno              = null
+        _gapAtualSegKm.value       = 0.0
+        distSubidaAcum             = 0.0
+        emModoMontanha             = false
+        _modoMontanha.value        = false
+        _gradienteAtual.value      = 0.0
 
         if (usandoStepDetector) {
             stepDetector?.let {
@@ -1109,6 +1192,59 @@ class RunningService : Service(), SensorEventListener {
 
             _distanciaMetros.value += distancia
 
+            // ── GAP (Grade Adjusted Pace) — Minetti (2002) ────────────────────
+            // Calcula o pace ajustado à inclinação para cada segmento GPS.
+            // Ponderamos pela distância do segmento (não pelo nº de pontos), porque
+            // pontos GPS podem chegar de 1 em 1s em plano e de 3 em 3s numa subida —
+            // a média simples seria enviesada contra exatamente o trecho que queremos medir.
+            if (rota.size >= 2 && distancia > 0.5) {
+                val dAlt = pontoNovo.alt - rota[rota.size - 2].alt
+                val gradiente = (dAlt / distancia).coerceIn(-0.45, 0.45)
+                val paceInstantaneo = ultimoPaceEmaInterno ?: 0.0
+
+                if (paceInstantaneo in 60.0..1200.0) {
+                    val fator = fatorMinetti(gradiente)
+                    val gapPonto = (paceInstantaneo / fator).coerceIn(60.0, 1200.0)
+
+                    // Acumular para o km atual (ponderado por distância)
+                    gapSomadoPonderadoKm       += gapPonto  * distancia
+                    gradienteSomadoPonderadoKm += gradiente * distancia
+                    gapDistanciaAcumKm         += distancia
+
+                    // EMA para display em tempo real (α=0.2 → suavização de ~5 pontos)
+                    val alpha = 0.2
+                    val novoGapEma = gapEmaInterno?.let { prev ->
+                        alpha * gapPonto + (1.0 - alpha) * prev
+                    } ?: gapPonto
+                    gapEmaInterno = novoGapEma
+                    _gapAtualSegKm.value = novoGapEma
+
+                    // Expõe gradiente suavizado para o ViewModel monitorar descida técnica
+                    _gradienteAtual.value = gradiente
+
+                    // ── Detector de Modo Montanha com histerese ───────────────
+                    when {
+                        gradiente >= LIMIAR_GRADE_MONTANHA -> {
+                            distSubidaAcum += distancia
+                            if (!emModoMontanha && distSubidaAcum >= DISTANCIA_ATIVA_MONTANHA) {
+                                emModoMontanha = true
+                                _modoMontanha.value = true
+                                Log.d(TAG, "⛰️ Modo Montanha ATIVADO: subida > ${(LIMIAR_GRADE_MONTANHA * 100).toInt()}% por ${distSubidaAcum.toInt()}m")
+                            }
+                        }
+                        gradiente < LIMIAR_SAIDA_MONTANHA -> {
+                            distSubidaAcum = 0.0
+                            if (emModoMontanha) {
+                                emModoMontanha = false
+                                _modoMontanha.value = false
+                                Log.d(TAG, "⛰️ Modo Montanha DESATIVADO (grade=${String.format("%.1f", gradiente * 100)}%)")
+                            }
+                        }
+                        // Zona de histerese (2–4%): mantém estado atual sem acumular
+                    }
+                }
+            }
+
             val paceAtualSegKm = calcularPaceSegKmInterno(_paceAtual.value)
             if (paceAtualSegKm in 60.0..1200.0) {
                 bufferPace30s.addLast(PaceSnapshot(agora, paceAtualSegKm))
@@ -1288,6 +1424,35 @@ class RunningService : Service(), SensorEventListener {
 
         val paceSegundos = (_tempoTotalSegundos.value.toDouble() / _distanciaMetros.value) * 1000.0
         _paceMedia.value = formatarPace(paceSegundos)
+    }
+
+    /**
+     * Fórmula de Minetti (2002) — custo metabólico normalizado pela corrida plana.
+     *
+     * C(g) = 155.4g⁵ - 30.4g⁴ - 43.3g³ + 46.3g² + 19.5g + 3.6
+     *
+     * O fator retornado é C(g) / C(0) = C(g) / 3.6
+     * Interpretação: pace_gap = pace_real / fator
+     *   fator > 1 → subida (corredor trabalha mais → GAP < pace_real = "equivale a mais rápido no plano")
+     *   fator ~ 0.6 em ~-10% → descida suave (pico de economia, menor custo metabólico)
+     *   fator voltando a 1.0+ em < -15% → descida técnica (frenagem excêntrica — custo sobe novamente)
+     *
+     * NOTA SOBRE O "PARADOXO DA PIRAMBEIRA":
+     * Em grades muito negativas (< -15%), o GAP fica ≥ pace real, o que parece contraintuitivo.
+     * É fisicamente correto: você vai rápido mas os quadríceps freiam o corpo com custo metabólico
+     * alto. O AudioCoach trata essa faixa com mensagem específica ("controle o impacto") em vez
+     * de comparar GAP com pace — essa comparação seria confusa para o corredor.
+     *
+     * Referência: Minetti AE et al., J Appl Physiol 93(3):1039-1046, 2002.
+     */
+    private fun fatorMinetti(gradiente: Double): Double {
+        val g = gradiente.coerceIn(-0.45, 0.45)
+        val custo = 155.4 * Math.pow(g, 5.0) -
+                     30.4 * Math.pow(g, 4.0) -
+                     43.3 * Math.pow(g, 3.0) +
+                     46.3 * Math.pow(g, 2.0) +
+                     19.5 * g + 3.6
+        return (custo / 3.6).coerceAtLeast(0.1)
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

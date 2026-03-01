@@ -18,6 +18,7 @@ data class ConfigUiState(
     val error: String? = null,
     val isConfigured: Boolean = false,
     val autoPauseEnabled: Boolean = true,
+    val gapTelemetriaReduzida: Boolean = false,
     // true enquanto o Room ainda não respondeu — impede decisões de navegação precipitadas
     val isLoading: Boolean = true
 )
@@ -31,15 +32,17 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         viewModelScope.launch {
-            val apiKey = prefs.apiKey.first()
-            val athleteId = prefs.athleteId.first()
-            val autoPause = prefs.autoPauseEnabled.first()
+            val apiKey              = prefs.apiKey.first()
+            val athleteId           = prefs.athleteId.first()
+            val autoPause           = prefs.autoPauseEnabled.first()
+            val telemetriaReduzida  = prefs.gapTelemetriaReduzida.first()
             _uiState.value = ConfigUiState(
-                apiKey = apiKey ?: "",
-                athleteId = athleteId ?: "",
-                isConfigured = !apiKey.isNullOrBlank() && !athleteId.isNullOrBlank(),
-                autoPauseEnabled = autoPause,
-                isLoading = false  // Room respondeu — navegação pode prosseguir
+                apiKey                = apiKey ?: "",
+                athleteId             = athleteId ?: "",
+                isConfigured          = !apiKey.isNullOrBlank() && !athleteId.isNullOrBlank(),
+                autoPauseEnabled      = autoPause,
+                gapTelemetriaReduzida = telemetriaReduzida,
+                isLoading             = false  // Room respondeu — navegação pode prosseguir
             )
         }
     }
@@ -48,6 +51,13 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.value = _uiState.value.copy(autoPauseEnabled = enabled)
         viewModelScope.launch {
             prefs.setAutoPauseEnabled(enabled)
+        }
+    }
+
+    fun onGapTelemetriaReduzidaToggle(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(gapTelemetriaReduzida = enabled)
+        viewModelScope.launch {
+            prefs.setGapTelemetriaReduzida(enabled)
         }
     }
 

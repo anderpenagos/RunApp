@@ -163,6 +163,10 @@ class CorridaViewModel(
     private var ultimoPaceFeedback = 0L
     private val INTERVALO_PACE_FEEDBACK_MS = 20_000L
     private var tempoInicioPassoAtual = 0L   // tempo (segundos) em que o passo atual começou
+
+    // Preferência lida uma vez ao iniciar a corrida e mantida durante a sessão.
+    // Não precisa ser reativa — mudar no meio de uma corrida não faz sentido de UX.
+    private var gapTelemetriaReduzida = false
     private var indexPassoAnunciado = -1     // evita reanunciar o mesmo passo
     
     // Service
@@ -504,6 +508,45 @@ class CorridaViewModel(
             }
         }
 
+        // ── Modo Montanha — aviso motivacional com GAP em subidas íngremes ────
+        viewModelScope.launch {
+            service.modoMontanha.collect { emSubida ->
+                if (emSubida) {
+                    // Pequeno delay para o GAP instantâneo estabilizar após entrar na subida
+                    kotlinx.coroutines.delay(3_000)
+                    val paceAtual = _uiState.value.paceAtual
+                    val gapSegKm  = service.getGapAtualInstantaneo()
+                    audioCoach.anunciarModoMontanha(paceAtual, gapSegKm)
+                }
+            }
+        }
+
+        // ── Descida Técnica — grade < -15% (paradoxo de Minetti) ─────────────
+        // Filtro de persistência: exige 3 pontos GPS CONSECUTIVOS abaixo de -15%
+        // antes de disparar o aviso. Um único ponto ruidoso de altitude (ex: GPS urbano
+        // sob viaduto) pode gerar gradiente de -18% por 1s e voltar a -12% imediatamente.
+        // Sem esse filtro, o corredor ouviria alertas falsos em trechos planos.
+        // O debounce de 24s no AudioCoach garante que ladeiras longas não repitam o aviso.
+        var pontosDescidaTecnicaConsecutivos = 0
+        val PERSISTENCIA_DESCIDA_TECNICA = 3  // pontos GPS ~ 3 segundos em movimento
+
+        viewModelScope.launch {
+            service.gradienteAtual.collect { gradiente ->
+                if (gradiente < -0.15) {
+                    pontosDescidaTecnicaConsecutivos++
+                    if (pontosDescidaTecnicaConsecutivos >= PERSISTENCIA_DESCIDA_TECNICA) {
+                        audioCoach.anunciarDescidaTecnica()
+                        // Após disparar, não zera — o throttle do AudioCoach (24s) evita spam.
+                        // Manter o contador alto evita re-contar 3 pontos a cada janela de 24s.
+                    }
+                } else {
+                    // Qualquer ponto fora do limiar quebra a sequência — garante que
+                    // a ladeira é contínua, não uma série de picos isolados.
+                    pontosDescidaTecnicaConsecutivos = 0
+                }
+            }
+        }
+
         // NOTA: O backup periódico foi movido para o RunningService (salvarCheckpoint a cada 30s).
         // Isso é essencial porque o viewModelScope pode ser cancelado quando a Activity morre
         // durante corridas longas com tela bloqueada, enquanto o Service permanece vivo.
@@ -513,9 +556,41 @@ class CorridaViewModel(
     private fun verificarAnuncioDistancia(distanciaMetros: Double) {
         val kmPercorridos = (distanciaMetros / 1000).toInt()
         if (kmPercorridos > ultimoKmAnunciado && kmPercorridos > 0) {
-            audioCoach.anunciarKm(kmPercorridos.toDouble(), _uiState.value.paceMedia)
+            val service = runningService
+
+            // Fechar o acumulador GAP do km que acabou de ser concluído.
+            // `null` significa que o GPS foi insuficiente durante o km — usa anúncio simples.
+            val gapResult  = service?.fecharEObterGapKm()
+            val paceMedia  = _uiState.value.paceMedia
+
+            if (gapResult != null) {
+                val paceRealSegKm      = paceParaSegundos(paceMedia).toDouble()
+                // Pace médio geral da corrida inteira (usado para avaliar eficiência na subida)
+                val paceMediaGeralSegKm = paceParaSegundos(_uiState.value.paceMedia).toDouble()
+                audioCoach.anunciarKmComGap(
+                    distanciaKm           = kmPercorridos.toDouble(),
+                    paceMedia             = paceMedia,
+                    paceRealSegKm         = paceRealSegKm,
+                    gapMedioSegKm         = gapResult.gapMedioSegKm,
+                    gradienteMedio        = gapResult.gradienteMedio,
+                    paceMediaGeralSegKm   = paceMediaGeralSegKm,
+                    telemetriaReduzida    = gapTelemetriaReduzida
+                )
+            } else {
+                // Fallback: GPS ruim o km todo, ou primeiros metros sem altitude
+                audioCoach.anunciarKm(kmPercorridos.toDouble(), paceMedia)
+            }
+
             ultimoKmAnunciado = kmPercorridos
         }
+    }
+
+    /** Converte "M:SS" → segundos totais. Retorna 0 se inválido. */
+    private fun paceParaSegundos(pace: String): Int {
+        if (pace == "--:--") return 0
+        val partes = pace.split(":")
+        if (partes.size != 2) return 0
+        return (partes[0].toIntOrNull() ?: 0) * 60 + (partes[1].toIntOrNull() ?: 0)
     }
 
     private fun verificarFeedbackPace(paceAtual: String) {
@@ -705,6 +780,13 @@ class CorridaViewModel(
         indexPassoAnunciado = 0
         ultimoKmAnunciado = 0
         ultimoPaceFeedback = 0L
+
+        // Ler preferências de corrida uma única vez no início da sessão.
+        // Não faz sentido alterar mid-run: o corredor está com fone na orelha, não no telefone.
+        viewModelScope.launch {
+            gapTelemetriaReduzida = container.preferencesRepository.gapTelemetriaReduzida.first()
+            android.util.Log.d("CorridaVM", "⚙️ GAP Telemetria Reduzida: $gapTelemetriaReduzida")
+        }
 
         // Iniciar o service
         val intent = Intent(context, RunningService::class.java).apply {

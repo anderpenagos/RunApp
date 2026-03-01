@@ -108,6 +108,8 @@ fun ConfigScreen(
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(12.dp))
+
+                // ── Auto-pause ────────────────────────────────────────────────
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -128,6 +130,35 @@ fun ConfigScreen(
                     Switch(
                         checked = state.autoPauseEnabled,
                         onCheckedChange = { viewModel.onAutoPauseToggle(it) }
+                    )
+                }
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 12.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
+                )
+
+                // ── Telemetria Reduzida ───────────────────────────────────────
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "⛰️ GAP apenas em ladeiras",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Informa o esforço ajustado somente em subidas e descidas técnicas. Trechos planos recebem apenas o ritmo.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
+                    Switch(
+                        checked = state.gapTelemetriaReduzida,
+                        onCheckedChange = { viewModel.onGapTelemetriaReduzidaToggle(it) }
                     )
                 }
             }
