@@ -23,6 +23,7 @@ import java.util.Locale
 @Composable
 fun HomeScreen(
     onVerTreinos: () -> Unit,
+    onCorridaLivre: () -> Unit,
     onVerHistorico: () -> Unit,
     onConfigurar: () -> Unit,
     corridaAtiva: Boolean = false,
@@ -77,7 +78,7 @@ fun HomeScreen(
                                 color = Color.White
                             )
                             Text(
-                                text = "Toque para voltar ao treino",
+                                text = "Toque para voltar à corrida",
                                 fontSize = 13.sp,
                                 color = Color.White.copy(alpha = 0.85f)
                             )
@@ -141,9 +142,9 @@ fun HomeScreen(
                 }
             }
 
-            // Card secundário — histórico de corridas
+            // Card corrida livre — inicia sem estrutura do Intervals.icu
             Card(
-                onClick = onVerHistorico,
+                onClick = onCorridaLivre,
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.secondaryContainer
@@ -158,22 +159,59 @@ fun HomeScreen(
                 ) {
                     Column {
                         Text(
-                            text = "Histórico de Corridas",
+                            text = "Corrida Livre",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSecondaryContainer
                         )
                         Text(
-                            text = "Veja, compartilhe e exporte seus GPX",
+                            text = "Corra sem treino estruturado — GPS, pace e GAP ativos",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                        )
+                    }
+                    Icon(
+                        Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(36.dp),
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+            }
+
+            // Card secundário — histórico de corridas
+            Card(
+                onClick = onVerHistorico,
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text(
+                            text = "Histórico de Corridas",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Veja, compartilhe e exporte seus GPX",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
                         )
                     }
                     Icon(
                         Icons.Default.History,
                         contentDescription = null,
                         modifier = Modifier.size(36.dp),
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }

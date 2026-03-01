@@ -30,7 +30,6 @@ import com.runapp.ui.screens.*
 import com.runapp.ui.viewmodel.ConfigViewModel
 import com.runapp.ui.viewmodel.CorridaViewModel
 import com.runapp.ui.viewmodel.FaseCorrida
-
 sealed class Screen(val route: String) {
     object Config      : Screen("config")
     object Home        : Screen("home")
@@ -45,6 +44,7 @@ sealed class Screen(val route: String) {
     object Corrida : Screen("corrida/{eventId}") {
         fun criarRota(eventId: Long) = "corrida/$eventId"
     }
+    object CorridaLivre : Screen("corrida_livre")
     object Resumo : Screen("resumo")
 }
 
@@ -184,12 +184,19 @@ fun AppNavigation(notificationIntent: Intent? = null) {
 
         composable(Screen.Home.route) {
             HomeScreen(
-                onVerTreinos   = { navController.navigate(Screen.Treinos.route) },
-                onVerHistorico = { navController.navigate(Screen.Historico.route) },
-                onConfigurar   = { navController.navigate(Screen.Config.route) },
-                corridaAtiva   = corridaAtiva,
+                onVerTreinos       = { navController.navigate(Screen.Treinos.route) },
+                onCorridaLivre     = { navController.navigate(Screen.CorridaLivre.route) },
+                onVerHistorico     = { navController.navigate(Screen.Historico.route) },
+                onConfigurar       = { navController.navigate(Screen.Config.route) },
+                corridaAtiva       = corridaAtiva,
                 onVoltarParaCorrida = {
-                    eventoId?.let { navController.navigate(Screen.Corrida.criarRota(it)) }
+                    eventoId?.let {
+                        val rota = if (it == CorridaViewModel.CORRIDA_LIVRE_ID)
+                            Screen.CorridaLivre.route
+                        else
+                            Screen.Corrida.criarRota(it)
+                        navController.navigate(rota)
+                    }
                 }
             )
         }
@@ -351,6 +358,36 @@ fun AppNavigation(notificationIntent: Intent? = null) {
                 onFinalizar = {
                     navController.navigate(Screen.Resumo.route) {
                         popUpTo(Screen.Corrida.route) { inclusive = true }
+                    }
+                }
+            )
+        }
+
+        // ── Corrida Livre — sem eventId, sem estrutura do Intervals.icu ─────
+        composable(Screen.CorridaLivre.route) {
+
+            // Mesma guarda de integridade do treino estruturado: se há corrida ativa
+            // com ID real (≠ -1), redireciona para ela em vez de sobrepor o estado.
+            if (corridaAtiva && eventoId != null && eventoId != CorridaViewModel.CORRIDA_LIVRE_ID) {
+                LaunchedEffect(Unit) {
+                    navController.navigate(Screen.Corrida.criarRota(eventoId)) {
+                        popUpTo(Screen.CorridaLivre.route) { inclusive = true }
+                    }
+                }
+                return@composable
+            }
+
+            CorridaScreen(
+                eventId  = CorridaViewModel.CORRIDA_LIVRE_ID,
+                viewModel = corridaViewModel,
+                onSair    = {
+                    navController.navigate(Screen.Home.route) {
+                        popUpTo(0) { inclusive = true }
+                    }
+                },
+                onFinalizar = {
+                    navController.navigate(Screen.Resumo.route) {
+                        popUpTo(Screen.CorridaLivre.route) { inclusive = true }
                     }
                 }
             )

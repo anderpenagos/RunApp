@@ -677,6 +677,22 @@ class CorridaViewModel(
         viewModelScope.launch {
             android.util.Log.d("CorridaVM", "⏱️ carregarTreino($eventId) iniciou. isBindingTentativo=$isBindingTentativo")
 
+            // ── CORRIDA LIVRE — sem estrutura de treino ───────────────────────
+            // eventId == -1L é a convenção para "iniciar sem treino do Intervals.icu".
+            // Cria um WorkoutEvent stub local com passos vazios — o CorridaScreen
+            // detecta `passos.isEmpty()` e oculta todo o painel de passos/estrutura.
+            // O comportamento de GPS, GAP, áudio e save de GPX é idêntico ao treino normal.
+            if (eventId == CORRIDA_LIVRE_ID) {
+                android.util.Log.d("CorridaVM", "🏃 Corrida Livre — sem treino estruturado")
+                _uiState.value = _uiState.value.copy(
+                    treino     = WorkoutEvent(id = CORRIDA_LIVRE_ID, name = "Corrida Livre"),
+                    passos     = emptyList(),
+                    passoAtual = null,
+                    erro       = null
+                )
+                return@launch
+            }
+
             // ESPERA ATIVA: verifica o service a cada 100ms enquanto ele ainda não conectou.
             // Checa na ENTRADA de cada ciclo, não após o delay — assim captura o service
             // imediatamente quando o bind completa, sem esperar o próximo tick.
@@ -1203,6 +1219,9 @@ class CorridaViewModel(
     }
 
     companion object {
+        /** Sentinela para corrida livre (sem treino estruturado do Intervals.icu). */
+        const val CORRIDA_LIVRE_ID = -1L
+
         val Factory: ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 val application = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as RunApp
