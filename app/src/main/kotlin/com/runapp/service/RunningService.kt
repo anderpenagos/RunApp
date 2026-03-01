@@ -302,9 +302,68 @@ class RunningService : Service(), SensorEventListener {
         Log.d(TAG, "⚙️ Janela de pace ajustada para ${janelaAtualSegundos}s (passo=${duracaoSegundos}s)")
     }
 
-    // EMA (Média Móvel Exponencial) — alias para compatibilidade interna
-    // Use ultimoPaceEmaInterno diretamente em todo o código novo
-    private var ultimoPaceEma: Double?
+    // ── Filtro de Kalman para suavização de posição GPS ──────────────────────
+    private var kalmanLat: Double = 0.0
+    private var kalmanLng: Double = 0.0
+    private var kalmanVariancia: Float = -1f
+    private val KALMAN_Q = 3.0f
+
+    // Re-entrada suave após gap GPS (Fix A visual):
+    // Por KALMAN_REENTRY_MS após voltar do GPS, inflamos a variância de observação
+    // para que o Kalman deslize suavemente para a posição real em vez de saltar.
+    private var timestampVoltouDoGap = 0L
+    private val KALMAN_REENTRY_MS = 3_000L
+
+    // Fix Bug C: detectar arranque explosivo (cadência 0 → sprint)
+    private var cadenciaAnteriorKalman = 0
+
+    /**
+     * Aplica filtro de Kalman com três melhorias:
+     * 1. Trava de ganho por cadência (parado → K=0, sem drift de posição)
+     * 2. Arranque instantâneo (cadência 0→≥60 → K=1.0 sem rampa)
+     * 3. Re-entrada suave após gap GPS (blend gradual, sem salto visual)
+     */
+    private fun aplicarKalman(lat: Double, lng: Double, accuracy: Float, deltaMs: Long): Pair<Double, Double> {
+        if (kalmanVariancia < 0f) {
+            kalmanLat = lat
+            kalmanLng = lng
+            kalmanVariancia = accuracy * accuracy
+            cadenciaAnteriorKalman = _cadencia.value
+            return Pair(lat, lng)
+        }
+
+        val deltaS = (deltaMs / 1000.0f).coerceAtLeast(0.1f)
+        kalmanVariancia += KALMAN_Q * deltaS
+
+        // Fix A visual — Re-entrada suave: infla variância de observação nos primeiros 3s
+        // pós-gap. K diminui → Kalman desliza até posição real em vez de teletransportar.
+        val agora = System.currentTimeMillis()
+        val emReentrada = timestampVoltouDoGap > 0 && (agora - timestampVoltouDoGap) < KALMAN_REENTRY_MS
+        val inflacaoReentrada = if (emReentrada) {
+            val progresso = (agora - timestampVoltouDoGap).toFloat() / KALMAN_REENTRY_MS
+            10f - 9f * progresso  // 10× → 1× ao longo de 3s
+        } else 1f
+
+        val medicaoVariancia = accuracy * accuracy * inflacaoReentrada
+
+        // Fix Bug C — Arranque explosivo: cadência 0→≥60 sobe K para 1.0 imediatamente
+        // sem rampa, para não perder os primeiros metros da arrancada.
+        val cadenciaAtual = _cadencia.value
+        val fatorMovimento = when {
+            cadenciaAnteriorKalman < 60 && cadenciaAtual >= 60 -> 1.0f  // arranque: K pleno
+            cadenciaAtual < 60 -> 0.0f                                   // parado: trava
+            else -> (cadenciaAtual.toFloat() / 120f).coerceIn(0.1f, 1.0f)
+        }
+        cadenciaAnteriorKalman = cadenciaAtual
+
+        val kBase = kalmanVariancia / (kalmanVariancia + medicaoVariancia)
+        val k = kBase * fatorMovimento
+        kalmanLat += k * (lat - kalmanLat)
+        kalmanLng += k * (lng - kalmanLng)
+        kalmanVariancia = (1f - k) * kalmanVariancia
+
+        return Pair(kalmanLat, kalmanLng)
+    }
         get() = ultimoPaceEmaInterno
         set(value) { ultimoPaceEmaInterno = value }
     
@@ -392,6 +451,36 @@ class RunningService : Service(), SensorEventListener {
     private var somaUltimosPicos = 0f
     private var contadorPicos = 0
 
+    // ── Gap-fill por cadência (Dead Reckoning) ────────────────────────────────
+    // Quando o GPS some por > 3s, usamos cadência + comprimento estimado de passo
+    // para continuar acumulando distância sem congelar o contador na tela.
+    // Sem ponto no mapa (não temos direção) — apenas distância e pace continuam.
+    private var ultimoTempoGps      = 0L        // timestamp do último ponto GPS aceito
+    private var passosNoGap         = 0         // passos contados enquanto GPS ausente
+    private var emGapGps            = false     // true = GPS ausente, gap-fill ativo
+    private val GAP_THRESHOLD_MS    = 3_000L   // gap > 3s ativa dead reckoning
+    // Flag Bug A: primeiro ponto após gap só relocaliza o mapa, não soma distância
+    private var primeiropontoAposGap = false
+
+    // ── Buffer de pace dos últimos 30s (Fix Bug B) ───────────────────────────
+    // Pace médio global é impreciso para step_length — se você estava num sprint
+    // quando o GPS caiu, a passada real é maior que a média da corrida inteira.
+    // Este buffer guarda (timestamp, paceSegKm) dos últimos 30s para calcular
+    // o pace mais recente no momento exato que o GPS sumiu.
+    private data class PaceSnapshot(val timestampMs: Long, val paceSegKm: Double)
+    private val bufferPace30s = ArrayDeque<PaceSnapshot>(35)
+    private var stepLengthNoGap = 0.0   // step length capturado no momento do gap
+
+    // ── Auto-Learner de step length (Sugestão D) ─────────────────────────────
+    // Quando GPS está excelente (accuracy < 8m), mede a passada REAL observada:
+    //   passadaReal = distanciaGPS / passosNessePeriodo
+    // Mantém média móvel exponencial — se adapta ao cansaço e inclinação.
+    // Usado como fallback primário no gap-fill (mais preciso que fórmula estática).
+    private var stepLengthAprendido = 0.0   // média EMA da passada real observada
+    private var passosDesdeUltimoGpsBom = 0 // passos desde último fix de qualidade
+    private var distDesdeUltimoGpsBom = 0.0 // distância GPS desde último fix bom
+    private val ALPHA_STEP_LEARNER = 0.3    // EMA: 0.3 = responde em ~3-4 medições
+
     // FIX 7: Separação entre valor interno de EMA e string da UI.
     // Problema original: ultimoPaceEma era null quando o pace estava fora da faixa válida
     // (corredor parado, spike GPS). Isso causava "buracos" no heatmap (paceNoPonto=0.0)
@@ -461,21 +550,6 @@ class RunningService : Service(), SensorEventListener {
         // Inicializar banco de dados Room via AppContainer (singleton — thread-safe)
         val app = applicationContext as com.runapp.RunApp
         database = app.container.runDatabase
-
-        // FIX PROCESS DEATH — EMISSÃO NA RECONEXÃO DA UI:
-        // Quando o processo do app morre (Android liberou RAM com tela bloqueada), o Service
-        // sobrevive mas o StateFlow para de emitir (subscriptionCount == 0 → otimização de memória).
-        // Quando a UI reconecta (subscriptionCount 0 → 1), o StateFlow tem valor STALE (desatualizado).
-        // Esse observer detecta a reconexão e força a emissão da rota completa imediatamente,
-        // garantindo que o novo ViewModel receba o trajeto sem esperar o próximo ponto GPS (até 1s).
-        serviceScope.launch {
-            _rotaAtual.subscriptionCount.collect { count ->
-                if (count == 1 && rota.isNotEmpty()) {
-                    _rotaAtual.value = rota.toList()
-                    Log.d(TAG, "📡 UI reconectada — emitindo rota completa: ${rota.size} pontos")
-                }
-            }
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -654,6 +728,9 @@ class RunningService : Service(), SensorEventListener {
         modoRecuperacaoGps = false
         contadorPontosRecuperacao = 0
 
+        // Reset Kalman — nova corrida começa sem histórico de posição anterior
+        kalmanVariancia = -1f
+
         // Resetar dados
         rota.clear()
         ultimasLocalizacoes.clear()
@@ -675,6 +752,17 @@ class RunningService : Service(), SensorEventListener {
         somaUltimosPicos = 0f
         contadorPicos = 0
         _cadencia.value = 0
+
+        // Resetar gap-fill e auto-learner
+        ultimoTempoGps = System.currentTimeMillis()
+        passosNoGap = 0
+        emGapGps = false
+        primeiropontoAposGap = false
+        bufferPace30s.clear()
+        stepLengthNoGap = 0.0
+        stepLengthAprendido = 0.0
+        passosDesdeUltimoGpsBom = 0
+        distDesdeUltimoGpsBom = 0.0
 
         // FIX 4: Registra o sensor correto dependendo do que o hardware suporta.
         // STEP_DETECTOR: usa SENSOR_DELAY_NORMAL — o chip de hardware não se beneficia
@@ -805,8 +893,7 @@ class RunningService : Service(), SensorEventListener {
     // FIX 4: Lógica de contagem de cadência extraída para função compartilhada.
     // Usada tanto pelo STEP_DETECTOR (caminho simples) quanto pelo LINEAR_ACCELERATION (fallback).
     private fun registrarPasso(agora: Long) {
-        // Debounce mínimo de 200ms entre passos: cobre até 300 SPM (corrida olímpica)
-        // e filtra duplos eventos espúrios em raros dispositivos com STEP_DETECTOR ruidoso
+        // Debounce mínimo de 200ms entre passos
         if (agora - ultimoTimestampPasso < 200L) return
         ultimoTimestampPasso = agora
 
@@ -823,6 +910,86 @@ class RunningService : Service(), SensorEventListener {
                 _cadencia.value = spm
             }
         }
+
+        // GAP-FILL: conta passos enquanto GPS está ausente
+        // Quando o GPS voltar, processarNovaLocalizacao vai liquidar esses passos
+        if (emGapGps && estaCorrendo && !estaPausado && !_autoPausado.value) {
+            passosNoGap++
+        }
+    }
+
+    /**
+     * Chamado pelo timer a cada segundo.
+     * Detecta gap de GPS e acumula distância por dead reckoning quando ausente.
+     */
+    fun verificarGapGps() {
+        if (!estaCorrendo || estaPausado || _autoPausado.value) return
+
+        val agora = System.currentTimeMillis()
+        val gapMs = agora - ultimoTempoGps
+
+        if (!emGapGps && gapMs > GAP_THRESHOLD_MS) {
+            // ── Ativar gap-fill ──────────────────────────────────────────────
+            emGapGps = true
+            passosNoGap = 0
+
+            // Fix Bug B: captura step_length com base no pace dos ÚLTIMOS 30s,
+            // não o pace médio global. Mais fiel ao esforço atual do corredor.
+            val pace30s = calcularPaceUltimos30s()
+            val cadenciaAtual = _cadencia.value
+
+            stepLengthNoGap = when {
+                // Prioridade 1: passada real aprendida pelo Auto-Learner (mais precisa)
+                stepLengthAprendido > 0.3 -> stepLengthAprendido
+
+                // Prioridade 2: derivada do pace dos últimos 30s + cadência atual
+                pace30s > 0 && cadenciaAtual >= 60 -> {
+                    val velocidadeMs = 1000.0 / pace30s
+                    velocidadeMs / (cadenciaAtual / 60.0)
+                }
+
+                // Fallback: pace médio global
+                else -> {
+                    val paceGlobal = calcularPaceSegKmInterno(_paceMedia.value)
+                    if (paceGlobal > 0 && cadenciaAtual >= 60)
+                        (1000.0 / paceGlobal) / (cadenciaAtual / 60.0)
+                    else 0.0
+                }
+            }.coerceIn(0.5, 2.5)  // limites físicos: 0.5m (marcha) a 2.5m (sprint)
+
+            Log.w(TAG, "🔴 Gap GPS (${gapMs}ms) — dead reckoning ativo. " +
+                "stepLength=${String.format("%.2f", stepLengthNoGap)}m " +
+                "(learner=${String.format("%.2f", stepLengthAprendido)}m, " +
+                "pace30s=${if (pace30s > 0) formatarPace(pace30s) else "--"})")
+        }
+
+        if (emGapGps && passosNoGap > 0 && stepLengthNoGap > 0.0) {
+            val distanciaEstimada = passosNoGap * stepLengthNoGap
+            _distanciaMetros.value += distanciaEstimada
+            calcularPaceMedia()
+            Log.d(TAG, "🦶 Gap-fill: ${passosNoGap}p × ${String.format("%.2f", stepLengthNoGap)}m = ${String.format("%.1f", distanciaEstimada)}m")
+            passosNoGap = 0
+        }
+    }
+
+    /** Calcula pace médio dos últimos 30s usando o buffer de snapshots. */
+    private fun calcularPaceUltimos30s(): Double {
+        val agora = System.currentTimeMillis()
+        // Remove snapshots com mais de 30s
+        while (bufferPace30s.isNotEmpty() && bufferPace30s.first().timestampMs < agora - 30_000L) {
+            bufferPace30s.removeFirst()
+        }
+        if (bufferPace30s.isEmpty()) return 0.0
+        val validos = bufferPace30s.filter { it.paceSegKm in 60.0..1200.0 }
+        return if (validos.isEmpty()) 0.0 else validos.map { it.paceSegKm }.average()
+    }
+
+    private fun calcularPaceSegKmInterno(paceFormatado: String): Double {
+        if (paceFormatado == "--:--") return 0.0
+        return runCatching {
+            val partes = paceFormatado.split(":")
+            partes[0].toLong() * 60.0 + partes[1].toLong()
+        }.getOrDefault(0.0)
     }
 
     // FIX 4: Renomeado de detectarPasso → detectarPassoPorMagnitude para clareza.
@@ -969,7 +1136,10 @@ class RunningService : Service(), SensorEventListener {
             return
         }
 
-        // Filtro básico de qualidade
+        // FILTRO DE ACCURACY MAIS RÍGIDO:
+        // 50m anterior era permissivo demais — perto da lagoa, pontos de 30-50m jogavam
+        // a rota para dentro da água. 25m é o limiar que o Garmin e Strava usam por padrão.
+        // Para o mapa ao vivo aceitamos 25m; para persistência no Room continuamos com 20m.
         if (location.accuracy > MAX_ACCURACY_METERS) {
             Log.d(TAG, "⚠️ Localização descartada: accuracy=${location.accuracy}m")
             return
@@ -1004,14 +1174,30 @@ class RunningService : Service(), SensorEventListener {
         }
 
         val agora = System.currentTimeMillis()
+
+        // GPS voltou — desativa gap-fill e marca re-entrada para blend suave no Kalman
+        if (emGapGps) {
+            Log.d(TAG, "✅ GPS recuperado — re-entrada suave ativada por ${KALMAN_REENTRY_MS}ms")
+            emGapGps = false
+            passosNoGap = 0
+            primeiropontoAposGap = true
+            timestampVoltouDoGap = agora  // ativa inflação de variância no Kalman
+            passosDesdeUltimoGpsBom = 0
+            distDesdeUltimoGpsBom = 0.0
+        }
+        ultimoTempoGps = agora
+
+        // FILTRO DE KALMAN — suavização de posição GPS
+        // deltaMs para o passo de predição do Kalman (crescimento de incerteza)
+        val deltaMs = if (rota.isNotEmpty()) (agora - rota.last().tempo).coerceAtLeast(100L) else 1000L
+        val (latK, lngK) = aplicarKalman(location.latitude, location.longitude, location.accuracy, deltaMs)
+
         val pontoNovo = LatLngPonto(
-            lat = location.latitude,
-            lng = location.longitude,
+            lat = latK,   // posição filtrada pelo Kalman — não o raw GPS
+            lng = lngK,
             alt = location.altitude,
             tempo = agora,
             accuracy = location.accuracy,
-            // Snapshot do pace e cadência no momento exato do ponto GPS
-            // Permite gráficos "pace ao longo do percurso" e correlação com altitude
             paceNoPonto = ultimoPaceEma ?: 0.0,
             cadenciaNoPonto = _cadencia.value
         )
@@ -1039,15 +1225,119 @@ class RunningService : Service(), SensorEventListener {
 
         // Calcular distância desde o último ponto
         val ultimoPonto = rota.last()
-        val distancia = calcularDistancia(
-            ultimoPonto.lat, ultimoPonto.lng,
-            pontoNovo.lat, pontoNovo.lng
-        )
+
+        // DISTÂNCIA VIA VELOCIDADE DOPPLER vs HAVERSINE:
+        //
+        // O chip GPS mede a velocidade pelo efeito Doppler (variação de frequência do
+        // sinal), que é 5-10x mais preciso que calcular distância entre dois pontos
+        // de coordenadas ruidosas. Dois pontos ruidosos com haversine acumulam o erro
+        // de AMBOS os pontos; a velocidade Doppler é uma medição direta e independente.
+        //
+        // Condições para usar Doppler:
+        // • hasSpeed() = true: chip conseguiu calcular velocidade neste fix
+        // • speedAccuracyMetersPerSecond < 0.5 (API 26+): confiança na medição
+        // • speed > 0.1 m/s: descarta ruído de repouso
+        // • deltaT plausível (0.5s a 3s): evita distorções em gaps de GPS
+        //
+        // Caso contrário, usa haversine entre pontos Kalman (já suavizados).
+        val deltaTSegundos = deltaMs / 1000.0
+        val usarDoppler = location.hasSpeed() &&
+            location.speed > 0.1f &&
+            deltaTSegundos in 0.5..3.0 &&
+            (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O ||
+             location.speedAccuracyMetersPerSecond < 0.5f)
+
+        val distancia = if (usarDoppler) {
+            // Distância = velocidade_média * tempo
+            // Média entre a velocidade do ponto anterior (se disponível) e o atual
+            // para integração trapezoidal (mais precisa que retangular)
+            val speedAnterior = ultimasLocalizacoes.lastOrNull()?.speed?.toDouble() ?: location.speed.toDouble()
+            val speedMedia = (speedAnterior + location.speed) / 2.0
+            speedMedia * deltaTSegundos
+        } else {
+            calcularDistancia(ultimoPonto.lat, ultimoPonto.lng, pontoNovo.lat, pontoNovo.lng)
+        }
+
+        Log.d(TAG, "📏 Dist: ${String.format("%.1f", distancia)}m via ${if (usarDoppler) "Doppler(${String.format("%.1f", location.speed)}m/s)" else "Haversine"}")
 
         // Adicionar ponto à rota em memória
         rota.add(pontoNovo)
 
-        // PERSISTÊNCIA IMEDIATA NO ROOM — só pontos com GPS confiável (< 20m)
+        // Fix Bug A — DOUBLE COUNTING:
+        // O primeiro ponto após um gap serve só para relocalizar no mapa.
+        // A distância gap→B já foi contada pelo dead reckoning (passos × step).
+        // Somar B - A_anterior via GPS/Doppler duplicaria esse trecho.
+        if (primeiropontoAposGap) {
+            primeiropontoAposGap = false
+            Log.d(TAG, "📍 Ponto de relocalização pós-gap — distância não somada (Fix A)")
+            // Continua: persiste no Room, emite StateFlow, mas NÃO soma distância
+        } else {
+            // ── Auto-Learner: calibra step_length quando GPS está excelente ──────
+            // Acumula passos e distância Doppler/Haversine em períodos de GPS bom.
+            // A cada 30 passos com accuracy < 8m, recalcula passadaReal e atualiza EMA.
+            if (location.accuracy < 8f && _cadencia.value >= 60) {
+                passosDesdeUltimoGpsBom++
+                distDesdeUltimoGpsBom += distancia
+
+                if (passosDesdeUltimoGpsBom >= 30) {
+                    val passadaMedida = distDesdeUltimoGpsBom / passosDesdeUltimoGpsBom
+
+                    // Trava de inclinação (Fix B): não atualiza o learner em subidas/descidas
+                    // acentuadas — a passada encurtada no morro distorceria o modelo para
+                    // trechos planos. Calcula inclinação pelos últimos 2 pontos da rota.
+                    val inclinacaoAtual = if (rota.size >= 2) {
+                        val dAlt = rota.last().alt - rota[rota.size - 2].alt
+                        val dDist = calcularDistancia(
+                            rota[rota.size - 2].lat, rota[rota.size - 2].lng,
+                            rota.last().lat, rota.last().lng
+                        ).coerceAtLeast(0.1)
+                        kotlin.math.abs(dAlt / dDist * 100)  // % de inclinação
+                    } else 0.0
+
+                    val emInclinacaoAcentuada = inclinacaoAtual > 2.0  // > 2% = "hold"
+
+                    // Filtro de outlier (Extra): rejeita passada > 30% diferente da EMA atual
+                    val ehOutlier = stepLengthAprendido > 0.0 &&
+                        kotlin.math.abs(passadaMedida - stepLengthAprendido) / stepLengthAprendido > 0.30
+
+                    when {
+                        emInclinacaoAcentuada ->
+                            Log.d(TAG, "📐 Auto-Learner em hold (inclinação=${String.format("%.1f", inclinacaoAtual)}%)")
+                        ehOutlier ->
+                            Log.d(TAG, "📐 Auto-Learner outlier rejeitado: ${String.format("%.2f", passadaMedida)}m (EMA=${String.format("%.2f", stepLengthAprendido)}m)")
+                        passadaMedida in 0.5..2.5 -> {
+                            stepLengthAprendido = if (stepLengthAprendido == 0.0) {
+                                passadaMedida
+                            } else {
+                                ALPHA_STEP_LEARNER * passadaMedida + (1 - ALPHA_STEP_LEARNER) * stepLengthAprendido
+                            }
+                            Log.d(TAG, "📐 Auto-Learner: passada=${String.format("%.2f", passadaMedida)}m → EMA=${String.format("%.2f", stepLengthAprendido)}m")
+                        }
+                    }
+
+                    passosDesdeUltimoGpsBom = 0
+                    distDesdeUltimoGpsBom = 0.0
+                }
+            } else {
+                if (location.accuracy >= 8f) {
+                    passosDesdeUltimoGpsBom = 0
+                    distDesdeUltimoGpsBom = 0.0
+                }
+            }
+
+            // Atualizar distância total (apenas pontos normais, não relocalização)
+            _distanciaMetros.value += distancia
+
+            // Alimenta buffer de pace dos últimos 30s (Fix Bug B)
+            val paceAtualSegKm = calcularPaceSegKmInterno(_paceAtual.value)
+            if (paceAtualSegKm in 60.0..1200.0) {
+                bufferPace30s.addLast(PaceSnapshot(agora, paceAtualSegKm))
+                // Remove entradas com mais de 35s (margem de segurança)
+                while (bufferPace30s.isNotEmpty() && bufferPace30s.first().timestampMs < agora - 35_000L) {
+                    bufferPace30s.removeFirst()
+                }
+            }
+        } — só pontos com GPS confiável (< 20m)
         // O limiar é mais rígido que o da UI (50m) para evitar "saltos" que inflam
         // distância e sujam o heatmap. Pontos ruins continuam visíveis na tela, mas
         // não entram no histórico permanente.
@@ -1075,9 +1365,6 @@ class RunningService : Service(), SensorEventListener {
                 _rotaAtual.value = rota.toList()
             }
         }
-
-        // Atualizar distância total
-        _distanciaMetros.value += distancia
 
         // Gerenciar janela móvel para pace atual
         ultimasLocalizacoes.add(location)
@@ -1287,6 +1574,9 @@ class RunningService : Service(), SensorEventListener {
                     // ElapsedRealtime: monotônico, nunca salta com NTP/DST/fuso
                     val tempoDecorrido = (SystemClock.elapsedRealtime() - elapsedRealtimeInicio - tempoPausadoTotalMs) / 1000
                     _tempoTotalSegundos.value = tempoDecorrido
+
+                    // GAP-FILL: verifica ausência de GPS e acumula distância por cadência
+                    verificarGapGps()
                     
                     // Atualizar notificação a cada 5 segundos
                     if (tempoDecorrido % 5 == 0L) {
@@ -1524,7 +1814,7 @@ class RunningService : Service(), SensorEventListener {
         //   Só salva pontos com leitura GPS confiável — evita "saltos" de 50-100m no
         //   histórico que inflam a distância total e sujam o heatmap de pace.
         //   20m é o padrão usado pelo Strava/Garmin para corridas urbanas.
-        const val MAX_ACCURACY_METERS = 50f       // descarta da UI
-        const val ROOM_ACCURACY_METERS = 20f      // descarta da persistência
+        const val MAX_ACCURACY_METERS = 25f       // descarta da UI
+        const val ROOM_ACCURACY_METERS = 15f      // descarta da persistência
     }
 }
