@@ -45,6 +45,7 @@ jobs:
         run: ./gradlew assembleDebug --stacktrace
         env:
           MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       
       - name: Get version info
         id: version
