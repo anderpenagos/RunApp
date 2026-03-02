@@ -621,36 +621,6 @@ private fun calcularZonasPorTempo(
 ): List<InfoZona> {
     if (zonasFronteira.isEmpty() || rota.size < 2) return emptyList()
 
-    val tempoMs = LongArray(zonasFronteira.size)
-    var totalMs = 0L
-
-    for (i in 0 until rota.size - 1) {
-        val pace = rota[i].paceNoPonto
-        if (pace < 60.0 || pace > 1800.0) continue
-
-        // FIX PRECISÃO: gap máximo de 60s para manter estatísticas reais
-        val intervaloMs = (rota[i + 1].tempo - rota[i].tempo).coerceAtLeast(0L)
-        if (intervaloMs <= 0L || intervaloMs > 60_000L) continue 
-
-        var zonaIdx = zonasFronteira.lastIndex
-        for (z in zonasFronteira.indices) {
-            val zf = zonasFronteira[z]
-            val dentroDoTeto = zf.paceMaxSegKm == null || pace <= zf.paceMaxSegKm
-            if (pace >= zf.paceMinSegKm && dentroDoTeto) { zonaIdx = z; break }
-        }
-
-        tempoMs[zonaIdx] += intervaloMs
-        totalMs += intervaloMs
-    }
-
-    if (totalMs == 0L) return emptyList()
-
-private fun calcularZonasPorTempo(
-    rota: List<LatLngPonto>,
-    zonasFronteira: List<ZonaFronteira>
-): List<InfoZona> {
-    if (zonasFronteira.isEmpty() || rota.size < 2) return emptyList()
-
     // DIAGNÓSTICO: verifica se os timestamps dos pontos são válidos e crescentes.
     // Pode falhar em GPX legados ou com queda de relógio. Nesse caso,
     // assume 1 ponto GPS = 1 segundo (frequência padrão do service).
