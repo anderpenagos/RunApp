@@ -411,10 +411,10 @@ class WorkoutRepository(private val api: IntervalsApi) {
         rota: List<com.runapp.data.model.LatLngPonto>,
         dataHora: String = java.time.LocalDateTime.now().toString(),
         paceZones: List<PaceZone> = emptyList(),
-        // ── Novos campos para o Coach ───────────────────────────────────────
-        stepLengthBaseline: Double = 0.0,
-        treinoNome: String? = null,
-        treinoPassosJson: String? = null
+        // ── Coach: capturados no momento do save ────────────────────────────
+        stepLengthBaseline: Double = 0.0,   // EMA do Auto-Learner no início da corrida
+        treinoNome: String? = null,          // nome do WorkoutEvent, se havia plano
+        treinoPassosJson: String? = null     // JSON de List<PassoResumo>, se havia plano
     ): Result<java.io.File> {
         return try {
             Log.d(TAG, "=== SALVANDO ATIVIDADE ===")
@@ -536,9 +536,8 @@ class WorkoutRepository(private val api: IntervalsApi) {
      * Fórmula baseada em Minetti et al. (2002) / aproximação Strava:
      *   gapFactor = 1 + gradePct × coeficiente
      *   gapPace   = realPace / gapFactor
-     *
-     * Coeficientes: subida = 0.0358, descida = 0.0138
-     * (descida tem coef menor porque recupera menos esforço do que a subida exige)
+     * Coeficientes assimétricos: subida = 0.0358, descida = 0.0138
+     * (descida recupera menos do que a subida exige, fisiologicamente)
      */
     private fun calcularSplits(rota: List<com.runapp.data.model.LatLngPonto>): List<com.runapp.data.model.SplitParcial> {
         if (rota.size < 2) return emptyList()
@@ -560,13 +559,12 @@ class WorkoutRepository(private val api: IntervalsApi) {
                 // ── GAP ───────────────────────────────────────────────────────────
                 val altInicio = rota[indexInicioKm].alt
                 val altFim    = rota[i].alt
-                // Só calcula GAP se os dois pontos têm altitude real (não zero padrão)
+                // Só calcula GAP se ao menos um ponto tem altitude real (não zero padrão)
                 val temAltitude = altInicio != 0.0 || altFim != 0.0
 
-                val gradientePct = if (temAltitude) {
-                    // ΔAlt(m) / distância(m) × 100 → percentagem de inclinação
-                    (altFim - altInicio) / 1000.0 * 100.0
-                } else 0.0
+                val gradientePct = if (temAltitude)
+                    (altFim - altInicio) / 1000.0 * 100.0   // ΔAlt(m)/1000m × 100 = %
+                else 0.0
 
                 val gapFactor = when {
                     !temAltitude       -> 1.0
@@ -575,18 +573,14 @@ class WorkoutRepository(private val api: IntervalsApi) {
                 }
                 val gapSegKm = if (temAltitude) paceSegKm / gapFactor else null
 
-                fun formatarPace(segKm: Double): String {
-                    val min = (segKm / 60).toInt()
-                    val seg = (segKm % 60).toInt()
-                    return "%d:%02d".format(min, seg)
-                }
+                fun fmt(s: Double) = "%d:%02d".format((s / 60).toInt(), (s % 60).toInt())
 
                 splits.add(com.runapp.data.model.SplitParcial(
                     km             = kmAtual,
                     paceSegKm      = paceSegKm,
-                    paceFormatado  = formatarPace(paceSegKm),
+                    paceFormatado  = fmt(paceSegKm),
                     gapSegKm       = gapSegKm,
-                    gapFormatado   = gapSegKm?.let { formatarPace(it) },
+                    gapFormatado   = gapSegKm?.let { fmt(it) },
                     gradienteMedio = if (temAltitude) gradientePct else null
                 ))
                 indexInicioKm = i

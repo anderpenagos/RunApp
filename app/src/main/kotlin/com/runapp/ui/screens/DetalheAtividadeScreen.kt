@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Psychology
+import com.runapp.ui.navigation.CoachUiState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -37,7 +38,6 @@ import com.runapp.data.model.CorridaHistorico
 import com.runapp.data.model.LatLngPonto
 import com.runapp.data.model.SplitParcial
 import com.runapp.data.model.ZonaFronteira
-import com.runapp.ui.navigation.CoachUiState
 import kotlin.math.*
 
 private val CorFundo    = Color(0xFF121212)
@@ -128,7 +128,7 @@ fun DetalheAtividadeScreen(
                 item { CartaoParciais(corrida.splitsParciais) } 
             }
 
-            // ── Card do Coach ──────────────────────────────────────────────
+            // ── Análise do Coach (Gemini 2.5 Flash) ──────────────────────────
             item { CartaoCoach(coachEstado) }
         }
     }
@@ -734,17 +734,19 @@ private fun formatarDataDetalhe(iso: String): String = runCatching {
 
 @Composable
 private fun CartaoCoach(estado: CoachUiState) {
-    val CorCoachAccent = Color(0xFF80CBC4)   // teal suave — distinto dos outros cards
-    val CorCoachFundo  = Color(0xFF1A2928)   // verde-escuro quase preto
+    // Não renderiza nada enquanto a corrida ainda está a carregar
+    if (estado is CoachUiState.Inativo) return
+
+    val corAccent = Color(0xFF80CBC4)   // teal suave
+    val corFundo  = Color(0xFF1A2928)   // verde-escuro
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = CorCoachFundo),
-        border = androidx.compose.foundation.BorderStroke(1.dp, CorCoachAccent.copy(alpha = 0.35f))
+        colors = CardDefaults.cardColors(containerColor = corFundo),
+        border = androidx.compose.foundation.BorderStroke(1.dp, corAccent.copy(alpha = 0.35f))
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-
             // Cabeçalho
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -753,23 +755,22 @@ private fun CartaoCoach(estado: CoachUiState) {
                 Icon(
                     imageVector = Icons.Default.Psychology,
                     contentDescription = null,
-                    tint = CorCoachAccent,
+                    tint = corAccent,
                     modifier = Modifier.size(20.dp)
                 )
                 Text(
                     text = "Análise do Coach",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
-                    color = CorCoachAccent
+                    color = corAccent
                 )
             }
 
             Spacer(Modifier.height(12.dp))
 
             when (estado) {
-                is CoachUiState.Inativo -> {
-                    // Nada enquanto aguarda os dados da corrida carregarem
-                }
+                is CoachUiState.Inativo -> { /* não chega aqui */ }
+
                 is CoachUiState.Carregando -> {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -777,7 +778,7 @@ private fun CartaoCoach(estado: CoachUiState) {
                     ) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(16.dp),
-                            color = CorCoachAccent,
+                            color = corAccent,
                             strokeWidth = 2.dp
                         )
                         Text(
@@ -787,9 +788,9 @@ private fun CartaoCoach(estado: CoachUiState) {
                         )
                     }
                 }
-                is CoachUiState.Pronto -> {
-                    CoachTexto(texto = estado.texto)
-                }
+
+                is CoachUiState.Pronto -> CoachTexto(estado.texto)
+
                 is CoachUiState.Erro -> {
                     Text(
                         text = "⚠️ Não foi possível gerar a análise.",
@@ -811,14 +812,13 @@ private fun CartaoCoach(estado: CoachUiState) {
 }
 
 /**
- * Renderiza o texto do Coach parágrafo a parágrafo, aplicando negrito em **texto marcado**.
+ * Renderiza o texto do Coach parágrafo a parágrafo, com suporte a **negrito**.
  * Sem dependência de biblioteca de Markdown externa.
  */
 @Composable
 private fun CoachTexto(texto: String) {
-    val paragrafos = texto.split("\n").filter { it.isNotBlank() }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        paragrafos.forEach { paragrafo ->
+        texto.split("\n").filter { it.isNotBlank() }.forEach { paragrafo ->
             Text(
                 text = parseBold(paragrafo),
                 style = MaterialTheme.typography.bodySmall,
@@ -830,18 +830,15 @@ private fun CoachTexto(texto: String) {
 }
 
 /**
- * Converte marcações **negrito** em [AnnotatedString] com SpanStyle bold.
- * Tudo fora das marcações fica em cor normal; o texto negritado fica em branco.
+ * Converte **texto** → AnnotatedString com SpanStyle bold+white.
+ * Tudo fora das marcações fica em cor normal.
  */
 private fun parseBold(texto: String): androidx.compose.ui.text.AnnotatedString {
     val builder = androidx.compose.ui.text.AnnotatedString.Builder()
     val regex   = Regex("""\*\*(.+?)\*\*""")
     var ultimo  = 0
-
     regex.findAll(texto).forEach { match ->
-        if (match.range.first > ultimo) {
-            builder.append(texto.substring(ultimo, match.range.first))
-        }
+        if (match.range.first > ultimo) builder.append(texto.substring(ultimo, match.range.first))
         builder.pushStyle(
             androidx.compose.ui.text.SpanStyle(
                 fontWeight = FontWeight.Bold,

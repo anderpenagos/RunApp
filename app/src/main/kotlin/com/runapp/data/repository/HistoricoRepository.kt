@@ -68,10 +68,10 @@ class HistoricoRepository(private val context: Context) {
      * Persiste o feedback do Coach no arquivo .json de metadados da corrida.
      *
      * Chamado uma única vez após o Gemini gerar o feedback com sucesso.
-     * Re-lê o JSON, atualiza apenas o campo [feedbackCoach] e re-escreve.
-     * Nas próximas aberturas do detalhe, o campo já está preenchido — sem custo de API.
+     * Re-lê o JSON, atualiza apenas [feedbackCoach] e re-escreve.
+     * Nas próximas aberturas do detalhe o campo já está preenchido — sem custo de API.
      *
-     * @return true se o feedback foi salvo com sucesso.
+     * @return true se guardado com sucesso.
      */
     fun salvarFeedback(arquivoGpx: String, feedback: String): Boolean {
         return runCatching {

@@ -284,9 +284,8 @@ fun AppNavigation(notificationIntent: Intent? = null) {
                 }
             }
 
-            // ── Estado do Coach — independente do carregamento da corrida ─────────
-            // Não bloqueia a exibição dos gráficos: a corrida aparece imediatamente
-            // e o card do Coach mostra um loading enquanto o Gemini processa.
+            // ── Estado do Coach ── independente do carregamento da corrida ──────
+            // A corrida aparece imediatamente; o card do Coach faz o loading separado.
             var coachEstado by androidx.compose.runtime.remember {
                 androidx.compose.runtime.mutableStateOf<CoachUiState>(CoachUiState.Inativo)
             }
@@ -296,13 +295,13 @@ fun AppNavigation(notificationIntent: Intent? = null) {
                 if (estadoAtual !is DetalheEstado.Sucesso) return@LaunchedEffect
                 val corrida = estadoAtual.corrida
 
-                // Feedback já gerado e persistido → usa direto, sem chamar a API
+                // Feedback já cacheado → usa direto, sem chamar a API
                 if (corrida.feedbackCoach != null) {
                     coachEstado = CoachUiState.Pronto(corrida.feedbackCoach)
                     return@LaunchedEffect
                 }
 
-                // Gera em background — a UI já está visível enquanto isso acontece
+                // Gera em background enquanto a UI já está visível
                 coachEstado = CoachUiState.Carregando
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     val app       = navController.context.applicationContext as com.runapp.RunApp
@@ -311,7 +310,6 @@ fun AppNavigation(notificationIntent: Intent? = null) {
 
                     coachRepo.gerarFeedback(corrida).fold(
                         onSuccess = { feedback ->
-                            // Persiste no .json — próxima abertura usa cache
                             repo.salvarFeedback(corrida.arquivoGpx, feedback)
                             coachEstado = CoachUiState.Pronto(feedback)
                         },

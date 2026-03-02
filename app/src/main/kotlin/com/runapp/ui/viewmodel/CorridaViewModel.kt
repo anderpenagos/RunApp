@@ -1091,14 +1091,11 @@ class CorridaViewModel(
                 val rotaParaExport = rotaCompleataParaExport ?: stateAtual.rota
 
                 // ── Dados para o Coach ──────────────────────────────────────────────
-                // Captura o stepLength aprendido ANTES do save — o service ainda está
-                // ligado neste ponto, então o valor é o da corrida que acabou de terminar.
+                // Captura o stepLength ANTES do save — o service ainda está ligado aqui.
                 val stepLengthBaseline = runningService?.getStepLengthAprendido() ?: 0.0
 
+                // Serializa o treino planeado de forma compacta (PassoResumo sem estado de UI).
                 val treinoNome = stateAtual.treino?.name
-
-                // Serializa os passos do treino de forma compacta para o Coach comparar
-                // plano vs execução. Usa PassoResumo (sem campos de estado de UI).
                 val treinoPassosJson = if (stateAtual.passos.isNotEmpty()) {
                     val resumos = stateAtual.passos.map { p ->
                         com.runapp.data.model.PassoResumo(

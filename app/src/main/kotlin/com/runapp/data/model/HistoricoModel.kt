@@ -25,8 +25,8 @@ data class CorridaHistorico(
     val arquivoGpx: String,
     val enviadoIntervals: Boolean = false,
     // Métricas avançadas para o dashboard
-    val cadenciaMedia: Int = 0,
-    val ganhoElevacaoM: Int = 0,
+    val cadenciaMedia: Int = 0,             // SPM médio da corrida
+    val ganhoElevacaoM: Int = 0,            // D+ total em metros
     val splitsParciais: List<SplitParcial> = emptyList(),
     val zonasFronteira: List<ZonaFronteira> = emptyList(),
     val voltasAnalise: List<VoltaAnalise> = emptyList(),
@@ -59,13 +59,17 @@ data class CorridaHistorico(
 data class ZonaFronteira(
     val nome: String,
     val cor: String = "",
-    val paceMinSegKm: Double,
-    val paceMaxSegKm: Double?
+    val paceMinSegKm: Double,   // pace mais RÁPIDO da zona (seg/km) — número menor
+    val paceMaxSegKm: Double?   // pace mais LENTO da zona (seg/km) — null = sem teto
 )
 
 /**
  * Pace de um quilômetro fechado da corrida.
  * Inclui GAP (Grade-Adjusted Pace) quando há dados de altitude confiáveis.
+ *
+ * @param gapSegKm       pace equivalente em terreno plano em seg/km. Null se sem altitude.
+ * @param gapFormatado   pace formatado "M:SS". Null se sem altitude.
+ * @param gradienteMedio inclinação média do km em % (positivo = subida, negativo = descida).
  */
 data class SplitParcial(
     val km: Int,
@@ -78,6 +82,13 @@ data class SplitParcial(
 
 /**
  * Representa uma volta/lap detectado automaticamente na análise do treino.
+ *
+ * @param numero        número sequencial (1, 2, 3…)
+ * @param distanciaKm   distância percorrida nesta volta em km
+ * @param tempoSegundos duração em segundos
+ * @param paceSegKm     pace médio em seg/km
+ * @param paceFormatado pace formatado "M:SS"
+ * @param isDescanso    true = recuperação (pace acima do limiar rápido/lento)
  */
 data class VoltaAnalise(
     val numero: Int,
@@ -95,6 +106,6 @@ data class VoltaAnalise(
 data class PassoResumo(
     val nome: String,
     val duracaoSegundos: Int,
-    val paceAlvoMin: String,
-    val paceAlvoMax: String
+    val paceAlvoMin: String,   // ex: "5:00"
+    val paceAlvoMax: String    // ex: "5:30"
 )
