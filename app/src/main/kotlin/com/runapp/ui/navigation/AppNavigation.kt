@@ -255,28 +255,38 @@ fun AppNavigation(notificationIntent: Intent? = null) {
                         // Garante que o gráfico de zonas sempre aparece.
                         if (corrida.zonasFronteira.isEmpty()) {
                             runCatching {
-                                val apiKey    = app.container.preferencesRepository.apiKey.first()
-                                val athleteId = app.container.preferencesRepository.athleteId.first()
-                                if (athleteId != null) {
-                                    val workoutRepo = app.container.createWorkoutRepository(apiKey ?: "")
-                                    workoutRepo.getZonas(athleteId).getOrNull()?.let { zonesResponse ->
-                                        val paceZones = workoutRepo.processarZonas(zonesResponse)
-                                        if (paceZones.isNotEmpty()) {
-                                            val zonasFronteira = paceZones.map { z ->
-                                                com.runapp.data.model.ZonaFronteira(
-                                                    nome         = z.name,
-                                                    cor          = z.color ?: "",
-                                                    paceMinSegKm = (z.min ?: 0.0) * 1000.0,
-                                                    paceMaxSegKm = z.max?.let { m -> m * 1000.0 }
-                                                )
+                                // 1ª tentativa: cache local (DataStore) — sem rede, instantâneo
+                                val cached = app.container.preferencesRepository.getZonasFronteiraCached()
+                                if (cached.isNotEmpty()) {
+                                    corrida = corrida.copy(zonasFronteira = cached)
+                                    android.util.Log.d("AppNav", "✅ Zonas lidas do cache: ${cached.size}")
+                                } else {
+                                    // 2ª tentativa: API (requer rede)
+                                    val apiKey    = app.container.preferencesRepository.apiKey.first()
+                                    val athleteId = app.container.preferencesRepository.athleteId.first()
+                                    if (athleteId != null) {
+                                        val workoutRepo = app.container.createWorkoutRepository(apiKey ?: "")
+                                        workoutRepo.getZonas(athleteId).getOrNull()?.let { zonesResponse ->
+                                            val paceZones = workoutRepo.processarZonas(zonesResponse)
+                                            if (paceZones.isNotEmpty()) {
+                                                val zonasFronteira = paceZones.map { z ->
+                                                    com.runapp.data.model.ZonaFronteira(
+                                                        nome         = z.name,
+                                                        cor          = z.color ?: "",
+                                                        paceMinSegKm = (z.min ?: 0.0) * 1000.0,
+                                                        paceMaxSegKm = z.max?.let { m -> m * 1000.0 }
+                                                    )
+                                                }
+                                                corrida = corrida.copy(zonasFronteira = zonasFronteira)
+                                                // Aproveita para popular o cache para as próximas vezes
+                                                app.container.preferencesRepository.salvarZonasFronteira(zonasFronteira)
+                                                android.util.Log.d("AppNav", "✅ Zonas buscadas da API: ${zonasFronteira.size}")
                                             }
-                                            corrida = corrida.copy(zonasFronteira = zonasFronteira)
-                                            android.util.Log.d("AppNav", "✅ Zonas buscadas no detalhe: ${zonasFronteira.size}")
                                         }
                                     }
                                 }
                             }.onFailure {
-                                android.util.Log.w("AppNav", "⚠️ Zonas indisponíveis para exibição: ${it.message}")
+                                android.util.Log.w("AppNav", "⚠️ Zonas indisponíveis: ${it.message}")
                             }
                         }
 

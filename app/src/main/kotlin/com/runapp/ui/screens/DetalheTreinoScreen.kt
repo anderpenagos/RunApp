@@ -66,6 +66,18 @@ class DetalheTreinoViewModel(
                 } else {
                     emptyList()
                 }
+                // Persiste no DataStore para uso no dashboard e corridas futuras
+                if (paceZones.isNotEmpty()) {
+                    val zonasFronteira = paceZones.map { z ->
+                        com.runapp.data.model.ZonaFronteira(
+                            nome         = z.name,
+                            cor          = z.color ?: "",
+                            paceMinSegKm = (z.min ?: 0.0) * 1000.0,
+                            paceMaxSegKm = z.max?.let { m -> m * 1000.0 }
+                        )
+                    }
+                    container.preferencesRepository.salvarZonasFronteira(zonasFronteira)
+                }
                 val passos = repo.converterParaPassos(evento, paceZones)
                 _state.value = DetalheTreinoState(treino = evento, passos = passos)
             } catch (e: Exception) {

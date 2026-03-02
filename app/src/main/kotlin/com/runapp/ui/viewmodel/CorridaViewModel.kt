@@ -748,6 +748,21 @@ class CorridaViewModel(
                             onFailure = { emptyList() }
                         )
                         paceZonesSalvas = paceZones  // guarda para usar no save da corrida
+
+                        // Persiste no DataStore para sobreviver a process death e
+                        // ficar disponível no dashboard sem nova chamada à API.
+                        if (paceZones.isNotEmpty()) {
+                            val zonasFronteira = paceZones.map { z ->
+                                com.runapp.data.model.ZonaFronteira(
+                                    nome         = z.name,
+                                    cor          = z.color ?: "",
+                                    paceMinSegKm = (z.min ?: 0.0) * 1000.0,
+                                    paceMaxSegKm = z.max?.let { m -> m * 1000.0 }
+                                )
+                            }
+                            container.preferencesRepository.salvarZonasFronteira(zonasFronteira)
+                        }
+
                         val passosProcessados = repo.converterParaPassos(evento, paceZones)
                         _uiState.value = _uiState.value.copy(
                             treino     = evento,
@@ -1065,38 +1080,71 @@ class CorridaViewModel(
                 val repo = workoutRepo ?: container.createWorkoutRepository(apiKey ?: "")
                 workoutRepo = repo
 
-                val nomeAtividade = "Corrida RunApp - ${
-                    java.time.LocalDateTime.now().format(
-                        java.time.format.DateTimeFormatter.ofPattern("dd/MM HH:mm")
-                    )
-                }"
-
-                // FIX ZONAS: paceZonesSalvas é preenchido em carregarTreino(), mas pode
+                // FIX: usa os dados do uiState atual, que podem ter sido restaurados
+                // do backup de emergência caso o app tenha sido morto anteriormente.
                 // estar vazio se: (a) o ViewModel foi recriado após process death entre
                 // correr e salvar, (b) a corrida foi iniciada sem treino estruturado.
                 // Busca as zonas agora se ainda não foram carregadas — é uma chamada leve
                 // (apenas metadados do perfil, não pontos GPS) e garante que o gráfico
                 // de zonas sempre aparece no histórico independente do fluxo seguido.
                 if (paceZonesSalvas.isEmpty()) {
-                    val zonasResult = runCatching { repo.getZonas(athleteId) }
-                    zonasResult.getOrNull()?.fold(
-                        onSuccess = { zonesResponse ->
-                            paceZonesSalvas = repo.processarZonas(zonesResponse)
-                            android.util.Log.d("CorridaVM", "✅ Zonas buscadas no save: ${paceZonesSalvas.size} zonas")
-                        },
-                        onFailure = {
-                            android.util.Log.w("CorridaVM", "⚠️ Zonas não disponíveis no save — salvando sem zonas")
+                    // 1ª tentativa: lê do cache local (DataStore) — sem rede, instantâneo.
+                    // Garante zonas mesmo com process death ou corrida livre.
+                    val cachedZonas = container.preferencesRepository.getZonasFronteiraCached()
+                    if (cachedZonas.isNotEmpty()) {
+                        // Reconstrói PaceZone a partir do cache (s/km → s/m)
+                        paceZonesSalvas = cachedZonas.mapIndexed { i, z ->
+                            com.runapp.data.model.PaceZone(
+                                id    = i + 1,
+                                name  = z.nome,
+                                min   = z.paceMinSegKm / 1000.0,
+                                max   = z.paceMaxSegKm?.let { it / 1000.0 },
+                                color = z.cor.ifEmpty { null }
+                            )
                         }
-                    )
+                        android.util.Log.d("CorridaVM", "✅ Zonas lidas do cache: ${paceZonesSalvas.size} zonas")
+                    } else {
+                        // 2ª tentativa: busca na API (requer rede)
+                        val zonasResult = runCatching { repo.getZonas(athleteId) }
+                        zonasResult.getOrNull()?.fold(
+                            onSuccess = { zonesResponse ->
+                                paceZonesSalvas = repo.processarZonas(zonesResponse)
+                                android.util.Log.d("CorridaVM", "✅ Zonas buscadas da API no save: ${paceZonesSalvas.size} zonas")
+                                // Aproveita para popular o cache
+                                if (paceZonesSalvas.isNotEmpty()) {
+                                    val zonasFronteira = paceZonesSalvas.map { z ->
+                                        com.runapp.data.model.ZonaFronteira(
+                                            nome         = z.name,
+                                            cor          = z.color ?: "",
+                                            paceMinSegKm = (z.min ?: 0.0) * 1000.0,
+                                            paceMaxSegKm = z.max?.let { m -> m * 1000.0 }
+                                        )
+                                    }
+                                    container.preferencesRepository.salvarZonasFronteira(zonasFronteira)
+                                }
+                            },
+                            onFailure = {
+                                android.util.Log.w("CorridaVM", "⚠️ Zonas indisponíveis (sem cache e sem rede)")
+                            }
+                        )
+                    }
                 }
 
                 // FIX: usa os dados do uiState atual, que podem ter sido restaurados
                 // do backup de emergência caso o app tenha sido morto anteriormente.
                 val stateAtual = _uiState.value
 
-                // Para o GPX, usar a rota COMPLETA (sem simplificação D-P) se disponível.
-                // A rota no uiState pode estar simplificada para o mapa — o export
-                // deve ser o mais preciso possível para análise no intervals.icu.
+                // Nome da atividade: usa o nome do treino importado + data,
+                // ou "Corrida Livre" quando não havia plano vinculado.
+                val dataFormatada = java.time.LocalDateTime.now().format(
+                    java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy")
+                )
+                val nomeAtividade = if (stateAtual.treino?.name?.isNotBlank() == true) {
+                    "${stateAtual.treino.name} — $dataFormatada"
+                } else {
+                    "Corrida Livre — $dataFormatada"
+                }
+
                 val rotaParaExport = rotaCompleataParaExport ?: stateAtual.rota
 
                 // ── Dados para o Coach ──────────────────────────────────────────────

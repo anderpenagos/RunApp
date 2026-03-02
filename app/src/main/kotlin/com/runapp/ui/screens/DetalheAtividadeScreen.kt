@@ -645,6 +645,52 @@ private fun calcularZonasPorTempo(
 
     if (totalMs == 0L) return emptyList()
 
+private fun calcularZonasPorTempo(
+    rota: List<LatLngPonto>,
+    zonasFronteira: List<ZonaFronteira>
+): List<InfoZona> {
+    if (zonasFronteira.isEmpty() || rota.size < 2) return emptyList()
+
+    // DIAGNÓSTICO: verifica se os timestamps dos pontos são válidos e crescentes.
+    // Pode falhar em GPX legados ou com queda de relógio. Nesse caso,
+    // assume 1 ponto GPS = 1 segundo (frequência padrão do service).
+    val temTimestampsValidos = run {
+        var positivos = 0
+        for (i in 0 until minOf(rota.size - 1, 20)) {
+            val delta = rota[i + 1].tempo - rota[i].tempo
+            if (delta in 100L..5_000L) positivos++
+        }
+        positivos >= 5
+    }
+
+    val tempoMs = LongArray(zonasFronteira.size)
+    var totalMs = 0L
+    val MS_POR_PONTO = 1_000L  // fallback: 1s por ponto GPS
+
+    for (i in 0 until rota.size - 1) {
+        val pace = rota[i].paceNoPonto
+        if (pace < 60.0 || pace > 1800.0) continue
+
+        val intervaloMs = if (temTimestampsValidos) {
+            val delta = (rota[i + 1].tempo - rota[i].tempo).coerceAtLeast(0L)
+            if (delta == 0L || delta > 60_000L) continue else delta
+        } else {
+            MS_POR_PONTO
+        }
+
+        var zonaIdx = zonasFronteira.lastIndex
+        for (z in zonasFronteira.indices) {
+            val zf = zonasFronteira[z]
+            val dentroDoTeto = zf.paceMaxSegKm == null || pace <= zf.paceMaxSegKm
+            if (pace >= zf.paceMinSegKm && dentroDoTeto) { zonaIdx = z; break }
+        }
+
+        tempoMs[zonaIdx] += intervaloMs
+        totalMs += intervaloMs
+    }
+
+    if (totalMs == 0L) return emptyList()
+
     return zonasFronteira.mapIndexed { i, z ->
         val pct = tempoMs[i].toFloat() / totalMs * 100f
         val seg = tempoMs[i] / 1000L
