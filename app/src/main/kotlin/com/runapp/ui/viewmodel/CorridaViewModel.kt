@@ -114,7 +114,10 @@ data class CorridaUiState(
     val carregandoRota: Boolean = false,
 
     // Erro
-    val erro: String? = null
+    val erro: String? = null,
+
+    // Corrida livre (sem plano de treino — só rastreamento GPS)
+    val corridaLivre: Boolean = false
 )
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -674,6 +677,12 @@ class CorridaViewModel(
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     fun carregarTreino(eventId: Long) {
+        // Corrida livre: sem plano de treino, apenas rastreamento GPS.
+        if (eventId == 0L) {
+            android.util.Log.d("CorridaVM", "🏃 Corrida livre — sem treino a carregar.")
+            _uiState.value = _uiState.value.copy(treino = null, erro = null, corridaLivre = true)
+            return
+        }
         viewModelScope.launch {
             android.util.Log.d("CorridaVM", "⏱️ carregarTreino($eventId) iniciou. isBindingTentativo=$isBindingTentativo")
 

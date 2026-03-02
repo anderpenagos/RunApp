@@ -193,6 +193,7 @@ fun AppNavigation(notificationIntent: Intent? = null) {
         composable(Screen.Home.route) {
             HomeScreen(
                 onVerTreinos   = { navController.navigate(Screen.Treinos.route) },
+                onCorridaLivre = { navController.navigate(Screen.Corrida.criarRota(0L)) },
                 onVerHistorico = { navController.navigate(Screen.Historico.route) },
                 onConfigurar   = { navController.navigate(Screen.Config.route) },
                 corridaAtiva   = corridaAtiva,

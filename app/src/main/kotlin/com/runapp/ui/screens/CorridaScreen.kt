@@ -683,8 +683,8 @@ fun CorridaScreen(
             } ?: false
 
             val mostrarOverlay = when (state.fase) {
-                FaseCorrida.PREPARANDO -> state.treino == null
-                else -> state.treino == null || !cameraSnapRealizado || !posicaoGpsValida
+                FaseCorrida.PREPARANDO -> state.treino == null && !state.corridaLivre
+                else -> (state.treino == null && !state.corridaLivre) || !cameraSnapRealizado || !posicaoGpsValida
             } && mostrarMapa  // overlay só faz sentido quando mapa está visível
 
             val overlayAlpha by androidx.compose.animation.core.animateFloatAsState(
@@ -764,7 +764,7 @@ fun CorridaScreen(
                         }
                     }
 
-                    if (state.treino != null) {
+                    if (state.treino != null || state.corridaLivre) {
                         FloatingActionButton(
                             onClick = {
                                 when {
