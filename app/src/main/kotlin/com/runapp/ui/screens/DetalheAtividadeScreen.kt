@@ -1,8 +1,10 @@
 package com.runapp.ui.screens
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -11,6 +13,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Psychology
 import com.runapp.ui.navigation.CoachUiState
 import androidx.compose.material3.*
@@ -750,11 +754,15 @@ private fun formatarDataDetalhe(iso: String): String = runCatching {
 
 @Composable
 private fun CartaoCoach(estado: CoachUiState) {
-    // Não renderiza nada enquanto a corrida ainda está a carregar
     if (estado is CoachUiState.Inativo) return
 
-    val corAccent = Color(0xFF80CBC4)   // teal suave
-    val corFundo  = Color(0xFF1A2928)   // verde-escuro
+    val corAccent = Color(0xFF80CBC4)
+    val corFundo  = Color(0xFF1A2928)
+
+    // Expandido por padrão quando o texto está pronto
+    var expandido by remember(estado) {
+        mutableStateOf(estado is CoachUiState.Pronto)
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -762,9 +770,20 @@ private fun CartaoCoach(estado: CoachUiState) {
         colors = CardDefaults.cardColors(containerColor = corFundo),
         border = androidx.compose.foundation.BorderStroke(1.dp, corAccent.copy(alpha = 0.35f))
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            // Cabeçalho
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .animateContentSize()
+        ) {
+            // ── Cabeçalho clicável ───────────────────────────────────────────
             Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(
+                        enabled = estado is CoachUiState.Pronto,
+                        onClick = { expandido = !expandido }
+                    )
+                    .padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -778,17 +797,27 @@ private fun CartaoCoach(estado: CoachUiState) {
                     text = "Análise do Coach",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
-                    color = corAccent
+                    color = corAccent,
+                    modifier = Modifier.weight(1f)
                 )
+                if (estado is CoachUiState.Pronto) {
+                    Icon(
+                        imageVector = if (expandido) Icons.Default.KeyboardArrowUp
+                                      else Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (expandido) "Recolher" else "Expandir",
+                        tint = corAccent.copy(alpha = 0.7f),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
 
-            Spacer(Modifier.height(12.dp))
-
+            // ── Corpo ────────────────────────────────────────────────────────
             when (estado) {
-                is CoachUiState.Inativo -> { /* não chega aqui */ }
+                is CoachUiState.Inativo -> {}
 
                 is CoachUiState.Carregando -> {
                     Row(
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
@@ -805,21 +834,30 @@ private fun CartaoCoach(estado: CoachUiState) {
                     }
                 }
 
-                is CoachUiState.Pronto -> CoachTexto(estado.texto)
+                is CoachUiState.Pronto -> {
+                    if (expandido) {
+                        CoachTexto(
+                            texto = estado.texto,
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
+                        )
+                    }
+                }
 
                 is CoachUiState.Erro -> {
-                    Text(
-                        text = "⚠️ Não foi possível gerar a análise.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF888888)
-                    )
-                    if (estado.mensagem.isNotBlank()) {
-                        Spacer(Modifier.height(4.dp))
+                    Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
                         Text(
-                            text = estado.mensagem,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFF555555)
+                            text = "⚠️ Não foi possível gerar a análise.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF888888)
                         )
+                        if (estado.mensagem.isNotBlank()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = estado.mensagem,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF555555)
+                            )
+                        }
                     }
                 }
             }
@@ -829,11 +867,14 @@ private fun CartaoCoach(estado: CoachUiState) {
 
 /**
  * Renderiza o texto do Coach parágrafo a parágrafo, com suporte a **negrito**.
- * Sem dependência de biblioteca de Markdown externa.
+ * Mostra o texto completo — sem truncagem.
  */
 @Composable
-private fun CoachTexto(texto: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+private fun CoachTexto(texto: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
         texto.split("\n").filter { it.isNotBlank() }.forEach { paragrafo ->
             Text(
                 text = parseBold(paragrafo),
