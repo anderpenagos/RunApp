@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -36,6 +37,7 @@ import com.runapp.data.model.CorridaHistorico
 import com.runapp.data.model.LatLngPonto
 import com.runapp.data.model.SplitParcial
 import com.runapp.data.model.ZonaFronteira
+import com.runapp.ui.navigation.CoachUiState
 import kotlin.math.*
 
 private val CorFundo    = Color(0xFF121212)
@@ -55,6 +57,7 @@ private val CoreZonas   = listOf(
 fun DetalheAtividadeScreen(
     corrida: CorridaHistorico,
     rota: List<LatLngPonto>,
+    coachEstado: CoachUiState = CoachUiState.Inativo,
     onVoltar: () -> Unit
 ) {
     val dados = remember(rota) { prepararDados(rota) }
@@ -124,6 +127,9 @@ fun DetalheAtividadeScreen(
             if (corrida.splitsParciais.isNotEmpty()) { 
                 item { CartaoParciais(corrida.splitsParciais) } 
             }
+
+            // ── Card do Coach ──────────────────────────────────────────────
+            item { CartaoCoach(coachEstado) }
         }
     }
 }
@@ -722,3 +728,130 @@ private fun haversineM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): 
 private fun formatarDataDetalhe(iso: String): String = runCatching {
     java.time.LocalDateTime.parse(iso).format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"))
 }.getOrDefault(iso)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Card do Coach (Gemini 2.5 Flash)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@Composable
+private fun CartaoCoach(estado: CoachUiState) {
+    val CorCoachAccent = Color(0xFF80CBC4)   // teal suave — distinto dos outros cards
+    val CorCoachFundo  = Color(0xFF1A2928)   // verde-escuro quase preto
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = CorCoachFundo),
+        border = androidx.compose.foundation.BorderStroke(1.dp, CorCoachAccent.copy(alpha = 0.35f))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+
+            // Cabeçalho
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Psychology,
+                    contentDescription = null,
+                    tint = CorCoachAccent,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = "Análise do Coach",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = CorCoachAccent
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            when (estado) {
+                is CoachUiState.Inativo -> {
+                    // Nada enquanto aguarda os dados da corrida carregarem
+                }
+                is CoachUiState.Carregando -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = CorCoachAccent,
+                            strokeWidth = 2.dp
+                        )
+                        Text(
+                            text = "Analisando o treino...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF888888)
+                        )
+                    }
+                }
+                is CoachUiState.Pronto -> {
+                    CoachTexto(texto = estado.texto)
+                }
+                is CoachUiState.Erro -> {
+                    Text(
+                        text = "⚠️ Não foi possível gerar a análise.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF888888)
+                    )
+                    if (estado.mensagem.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = estado.mensagem,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF555555)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Renderiza o texto do Coach parágrafo a parágrafo, aplicando negrito em **texto marcado**.
+ * Sem dependência de biblioteca de Markdown externa.
+ */
+@Composable
+private fun CoachTexto(texto: String) {
+    val paragrafos = texto.split("\n").filter { it.isNotBlank() }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        paragrafos.forEach { paragrafo ->
+            Text(
+                text = parseBold(paragrafo),
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFCCCCCC),
+                lineHeight = 20.sp
+            )
+        }
+    }
+}
+
+/**
+ * Converte marcações **negrito** em [AnnotatedString] com SpanStyle bold.
+ * Tudo fora das marcações fica em cor normal; o texto negritado fica em branco.
+ */
+private fun parseBold(texto: String): androidx.compose.ui.text.AnnotatedString {
+    val builder = androidx.compose.ui.text.AnnotatedString.Builder()
+    val regex   = Regex("""\*\*(.+?)\*\*""")
+    var ultimo  = 0
+
+    regex.findAll(texto).forEach { match ->
+        if (match.range.first > ultimo) {
+            builder.append(texto.substring(ultimo, match.range.first))
+        }
+        builder.pushStyle(
+            androidx.compose.ui.text.SpanStyle(
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+        )
+        builder.append(match.groupValues[1])
+        builder.pop()
+        ultimo = match.range.last + 1
+    }
+    if (ultimo < texto.length) builder.append(texto.substring(ultimo))
+    return builder.toAnnotatedString()
+}

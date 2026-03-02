@@ -6,14 +6,14 @@ package com.runapp.data.model
  * Os campos são lidos do arquivo de metadados (.json) que é gravado
  * junto com o arquivo GPX em cada corrida concluída.
  *
- * @param nome         nome da corrida (ex: "Corrida RunApp - 14/02 10:30")
- * @param data         data/hora de início no formato "yyyy-MM-dd'T'HH:mm:ss"
- * @param distanciaKm  distância total em quilômetros
- * @param tempoFormatado tempo no formato "HH:mm:ss" ou "mm:ss"
- * @param paceMedia    pace médio no formato "M:SS"
- * @param pontosGps    número de pontos GPS gravados na rota
- * @param arquivoGpx   nome do arquivo .gpx (sem caminho — relativo à pasta gpx/)
- * @param enviadoIntervals se já foi enviado para o Intervals.icu
+ * @param nome              nome da corrida (ex: "Corrida RunApp - 14/02 10:30")
+ * @param data              data/hora de início no formato "yyyy-MM-dd'T'HH:mm:ss"
+ * @param distanciaKm       distância total em quilômetros
+ * @param tempoFormatado    tempo no formato "HH:mm:ss" ou "mm:ss"
+ * @param paceMedia         pace médio no formato "M:SS"
+ * @param pontosGps         número de pontos GPS gravados na rota
+ * @param arquivoGpx        nome do arquivo .gpx (sem caminho — relativo à pasta gpx/)
+ * @param enviadoIntervals  se já foi enviado para o Intervals.icu
  */
 data class CorridaHistorico(
     val nome: String,
@@ -25,16 +25,31 @@ data class CorridaHistorico(
     val arquivoGpx: String,
     val enviadoIntervals: Boolean = false,
     // Métricas avançadas para o dashboard
-    val cadenciaMedia: Int = 0,             // SPM médio da corrida
-    val ganhoElevacaoM: Int = 0,            // D+ total em metros
-    val splitsParciais: List<SplitParcial> = emptyList(), // pace por km completo
-    // Fronteiras de pace do perfil do atleta no Intervals.icu, capturadas no momento do save.
-    // Usadas pelo gráfico de zonas de ritmo para mostrar dados reais em vez de heurísticas.
+    val cadenciaMedia: Int = 0,
+    val ganhoElevacaoM: Int = 0,
+    val splitsParciais: List<SplitParcial> = emptyList(),
     val zonasFronteira: List<ZonaFronteira> = emptyList(),
-    // Voltas/laps detectados automaticamente para "Análise do Treino" na DetalheAtividadeScreen.
-    // Vazio  = corrida uniforme (sem intervalos claros) → o card usará splitsParciais por km.
-    // Preenchido = intervalos detectados → mostra barra por volta com destaque rápido/lento.
-    val voltasAnalise: List<VoltaAnalise> = emptyList()
+    val voltasAnalise: List<VoltaAnalise> = emptyList(),
+
+    // ── Auto-Learner — biomecânica ──────────────────────────────────────────
+    // stepLengthBaseline: passada EMA aprendida pelo Auto-Learner AO INÍCIO da corrida.
+    //   Representa o "baseline" histórico do atleta — como ele corre normalmente.
+    // stepLengthTreino:   passada calculada neste treino (distância / passos totais).
+    //   Diferença > 5% indica fadiga mecânica (queda) ou evolução técnica (subida).
+    val stepLengthBaseline: Double = 0.0,
+    val stepLengthTreino: Double = 0.0,
+
+    // ── Treino planeado associado ───────────────────────────────────────────
+    // Preenchidos quando a corrida foi feita com um WorkoutEvent ativo.
+    // treinoPassosJson: JSON de List<PassoResumo> — permite ao Coach comparar
+    //   o plano (pace alvo, duração) com a execução real.
+    val treinoNome: String? = null,
+    val treinoPassosJson: String? = null,
+
+    // ── Feedback do Coach ───────────────────────────────────────────────────
+    // Gerado uma única vez pelo Gemini ao abrir o detalhe da corrida.
+    // Persistido aqui para não gastar tokens nas próximas visualizações.
+    val feedbackCoach: String? = null
 )
 
 /**
@@ -44,29 +59,25 @@ data class CorridaHistorico(
 data class ZonaFronteira(
     val nome: String,
     val cor: String = "",
-    val paceMinSegKm: Double,   // pace mais RÁPIDO da zona (seg/km) — número menor
-    val paceMaxSegKm: Double?   // pace mais LENTO da zona (seg/km) — null = sem teto
+    val paceMinSegKm: Double,
+    val paceMaxSegKm: Double?
 )
 
-/** Pace de um quilômetro fechado da corrida */
+/**
+ * Pace de um quilômetro fechado da corrida.
+ * Inclui GAP (Grade-Adjusted Pace) quando há dados de altitude confiáveis.
+ */
 data class SplitParcial(
-    val km: Int,            // qual km (1, 2, 3...)
-    val paceSegKm: Double,  // pace em seg/km
-    val paceFormatado: String // "5:30"
+    val km: Int,
+    val paceSegKm: Double,
+    val paceFormatado: String,
+    val gapSegKm: Double? = null,
+    val gapFormatado: String? = null,
+    val gradienteMedio: Double? = null
 )
 
 /**
  * Representa uma volta/lap detectado automaticamente na análise do treino.
- *
- * Gerado por [WorkoutRepository.calcularVoltasAnalise] a partir das variações
- * de pace da rota GPS. Laps de corrida uniforme não são detectados (lista vazia).
- *
- * @param numero        número sequencial (1, 2, 3…)
- * @param distanciaKm   distância percorrida nesta volta em km
- * @param tempoSegundos duração em segundos
- * @param paceSegKm     pace médio em seg/km
- * @param paceFormatado pace formatado "M:SS"
- * @param isDescanso    true = recuperação (pace acima do limiar rápido/lento)
  */
 data class VoltaAnalise(
     val numero: Int,
@@ -75,4 +86,15 @@ data class VoltaAnalise(
     val paceSegKm: Double,
     val paceFormatado: String,
     val isDescanso: Boolean = false
+)
+
+/**
+ * Versão compacta de PassoExecucao para persistência no JSON da corrida.
+ * Contém apenas os campos que o Coach precisa para comparar plano vs execução.
+ */
+data class PassoResumo(
+    val nome: String,
+    val duracaoSegundos: Int,
+    val paceAlvoMin: String,
+    val paceAlvoMax: String
 )

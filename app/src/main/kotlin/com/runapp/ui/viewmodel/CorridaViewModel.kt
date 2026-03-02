@@ -677,22 +677,6 @@ class CorridaViewModel(
         viewModelScope.launch {
             android.util.Log.d("CorridaVM", "⏱️ carregarTreino($eventId) iniciou. isBindingTentativo=$isBindingTentativo")
 
-            // ── CORRIDA LIVRE — sem estrutura de treino ───────────────────────
-            // eventId == -1L é a convenção para "iniciar sem treino do Intervals.icu".
-            // Cria um WorkoutEvent stub local com passos vazios — o CorridaScreen
-            // detecta `passos.isEmpty()` e oculta todo o painel de passos/estrutura.
-            // O comportamento de GPS, GAP, áudio e save de GPX é idêntico ao treino normal.
-            if (eventId == CORRIDA_LIVRE_ID) {
-                android.util.Log.d("CorridaVM", "🏃 Corrida Livre — sem treino estruturado")
-                _uiState.value = _uiState.value.copy(
-                    treino     = WorkoutEvent(id = CORRIDA_LIVRE_ID, name = "Corrida Livre"),
-                    passos     = emptyList(),
-                    passoAtual = null,
-                    erro       = null
-                )
-                return@launch
-            }
-
             // ESPERA ATIVA: verifica o service a cada 100ms enquanto ele ainda não conectou.
             // Checa na ENTRADA de cada ciclo, não após o delay — assim captura o service
             // imediatamente quando o bind completa, sem esperar o próximo tick.
@@ -1106,15 +1090,39 @@ class CorridaViewModel(
                 // deve ser o mais preciso possível para análise no intervals.icu.
                 val rotaParaExport = rotaCompleataParaExport ?: stateAtual.rota
 
+                // ── Dados para o Coach ──────────────────────────────────────────────
+                // Captura o stepLength aprendido ANTES do save — o service ainda está
+                // ligado neste ponto, então o valor é o da corrida que acabou de terminar.
+                val stepLengthBaseline = runningService?.getStepLengthAprendido() ?: 0.0
+
+                val treinoNome = stateAtual.treino?.name
+
+                // Serializa os passos do treino de forma compacta para o Coach comparar
+                // plano vs execução. Usa PassoResumo (sem campos de estado de UI).
+                val treinoPassosJson = if (stateAtual.passos.isNotEmpty()) {
+                    val resumos = stateAtual.passos.map { p ->
+                        com.runapp.data.model.PassoResumo(
+                            nome            = p.nome,
+                            duracaoSegundos = p.duracao,
+                            paceAlvoMin     = p.paceAlvoMin,
+                            paceAlvoMax     = p.paceAlvoMax
+                        )
+                    }
+                    com.google.gson.Gson().toJson(resumos)
+                } else null
+
                 val result = repo.salvarAtividade(
-                    context = context,
-                    athleteId = athleteId,
-                    nomeAtividade = nomeAtividade,
-                    distanciaMetros = stateAtual.distanciaMetros,
-                    tempoSegundos = stateAtual.tempoTotalSegundos,
-                    paceMedia = stateAtual.paceMedia,
-                    rota = rotaParaExport,
-                    paceZones = paceZonesSalvas
+                    context            = context,
+                    athleteId          = athleteId,
+                    nomeAtividade      = nomeAtividade,
+                    distanciaMetros    = stateAtual.distanciaMetros,
+                    tempoSegundos      = stateAtual.tempoTotalSegundos,
+                    paceMedia          = stateAtual.paceMedia,
+                    rota               = rotaParaExport,
+                    paceZones          = paceZonesSalvas,
+                    stepLengthBaseline = stepLengthBaseline,
+                    treinoNome         = treinoNome,
+                    treinoPassosJson   = treinoPassosJson
                 )
                 
                 result.fold(
@@ -1219,9 +1227,6 @@ class CorridaViewModel(
     }
 
     companion object {
-        /** Sentinela para corrida livre (sem treino estruturado do Intervals.icu). */
-        const val CORRIDA_LIVRE_ID = -1L
-
         val Factory: ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 val application = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as RunApp

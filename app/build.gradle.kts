@@ -19,6 +19,12 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         manifestPlaceholders["MAPS_API_KEY"] = System.getenv("MAPS_API_KEY") ?: ""
+
+        // ── Gemini Coach ────────────────────────────────────────────────────
+        // Local: export GEMINI_API_KEY=AIza...  (macOS/Linux)
+        //        $env:GEMINI_API_KEY="AIza..."  (PowerShell)
+        // CI/CD: Settings → Secrets → Actions → GEMINI_API_KEY
+        buildConfigField("String", "GEMINI_API_KEY", "\"${System.getenv("GEMINI_API_KEY") ?: ""}\"")
     }
 
     buildTypes {
@@ -39,6 +45,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true   // necessário para BuildConfig.GEMINI_API_KEY
     }
 }
 

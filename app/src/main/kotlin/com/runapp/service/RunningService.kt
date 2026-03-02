@@ -461,6 +461,9 @@ class RunningService : Service(), SensorEventListener {
     }
 
     fun getGapAtualInstantaneo(): Double = _gapAtualSegKm.value
+
+    /** Expõe a passada EMA aprendida pelo Auto-Learner para persistência no save. */
+    fun getStepLengthAprendido(): Double = stepLengthAprendido
     fun isModoMontanha(): Boolean = emModoMontanha
 
     private val _gradienteAtual = MutableStateFlow(0.0)

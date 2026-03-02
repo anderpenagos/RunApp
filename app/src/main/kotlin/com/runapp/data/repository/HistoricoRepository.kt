@@ -63,4 +63,29 @@ class HistoricoRepository(private val context: Context) {
         val arquivo = java.io.File(pastaGpx(), corrida.arquivoGpx)
         return if (arquivo.exists()) arquivo else null
     }
+
+    /**
+     * Persiste o feedback do Coach no arquivo .json de metadados da corrida.
+     *
+     * Chamado uma única vez após o Gemini gerar o feedback com sucesso.
+     * Re-lê o JSON, atualiza apenas o campo [feedbackCoach] e re-escreve.
+     * Nas próximas aberturas do detalhe, o campo já está preenchido — sem custo de API.
+     *
+     * @return true se o feedback foi salvo com sucesso.
+     */
+    fun salvarFeedback(arquivoGpx: String, feedback: String): Boolean {
+        return runCatching {
+            val pasta    = pastaGpx()
+            val jsonFile = java.io.File(pasta, arquivoGpx.replace(".gpx", ".json"))
+            if (!jsonFile.exists()) return false
+
+            val corrida    = gson.fromJson(jsonFile.readText(), CorridaHistorico::class.java)
+            val atualizado = corrida.copy(feedbackCoach = feedback)
+            jsonFile.writeText(gson.toJson(atualizado))
+            Log.d(TAG, "✅ Feedback do Coach salvo: $arquivoGpx")
+            true
+        }.onFailure {
+            Log.e(TAG, "❌ Erro ao salvar feedback do Coach", it)
+        }.getOrDefault(false)
+    }
 }
