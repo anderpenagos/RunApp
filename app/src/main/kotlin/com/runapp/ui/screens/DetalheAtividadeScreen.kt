@@ -26,6 +26,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -126,9 +127,14 @@ fun DetalheAtividadeScreen(
                 }
             }
             
+            // ── Análise de Voltas / Intervalos ────────────────────────────────
+            if (corrida.voltasAnalise.isNotEmpty()) {
+                item { CartaoVoltas(corrida.voltasAnalise) }
+            }
+
             if (zonas.any { it.percentagem > 0f }) { item { CartaoZonas(zonas) } }
             
-            if (corrida.splitsParciais.isNotEmpty()) { 
+            if (corrida.splitsParciais.isNotEmpty() && corrida.voltasAnalise.isEmpty()) { 
                 item { CartaoParciais(corrida.splitsParciais) } 
             }
 
@@ -480,6 +486,172 @@ private fun CartaoZonas(zonas: List<InfoZona>) {
 }
 
 @Composable
+private fun CartaoVoltas(voltas: List<com.runapp.data.model.VoltaAnalise>) {
+    val corTiro     = Color(0xFF4FC3F7)   // azul vivo = esforço
+    val corDescanso = Color(0xFF546E7A)   // cinza azulado = recuperação
+
+    val temIntervalos = voltas.any { !it.isDescanso } && voltas.any { it.isDescanso }
+    val titulo   = if (temIntervalos) "Análise do Treino" else "Voltas"
+    val subtitulo = if (temIntervalos) "Azul = esforço  •  Cinza = recuperação" else "Voltas detectadas automaticamente"
+
+    Card(colors = CardDefaults.cardColors(containerColor = CorCard), shape = RoundedCornerShape(12.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(titulo, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Text(subtitulo, fontSize = 11.sp, color = Color.White.copy(alpha = 0.4f),
+                modifier = Modifier.padding(bottom = 12.dp))
+
+            // ── Gráfico de barras ────────────────────────────────────────────
+            val pacesValidos = voltas.map { it.paceSegKm }.filter { it in 60.0..1200.0 }
+            val paceMin = pacesValidos.minOrNull() ?: 240.0
+            val paceMax = pacesValidos.maxOrNull() ?: 720.0
+            val paceRange = (paceMax - paceMin).coerceAtLeast(1.0)
+
+            // Dashed reference line = pace médio das voltas de esforço
+            val paceMediaTiros = voltas.filter { !it.isDescanso }
+                .map { it.paceSegKm }.filter { it in 60.0..1200.0 }
+                .let { if (it.isEmpty()) null else it.average() }
+
+            Canvas(modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color.White.copy(alpha = 0.03f))
+            ) {
+                val w = size.width; val h = size.height
+                val n = voltas.size
+                if (n == 0) return@Canvas
+
+                val barW  = w / n
+                val padH  = 4f
+
+                // Grid lines
+                for (i in 1..3) drawLine(CorGrid, Offset(0f, h * i / 4), Offset(w, h * i / 4))
+
+                // Linha de referência (pace médio dos tiros)
+                paceMediaTiros?.let { refPace ->
+                    val refNorm = ((refPace - paceMin) / paceRange).toFloat().coerceIn(0f, 1f)
+                    val refY = padH + (h - padH * 2) * refNorm
+                    drawLine(
+                        color = corTiro.copy(alpha = 0.35f),
+                        start = Offset(0f, refY), end = Offset(w, refY),
+                        strokeWidth = 1.5f,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f)
+                    )
+                }
+
+                // Barras
+                voltas.forEachIndexed { i, volta ->
+                    val norm = ((volta.paceSegKm - paceMin) / paceRange).toFloat().coerceIn(0.05f, 1f)
+                    val barH  = (h - padH) * norm
+                    val barX  = i * barW
+                    val cor   = if (volta.isDescanso) corDescanso.copy(alpha = 0.65f)
+                                else corTiro.copy(alpha = 0.85f)
+                    val shape = RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)
+                    drawRect(
+                        color   = cor,
+                        topLeft = Offset(barX + 2f, h - barH),
+                        size    = Size(barW - 4f, barH)
+                    )
+                }
+            }
+
+            // ── Rótulos do eixo X (números das voltas) ───────────────────────
+            val mostrarLabels = voltas.size <= 20
+            if (mostrarLabels) {
+                Row(modifier = Modifier.fillMaxWidth().padding(top = 2.dp)) {
+                    voltas.forEachIndexed { i, _ ->
+                        Text(
+                            text = "${i + 1}",
+                            modifier = Modifier.weight(1f),
+                            fontSize = 8.sp,
+                            color = Color.White.copy(alpha = 0.3f),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+
+            // ── Lista de voltas ──────────────────────────────────────────────
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Volta", fontSize = 10.sp, color = Color.White.copy(alpha = 0.35f), modifier = Modifier.width(44.dp))
+                Text("Dist.", fontSize = 10.sp, color = Color.White.copy(alpha = 0.35f), modifier = Modifier.width(64.dp))
+                Text("Tempo", fontSize = 10.sp, color = Color.White.copy(alpha = 0.35f), modifier = Modifier.width(52.dp))
+                Text("Pace", fontSize = 10.sp, color = Color.White.copy(alpha = 0.35f), textAlign = TextAlign.End, modifier = Modifier.weight(1f))
+            }
+            Box(modifier = Modifier.fillMaxWidth().height(0.5.dp).background(Color.White.copy(alpha = 0.08f)))
+            Spacer(modifier = Modifier.height(4.dp))
+
+            voltas.forEach { volta ->
+                val corPaceVolta = if (volta.isDescanso) corDescanso else corTiro
+                val labelTipo    = if (volta.isDescanso) "Rec." else "Tiro"
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    // Número + indicador de tipo
+                    Row(modifier = Modifier.width(44.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.size(6.dp).background(corPaceVolta, CircleShape))
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text("${volta.numero}", fontSize = 13.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                    // Distância
+                    Text(
+                        "%.2f km".format(volta.distanciaKm),
+                        fontSize = 13.sp, color = Color.White.copy(alpha = 0.7f),
+                        modifier = Modifier.width(64.dp)
+                    )
+                    // Tempo
+                    val min = volta.tempoSegundos / 60
+                    val sec = volta.tempoSegundos % 60
+                    Text(
+                        "%d:%02d".format(min, sec),
+                        fontSize = 13.sp, color = Color.White.copy(alpha = 0.55f),
+                        modifier = Modifier.width(52.dp)
+                    )
+                    // Pace
+                    Text(
+                        "${volta.paceFormatado}/km",
+                        fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                        color = corPaceVolta,
+                        textAlign = TextAlign.End,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            // ── Resumo: total de tiros e descanso ────────────────────────────
+            if (temIntervalos) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Box(modifier = Modifier.fillMaxWidth().height(0.5.dp).background(Color.White.copy(alpha = 0.08f)))
+                Spacer(modifier = Modifier.height(8.dp))
+                val nTiros     = voltas.count { !it.isDescanso }
+                val nDescansos = voltas.count { it.isDescanso }
+                val distTiros  = voltas.filter { !it.isDescanso }.sumOf { it.distanciaKm }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("$nTiros", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = corTiro)
+                        Text("tiros", fontSize = 10.sp, color = Color.White.copy(alpha = 0.4f))
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("%.2f km".format(distTiros), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = corTiro)
+                        Text("vol. esforço", fontSize = 10.sp, color = Color.White.copy(alpha = 0.4f))
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("$nDescansos", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = corDescanso)
+                        Text("recuperações", fontSize = 10.sp, color = Color.White.copy(alpha = 0.4f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun CartaoParciais(splits: List<SplitParcial>) {
     Card(colors = CardDefaults.cardColors(containerColor = CorCard), shape = RoundedCornerShape(12.dp)) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -614,7 +786,7 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
         cadencias     = idxs.map { rota[it].cadenciaNoPonto },
         indicesOriginais = idxs,
         temCadencia   = rota.any { it.cadenciaNoPonto > 0 },
-        temGAP        = (altMax - altMin) > 10.0,
+        temGAP        = (altMax - altMin) > 5.0,
         paceMin = pMin, paceMax = pMax, gapMin = gMin, gapMax = gMax
     )
 }
