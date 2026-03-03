@@ -141,3 +141,21 @@ data class ResumoFinal(
     val passosTotal: Int,
     val rota: List<LatLngPonto>
 )
+
+/**
+ * Snapshot de condicionamento físico do atleta em um dado dia,
+ * obtido via GET /api/v1/athlete/{id}/wellness/{date} do Intervals.icu.
+ *
+ * @param ctl       Chronic Training Load — "fitness" acumulado (média ponderada ~42 dias)
+ * @param atl       Acute Training Load — "fadiga" recente (média ponderada ~7 dias)
+ * @param tsb       Training Stress Balance — forma = CTL − ATL (positivo = descansado)
+ * @param rampRate  Taxa de variação semanal do CTL (pontos/semana)
+ * @param atlLoad   Carga de treino acumulada nos últimos 7 dias (contribuição para ATL)
+ */
+data class WellnessSnapshot(
+    val ctl:      Double,
+    val atl:      Double,
+    val tsb:      Double,
+    val rampRate: Double? = null,
+    val atlLoad:  Double? = null
+)

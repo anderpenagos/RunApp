@@ -593,86 +593,162 @@ class WorkoutRepository(private val api: IntervalsApi) {
     /**
      * Detecta automaticamente laps/intervalos a partir de variações de pace na rota GPS.
      *
-     * Algoritmo em 5 etapas:
-     *  1. Suaviza o pace com janela deslizante de 30 segundos em cada ponto.
-     *  2. Mede a dispersão global: se o ratio p75/p25 < 1.15 (variação < 15%)
-     *     considera a corrida uniforme e retorna vazio (splits por km já cobrem isso).
-     *  3. Classifica cada ponto como rápido/lento usando limiar = média (p25+p75)/2.
-     *  4. Detecta transições com debounce de 8 pontos consecutivos para evitar
-     *     ruídos de GPS ou desacelerações momentâneas serem interpretados como laps.
-     *  5. Constrói VoltaAnalise para cada segmento com distância e pace reais.
+     * Algoritmo robusto para treinos estruturados (tiros + recuperação):
      *
-     * @return lista de VoltaAnalise; vazia se a corrida for uniforme (usar splitsParciais).
+     *  1. SUAVIZAÇÃO DE LONGO PRAZO (janela 90s): elimina picos de GPS e ruídos
+     *     instantâneos. Uma janela de 30s é insuficiente para treinos intervalados
+     *     com blocos de 3-10 minutos — causa dezenas de micro-transições falsas.
+     *
+     *  2. DISPERSÃO: verifica se o treino é estruturado (ratio p75/p25 ≥ 1.20).
+     *     Corridas uniformes retornam vazio (splits por km já cobrem esse caso).
+     *
+     *  3. CLASSIFICAÇÃO com histerese dupla:
+     *     Em vez de um único limiar fixo, usa dois limiares (30% e 70% do range)
+     *     para evitar que pontos na "zona cinzenta" fiquem alternando entre estados.
+     *     Um ponto só muda de estado se ultrapassar o limiar oposto por pelo menos
+     *     DEBOUNCE_MS milissegundos consecutivos.
+     *
+     *  4. DEBOUNCE TEMPORAL (45s): um bloco só é considerado uma nova fase se durar
+     *     pelo menos 45 segundos consecutivos no novo estado. Blocos menores são
+     *     absorvidos pelo estado anterior (tratados como ruído ou transição).
+     *
+     *  5. FUSÃO DE SEGMENTOS ADJACENTES: blocos do mesmo tipo separados por um bloco
+     *     oposto muito curto (< 20s) são fundidos em um único segmento, evitando
+     *     artefatos como "tiro de 5s" no meio de uma recuperação.
+     *
+     *  6. FILTRO FINAL: segmentos com < 80m OU < 30s são descartados como ruído GPS.
+     *
+     * @return lista de VoltaAnalise; vazia se a corrida for uniforme.
      */
     private fun calcularVoltasAnalise(
         rota: List<com.runapp.data.model.LatLngPonto>
     ): List<com.runapp.data.model.VoltaAnalise> {
-        if (rota.size < 40) return emptyList()
+        if (rota.size < 60) return emptyList()
 
-        // 1. Pace em janela deslizante de 30 segundos
-        val rollingPace = DoubleArray(rota.size) { idx ->
-            rota[idx].paceNoPonto.coerceIn(60.0, 1500.0)
-        }
+        // ── 1. SUAVIZAÇÃO: janela deslizante de 90 segundos ─────────────────────
+        // Calcula o pace real de cada janela por distância/tempo acumulados,
+        // ignorando pontos com pace inválido (paradas, GPS perdido).
+        val JANELA_MS = 90_000L
+        val rollingPace = DoubleArray(rota.size) { rota[it].paceNoPonto.coerceIn(60.0, 1500.0) }
         for (i in rota.indices) {
-            val tInicio = rota[i].tempo - 30_000L
-            val jInicio = (0 until i).lastOrNull { rota[it].tempo >= tInicio } ?: 0
+            val tInicio = rota[i].tempo - JANELA_MS
+            val jInicio = (0..i).firstOrNull { rota[it].tempo >= tInicio } ?: 0
             val seg = rota.subList(jInicio, i + 1)
-            if (seg.size < 3) continue
+            if (seg.size < 5) continue
             val dist = seg.zipWithNext().sumOf { (a, b) -> haversine(a.lat, a.lng, b.lat, b.lng) }
             val time = (seg.last().tempo - seg.first().tempo) / 1000.0
-            if (dist > 5 && time > 5) {
+            if (dist > 20 && time > 20) {
                 rollingPace[i] = (time / dist * 1000).coerceIn(60.0, 1500.0)
             }
         }
 
-        // 2. Avaliar dispersão — corrida uniforme = sem intervalos detectáveis
+        // ── 2. DISPERSÃO: verifica se o treino é estruturado ────────────────────
         val validos = rollingPace.filter { it in 60.0..1200.0 }.sorted()
-        if (validos.size < 30) return emptyList()
+        if (validos.size < 60) return emptyList()
         val p25 = validos[(validos.size * 0.25).toInt()]
         val p75 = validos[(validos.size * 0.75).toInt()]
-        if (p25 < 1.0 || p75 / p25 < 1.15) return emptyList() // variação < 15% → uniforme
+        // Exige variação de pelo menos 20% entre quartis para ser "estruturado"
+        if (p25 < 1.0 || p75 / p25 < 1.20) return emptyList()
 
-        // 3. Classificar pontos: true = rápido, false = lento/descanso
-        val limiar = (p25 + p75) / 2.0
-        val isFast = BooleanArray(rota.size) { rollingPace[it] < limiar }
-
-        // 4. Transições com debounce de 8 pontos consecutivos
-        val transicoes = mutableListOf(0)
-        var estadoAtual = isFast[0]
-        var contagem = 1
+        // ── 3. CLASSIFICAÇÃO COM HISTERESE DUPLA ────────────────────────────────
+        // limiarBaixo = 30% do range → entra em "esforço" apenas se pace < limiarBaixo
+        // limiarAlto  = 70% do range → entra em "descanso" apenas se pace > limiarAlto
+        // Zona cinzenta [limiarBaixo, limiarAlto]: mantém estado anterior (histerese)
+        val limiarBaixo = p25 + (p75 - p25) * 0.35   // 35% do range = zona de esforço
+        val limiarAlto  = p25 + (p75 - p25) * 0.65   // 65% do range = zona de descanso
+        // isFast[i]: true = esforço, false = descanso/recuperação
+        val isFast = BooleanArray(rota.size) { rollingPace[it] < limiarBaixo }
+        // Aplicar histerese: zona cinzenta herda estado anterior
         for (i in 1 until isFast.size) {
-            if (isFast[i] == estadoAtual) {
-                contagem++
-            } else {
-                if (contagem >= 8) {
-                    transicoes.add(i)
-                    estadoAtual = isFast[i]
-                    contagem = 1
-                } else {
-                    // Ruído curto — forçar o bloco anterior para o estado dominante
-                    for (k in (i - contagem) until i) isFast[k] = estadoAtual
-                    contagem = 1
+            val p = rollingPace[i]
+            isFast[i] = when {
+                p < limiarBaixo -> true   // claramente esforço
+                p > limiarAlto  -> false  // claramente descanso
+                else            -> isFast[i - 1]  // zona cinzenta → herda
+            }
+        }
+
+        // ── 4. DEBOUNCE TEMPORAL: 45 segundos mínimos por bloco ─────────────────
+        // Usa timestamps reais para o debounce, não contagem de pontos.
+        // Evita que variações de frequência GPS (1Hz vs 2Hz) afetem o resultado.
+        val DEBOUNCE_MS = 45_000L
+        val transicoes = mutableListOf(0)  // índices de início de cada bloco
+        var estadoAtual = isFast[0]
+        var candidatoInicio = -1
+        var candidatoEstado = estadoAtual
+
+        for (i in 1 until isFast.size) {
+            val novoEstado = isFast[i]
+            if (novoEstado != estadoAtual) {
+                // Início de possível transição
+                if (candidatoInicio < 0 || candidatoEstado != novoEstado) {
+                    candidatoInicio = i
+                    candidatoEstado = novoEstado
                 }
+                // Verifica se o candidato durou tempo suficiente
+                val duracaoMs = rota[i].tempo - rota[candidatoInicio].tempo
+                if (duracaoMs >= DEBOUNCE_MS) {
+                    // Transição confirmada — registra no ponto em que começou
+                    transicoes.add(candidatoInicio)
+                    estadoAtual = novoEstado
+                    candidatoInicio = -1
+                }
+            } else {
+                // Voltou ao estado atual — cancela candidato de transição
+                candidatoInicio = -1
             }
         }
         transicoes.add(rota.lastIndex)
 
-        // 5. Construir VoltaAnalise por segmento
-        val voltas = mutableListOf<com.runapp.data.model.VoltaAnalise>()
+        // ── 5. FUSÃO DE SEGMENTOS ADJACENTES ────────────────────────────────────
+        // Segmento oposto muito curto (< 20s) entre dois segmentos do mesmo tipo
+        // → fundidos em um único bloco (ex: descanso de 5s no meio de um tiro)
+        val FUSAO_MS = 20_000L
+        data class Bloco(val inicio: Int, val fim: Int, val fast: Boolean)
+        val blocos = mutableListOf<Bloco>()
         for (t in 0 until transicoes.size - 1) {
-            val startIdx = transicoes[t]
-            val endIdx   = (transicoes[t + 1]).coerceAtMost(rota.lastIndex)
+            val ini = transicoes[t]; val fim = transicoes[t + 1]
+            blocos.add(Bloco(ini, fim, isFast[ini]))
+        }
+        var fundiu = true
+        while (fundiu) {
+            fundiu = false
+            val novo = mutableListOf<Bloco>()
+            var b = 0
+            while (b < blocos.size) {
+                val atual = blocos[b]
+                if (b + 2 < blocos.size) {
+                    val proximo = blocos[b + 2]
+                    val medio   = blocos[b + 1]
+                    val duracaoMedio = rota[medio.fim].tempo - rota[medio.inicio].tempo
+                    if (atual.fast == proximo.fast && duracaoMedio < FUSAO_MS) {
+                        novo.add(Bloco(atual.inicio, proximo.fim, atual.fast))
+                        b += 3; fundiu = true; continue
+                    }
+                }
+                novo.add(atual); b++
+            }
+            if (fundiu) {
+                blocos.clear()
+                blocos.addAll(novo)
+            }
+        }
+
+        // ── 6. CONSTRUIR VoltaAnalise + FILTRO FINAL ─────────────────────────────
+        val voltas = mutableListOf<com.runapp.data.model.VoltaAnalise>()
+        for (bloco in blocos) {
+            val startIdx = bloco.inicio
+            val endIdx   = bloco.fim.coerceAtMost(rota.lastIndex)
             if (endIdx <= startIdx) continue
 
-            val seg = rota.subList(startIdx, endIdx + 1)
-            val dist = seg.zipWithNext().sumOf { (a, b) -> haversine(a.lat, a.lng, b.lat, b.lng) }
+            val seg   = rota.subList(startIdx, endIdx + 1)
+            val dist  = seg.zipWithNext().sumOf { (a, b) -> haversine(a.lat, a.lng, b.lat, b.lng) }
             val tempo = (seg.last().tempo - seg.first().tempo) / 1000L
 
-            if (dist < 30 || tempo < 10) continue // muito curto = ruído GPS
+            // Filtro final: descarta segmentos muito curtos (ruído GPS ou transição)
+            if (dist < 80 || tempo < 30) continue
 
             val pace = if (dist > 0) (tempo.toDouble() / dist * 1000).coerceIn(60.0, 1200.0) else 600.0
-            val min = (pace / 60).toInt()
-            val sec = (pace % 60).toInt()
 
             voltas.add(
                 com.runapp.data.model.VoltaAnalise(
@@ -680,13 +756,13 @@ class WorkoutRepository(private val api: IntervalsApi) {
                     distanciaKm   = dist / 1000.0,
                     tempoSegundos = tempo,
                     paceSegKm     = pace,
-                    paceFormatado = "%d:%02d".format(min, sec),
-                    isDescanso    = !isFast[startIdx]
+                    paceFormatado = "%d:%02d".format((pace / 60).toInt(), (pace % 60).toInt()),
+                    isDescanso    = !bloco.fast
                 )
             )
         }
 
-        // Exige mínimo de 3 laps para considerar a corrida estruturada
+        // Exige mínimo de 3 blocos para considerar a corrida estruturada
         return if (voltas.size >= 3) voltas else emptyList()
     }
 

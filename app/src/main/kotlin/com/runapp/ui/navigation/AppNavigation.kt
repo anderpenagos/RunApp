@@ -319,7 +319,21 @@ fun AppNavigation(notificationIntent: Intent? = null) {
                     val repo      = com.runapp.data.repository.HistoricoRepository(app)
                     val coachRepo = com.runapp.data.repository.CoachRepository()
 
-                    coachRepo.gerarFeedback(corrida).fold(
+                    // Tenta buscar CTL/ATL/TSB do dia da corrida no Intervals.icu.
+                    // Falha silenciosa — o Coach funciona normalmente sem esses dados.
+                    val wellness = runCatching {
+                        val prefs     = app.container.preferencesRepository
+                        val apiKey    = prefs.apiKey.first()
+                        val athleteId = prefs.athleteId.first()
+                        if (!apiKey.isNullOrBlank() && !athleteId.isNullOrBlank()) {
+                            // Extrai "yyyy-MM-dd" do campo data da corrida (formato ISO)
+                            val dataCorrida = corrida.data.take(10)
+                            val intervalsApi = com.runapp.data.api.IntervalsClient.create(apiKey)
+                            intervalsApi.getWellness(athleteId, dataCorrida)
+                        } else null
+                    }.getOrNull()
+
+                    coachRepo.gerarFeedback(corrida, wellness).fold(
                         onSuccess = { feedback ->
                             repo.salvarFeedback(corrida.arquivoGpx, feedback)
                             coachEstado = CoachUiState.Pronto(feedback)
