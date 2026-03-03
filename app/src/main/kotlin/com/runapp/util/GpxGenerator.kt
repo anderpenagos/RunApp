@@ -77,6 +77,12 @@ object GpxGenerator {
             // FIX B: <gpxtpx:cad> é entendido pelo Strava e Garmin como SPM.
             // A tag <pace> customizada é mantida dentro do bloco para o dashboard
             // interno — o Strava a ignora (ele recalcula pace por distância/tempo).
+            //
+            // Pontos com paceNoPonto = 0.0 e cadenciaNoPonto = 0 são intencionais:
+            // são pontos-âncora inseridos pelo RunningService após saltos de GPS.
+            // Eles repetem as coordenadas do último ponto válido com timestamp
+            // atualizado, criando um segmento de distância ≈ 0 que Intervals.icu
+            // e Strava interpretam como pausa — sem spike de velocidade no gráfico.
             val temExtensoes = ponto.cadenciaNoPonto > 0 || ponto.paceNoPonto > 0.0
             if (temExtensoes) {
                 sb.appendLine("        <extensions>")

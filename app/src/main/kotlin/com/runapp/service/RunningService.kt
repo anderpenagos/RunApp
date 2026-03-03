@@ -1058,8 +1058,43 @@ class RunningService : Service(), SensorEventListener {
                 return
             } else {
                 modoRecuperacaoGps = false
-                Log.d(TAG, "✅ GPS recovery: primeiro ponto válido aceito (${distJump.toInt()}m, " +
-                    "${String.format("%.1f", velocidadeMs)} m/s)")
+
+                // ── ÂNCORA PÓS-SALTO ────────────────────────────────────────────────
+                // Repete as coordenadas do ÚLTIMO PONTO VÁLIDO (pré-salto) com o
+                // timestamp atual (agora − 1ms). Isso cria no GPX um segmento de
+                // distância ≈ zero entre o último ponto bom e o primeiro ponto pós-
+                // recovery, que o Intervals.icu e o Strava interpretam como pausa —
+                // evitando o spike de velocidade que resultaria de comparar diretamente
+                // as posições antes e depois do salto GPS.
+                //
+                // primeiropontoAposGap = true: garante que a distância entre a âncora
+                // e o novo ponto pós-recovery também NÃO seja somada ao total —
+                // o mesmo mecanismo já usado na re-entrada após gap de dead reckoning.
+                val agoraRecovery = System.currentTimeMillis()
+                val ultimoValido = rota.last()
+                val pontoAncora = ultimoValido.copy(
+                    tempo           = agoraRecovery - 1L,
+                    paceNoPonto     = 0.0,
+                    cadenciaNoPonto = 0
+                )
+                rota.add(pontoAncora)
+                primeiropontoAposGap = true
+
+                if (ultimoValido.accuracy <= ROOM_ACCURACY_METERS) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        try {
+                            database.routePointDao().insert(
+                                RoutePointEntity.from(pontoAncora, sessionId)
+                            )
+                        } catch (e: Exception) {
+                            Log.e(TAG, "⚠️ Falha ao persistir ponto-âncora de recovery", e)
+                        }
+                    }
+                }
+
+                Log.d(TAG, "✅ GPS recovery: primeiro ponto válido aceito " +
+                    "(${distJump.toInt()}m, ${String.format("%.1f", velocidadeMs)} m/s) — " +
+                    "âncora inserida, distância omitida (primeiropontoAposGap=true)")
             }
         }
 
