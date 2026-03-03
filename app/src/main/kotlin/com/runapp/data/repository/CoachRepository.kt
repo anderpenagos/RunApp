@@ -137,7 +137,7 @@ class CoachRepository {
             })
             add("generationConfig", JsonObject().apply {
                 addProperty("temperature", 0.65)
-                addProperty("maxOutputTokens", 1536)
+                addProperty("maxOutputTokens", 2560)  // ~1900 palavras PT-BR
             })
         })
     }
@@ -281,8 +281,11 @@ class CoachRepository {
         val candidate    = candidates[0].asJsonObject
         val finishReason = candidate.get("finishReason")?.asString
 
+        // SAFETY / RECITATION = bloquear, MAX_TOKENS = texto parcial (aceitar, UI avisa)
         if (finishReason == "SAFETY" || finishReason == "RECITATION")
             throw Exception("Gemini bloqueou a resposta (finishReason=$finishReason)")
+        // MAX_TOKENS: texto foi cortado pelo limite de tokens, mas ainda é útil.
+        // Retornamos normalmente — a UI detecta que o texto não termina em pontuação.
 
         return candidate
             .getAsJsonObject("content")

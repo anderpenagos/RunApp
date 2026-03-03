@@ -1036,11 +1036,25 @@ class RunningService : Service(), SensorEventListener {
             val velocidadeMs = distJump / deltaTempoS
 
             if (velocidadeMs > MAX_VELOCIDADE_HUMANA_MS) {
+                // ── CLEAN SLATE: salto GPS impossível detectado ──────────
+                // Limpa AMBAS as janelas de pace para que o valor inválido
+                // não contamine nem o GPX (bufferPace30s → paceNoPonto) nem
+                // o display em tempo real (ultimasLocalizacoes → _paceAtual).
+                //
+                // ultimaLocalizacaoSignificativa = local do salto ("Marco Zero"):
+                // sem isso o PRÓXIMO ponto seria comparado com a posição
+                // pré-salto → novo spike em cascata (efeito dominó evitado).
+                bufferPace30s.clear()
+                ultimasLocalizacoes.clear()
+                ultimoPaceEmaInterno = null
+                ultimaLocalizacaoSignificativa = location
+                _paceAtual.value = "--:--"
+
                 contadorPontosRecuperacao++
-                Log.w(TAG, "🚫 Ponto GPS descartado por salto impossível: " +
-                    "${distJump.toInt()}m em ${deltaTempoS.toInt()}s " +
+                Log.w(TAG, "🚫 GPS clean-slate: salto impossível " +
+                    "${distJump.toInt()}m/${deltaTempoS.toInt()}s " +
                     "(${String.format("%.1f", velocidadeMs)} m/s). " +
-                    "Ponto ${contadorPontosRecuperacao} descartado.")
+                    "EMA + buffers limpos. Marco Zero atualizado.")
                 return
             } else {
                 modoRecuperacaoGps = false

@@ -374,7 +374,7 @@ private fun GraficoPaceElevacao(
                 align = TextAlign.Start
             )
         }
-        EixoKm(dados.kmMarcadores, larguraEixoY = 35.dp, larguraEixoYDir = 39.dp)
+        EixoKm(dados.kmMarcadores, dados.kmLabels, larguraEixoY = 35.dp, larguraEixoYDir = 39.dp)
     }
 }
 
@@ -435,7 +435,7 @@ private fun GraficoGAP(dados: DadosGrafico, frac: Float, onFracChange: (Float) -
             }
             Spacer(modifier = Modifier.width(35.dp))
         }
-        EixoKm(dados.kmMarcadores, larguraEixoY = 35.dp, larguraEixoYDir = 35.dp)
+        EixoKm(dados.kmMarcadores, dados.kmLabels, larguraEixoY = 35.dp, larguraEixoYDir = 35.dp)
     }
 }
 
@@ -485,7 +485,7 @@ private fun GraficoCadencia(dados: DadosGrafico, frac: Float, onFracChange: (Flo
             }
             Spacer(modifier = Modifier.width(35.dp))
         }
-        EixoKm(dados.kmMarcadores, larguraEixoY = 35.dp, larguraEixoYDir = 35.dp)
+        EixoKm(dados.kmMarcadores, dados.kmLabels, larguraEixoY = 35.dp, larguraEixoYDir = 35.dp)
     }
 }
 
@@ -519,6 +519,7 @@ private fun EixoYVertical(topLabel: String, botLabel: String, cor: Color, align:
 @Composable
 private fun EixoKm(
     marcadores: List<Float>,
+    labels: List<String> = emptyList(),
     larguraEixoY: Dp = 35.dp,
     larguraEixoYDir: Dp = 35.dp
 ) {
@@ -528,25 +529,22 @@ private fun EixoKm(
             .fillMaxWidth()
             .padding(top = 3.dp)
     ) {
-        // Espaço reservado pelo eixo Y esquerdo
         Spacer(modifier = Modifier.width(larguraEixoY))
 
-        // Área do gráfico com posicionamento absoluto dos labels
         Box(modifier = Modifier.weight(1f).height(12.dp)) {
             marcadores.forEachIndexed { i, frac ->
-                val km = i + 1
+                val label = labels.getOrElse(i) { "${i + 1}km" }
                 Text(
-                    text = "${km}km",
+                    text = label,
                     fontSize = 8.sp,
                     color = Color.White.copy(alpha = 0.35f),
                     modifier = Modifier
-                        .fillMaxWidth(frac)   // posiciona no X correto
-                        .wrapContentWidth(Alignment.End)  // alinha o label à direita da fração
+                        .fillMaxWidth(frac)
+                        .wrapContentWidth(Alignment.End)
                 )
             }
         }
 
-        // Espaço reservado pelo eixo Y direito
         Spacer(modifier = Modifier.width(larguraEixoYDir))
     }
 }
@@ -830,9 +828,10 @@ data class DadosGrafico(
     val paceMax: Double,
     val gapMin:  Double,
     val gapMax:  Double,
-    // Fração 0..1 no eixo X onde cada km fechado ocorre.
-    // Ex: [0.18, 0.36, 0.54, 0.72, 0.90] numa corrida de 5,5km
+    // Fração 0..1 no eixo X onde cada marcador de distância ocorre (intervalo adaptativo)
     val kmMarcadores:  List<Float> = emptyList(),
+    // Labels dos marcadores (ex: "1km", "2km" ou "100m", "200m" para corridas curtas)
+    val kmLabels:      List<String> = emptyList(),
     // Distância acumulada em km para cada ponto downsampled (para label do cursor)
     val distanciasKm:  List<Float> = emptyList()
 )
@@ -850,7 +849,26 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
         rota.subList(a, b + 1).map { it.alt }.average()
     }
     
-    val paces = rota.map { it.paceNoPonto }
+    // ── Detecção de saltos GPS ─────────────────────────────────────────────────
+    // Quando o GPS perde sinal e volta numa posição diferente, haversine/Δt
+    // indica velocidade impossível (>12 m/s = 43km/h). Esses pontos são forçados
+    // para INVÁLIDO (-1.0) no gráfico → linha quebrada, sem spike visual falso.
+    // Marca também 1 ponto antes/depois como zona de contaminação da EMA.
+    val MAX_SPEED_GPS_MS = 12.0
+    val isGpsSpike = BooleanArray(rota.size) { false }
+    for (i in 1 until rota.size) {
+        val dtS = ((rota[i].tempo - rota[i-1].tempo) / 1000.0).coerceAtLeast(0.1)
+        val distM = haversineM(rota[i-1].lat, rota[i-1].lng, rota[i].lat, rota[i].lng)
+        if (distM / dtS > MAX_SPEED_GPS_MS) {
+            isGpsSpike[i] = true
+            isGpsSpike[i - 1] = true
+            if (i + 1 <= rota.lastIndex) isGpsSpike[i + 1] = true
+        }
+    }
+
+    val paces = rota.mapIndexed { i, pt ->
+        if (isGpsSpike[i]) -1.0 else pt.paceNoPonto
+    }
     val pacesValidos = paces.filter { it in 60.0..1200.0 }
     val pMin = pacesValidos.minOrNull() ?: 300.0
     val pMax = pacesValidos.maxOrNull() ?: 600.0
@@ -867,7 +885,9 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
         if (p !in 60.0..1200.0) return@mapIndexed -1.0  // inválido — não suaviza
         val a = (i - JANELA_SUAV).coerceAtLeast(0)
         val b = (i + JANELA_SUAV).coerceAtMost(paces.lastIndex)
-        val vizinhos = paces.subList(a, b + 1).filter { it in 60.0..1200.0 }
+        val vizinhos = (a..b).mapNotNull { j ->
+            if (!isGpsSpike[j] && paces[j] in 60.0..1200.0) paces[j] else null
+        }
         if (vizinhos.isEmpty()) -1.0 else vizinhos.average()
     }
 
@@ -910,13 +930,32 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
     }
     val distTotalM = distAcumM.last().coerceAtLeast(1.0)
 
-    // Fração 0..1 no eixo downsampled onde cada km fechado cai
+    // Fração 0..1 onde cada marcador de distância cai.
+    // O intervalo é adaptativo: para corridas curtas usa 100m/200m/500m
+    // para que sempre apareçam marcadores mesmo em testes de <1km.
+    val intervaloM = when {
+        distTotalM < 300.0  ->  50.0   // < 300m: a cada 50m
+        distTotalM < 800.0  -> 100.0   // < 800m: a cada 100m
+        distTotalM < 2000.0 -> 200.0   // < 2km:  a cada 200m
+        distTotalM < 5000.0 -> 500.0   // < 5km:  a cada 500m
+        else                -> 1000.0  // >= 5km: a cada 1km
+    }
+    val labelSuffix = when (intervaloM) {
+        50.0, 100.0, 200.0, 500.0 -> "m"
+        else -> "km"
+    }
     val kmMarcadores = mutableListOf<Float>()
-    var kmProximo = 1000.0  // próximo km a marcar em metros
+    val kmLabels     = mutableListOf<String>()
+    var marcadorProximo = intervaloM
     for (idx in idxs) {
-        if (distAcumM[idx] >= kmProximo) {
+        if (distAcumM[idx] >= marcadorProximo) {
             kmMarcadores.add((distAcumM[idx] / distTotalM).toFloat().coerceIn(0f, 1f))
-            kmProximo += 1000.0
+            kmLabels.add(if (labelSuffix == "km")
+                "${(marcadorProximo / 1000.0).toInt()}km"
+            else
+                "${marcadorProximo.toInt()}m"
+            )
+            marcadorProximo += intervaloM
         }
     }
 
@@ -941,6 +980,7 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
         temGAP        = (altMax - altMin) > 5.0,
         paceMin = pMin, paceMax = pMax, gapMin = gMin, gapMax = gMax,
         kmMarcadores  = kmMarcadores,
+        kmLabels      = kmLabels,
         distanciasKm  = idxs.map { (distAcumM[it] / 1000.0).toFloat() }
     )
 }
@@ -1180,8 +1220,15 @@ private fun CartaoCoach(estado: CoachUiState) {
 
                 is CoachUiState.Pronto -> {
                     if (expandido) {
+                        // Detecta se o texto foi cortado pelo limite de tokens da API.
+                        // Resposta cortada: não termina com pontuação de fim de frase.
+                        val foiCortado = run {
+                            val trimmed = estado.texto.trimEnd()
+                            trimmed.isNotEmpty() && trimmed.last() !in listOf('.', '!', '?', '"', ')')
+                        }
                         CoachTexto(
                             texto = estado.texto,
+                            foiCortado = foiCortado,
                             modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
                         )
                     }
@@ -1214,7 +1261,7 @@ private fun CartaoCoach(estado: CoachUiState) {
  * Mostra o texto completo — sem truncagem.
  */
 @Composable
-private fun CoachTexto(texto: String, modifier: Modifier = Modifier) {
+private fun CoachTexto(texto: String, foiCortado: Boolean = false, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -1225,6 +1272,15 @@ private fun CoachTexto(texto: String, modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFFCCCCCC),
                 lineHeight = 20.sp
+            )
+        }
+        // Aviso discreto quando o modelo foi interrompido pelo limite de tokens
+        if (foiCortado) {
+            Text(
+                text = "↩ análise incompleta — toque para regenerar",
+                fontSize = 10.sp,
+                color = Color(0xFF80CBC4).copy(alpha = 0.5f),
+                modifier = Modifier.padding(top = 2.dp)
             )
         }
     }
