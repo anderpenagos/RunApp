@@ -16,29 +16,60 @@ import java.util.Locale
  *  A) Locale.US em todos os format() — evita vírgula decimal em pt-BR (rompe parsers externos).
  *  B) Namespace TrackPointExtension da Garmin — cadência lida pelo Strava e Garmin Connect.
  *  C) Timestamp real de cada ponto GPS — preserva pausas e variações de ritmo no gráfico.
- *  D) Smoothing de coordenadas e altitude antes do export — reduz picos espúrios de pace
- *     no Intervals.icu causados por ruído GPS, sem distorcer a distância total (<0.1%).
+ *  D) Pipeline de suavização em 4 estágios antes do export:
+ *
+ *     ESTÁGIO 1 — Rejeição por accuracy (campo já gravado em LatLngPonto):
+ *       Pontos com accuracy > ACCURACY_MAX são substituídos por interpolação
+ *       linear no tempo entre o último e o próximo ponto válido. Cobre casos
+ *       de multipath GPS (perto de lagos, prédios, túneis) onde o sensor
+ *       reporta a própria incerteza via o campo accuracy.
+ *       Pontos-âncora (lat/lng == anterior) são sempre preservados.
+ *
+ *     ESTÁGIO 2 — Rejeição por velocidade física impossível:
+ *       Velocidade implícita entre ponto i e i+1 calculada via haversine + Δt.
+ *       Se > VELOCIDADE_MAX_MS (12 m/s ≈ 43 km/h), o ponto i+1 é descartado
+ *       e interpolado. Threshold conservador: cobre qualquer corredor humano,
+ *       inclusive tiros de 50–100m, sem rejeitar nada legítimo.
+ *
+ *     ESTÁGIO 3 — Filtro de mediana (janela 5):
+ *       Cada ponto tem lat/lng substituídos pela mediana dos 5 vizinhos.
+ *       Elimina spikes isolados que sobreviveram aos estágios 1 e 2 (ex:
+ *       ponto com accuracy boa mas posição errada — acontece em multipath leve).
+ *       A mediana ignora outliers em vez de ser puxada por eles (diferença
+ *       crucial em relação ao Gaussiano sozinho).
+ *
+ *     ESTÁGIO 4 — Média ponderada gaussiana (como antes):
+ *       Janela 5 para coord, janela 7 para altitude. Suaviza o ruído difuso
+ *       remanescente após os estágios anteriores terem removido os spikes.
+ *
+ *     Em todos os estágios: timestamps, cadência e pace são preservados intactos.
+ *     A suavização nunca atravessa fronteiras de segmento (pausa > 3s ou âncora).
  */
 object GpxGenerator {
 
     private const val TAG = "GpxGenerator"
 
-    // ── Parâmetros de suavização (FIX D) ──────────────────────────────────────
+    // ── Parâmetros do pipeline de suavização (FIX D) ──────────────────────────
     //
-    // JANELA DE COORDENADAS (lat/lng): 5 pontos, pesos gaussianos [1,2,4,2,1]
-    //   Janela pequena para preservar curvas reais do percurso.
-    //   Impacto na distância total: <0.05% em corrida normal.
+    // ESTÁGIO 1 — accuracy
+    //   25m é o limiar padrão do Android para "sinal degradado".
+    //   Abaixo disso o GPS do celular tipicamente está confiável (±5–15m).
+    //   Acima, multipath ou cobertura insuficiente de satélites.
+    private const val ACCURACY_MAX = 25f
     //
-    // JANELA DE ALTITUDE: 7 pontos, pesos [1,2,3,4,3,2,1]
-    //   Altitude do GPS Android é muito mais ruidosa que lat/lng
-    //   (erro típico ±10m vs ±3m). Janela maior é segura pois
-    //   altitude não entra no cálculo de distância horizontal.
+    // ESTÁGIO 2 — velocidade física
+    //   12 m/s ≈ 43 km/h. Nenhum corredor humano atinge isso nem em tiro de 50m
+    //   (recorde mundial dos 100m = ~10.4 m/s). Threshold conservador.
+    private const val VELOCIDADE_MAX_MS = 12.0
     //
-    // FRONTEIRAS DE SEGMENTO: gap temporal > 3s entre pontos consecutivos,
-    //   ou ponto-âncora (lat/lng idêntico ao anterior). A suavização nunca
-    //   atravessa essas fronteiras, preservando a semântica de pausa no GPX.
-    private val PESOS_COORD = intArrayOf(1, 2, 4, 2, 1)
-    private val PESOS_ALT   = intArrayOf(1, 2, 3, 4, 3, 2, 1)
+    // ESTÁGIO 3 — mediana
+    private const val JANELA_MEDIANA = 5
+    //
+    // ESTÁGIO 4 — gaussiano
+    private val PESOS_COORD = intArrayOf(1, 2, 4, 2, 1)   // janela 5
+    private val PESOS_ALT   = intArrayOf(1, 2, 3, 4, 3, 2, 1) // janela 7
+    //
+    // FRONTEIRAS DE SEGMENTO
     private const val GAP_FRONTEIRA_MS = 3_000L
 
     fun gerarGpx(
@@ -128,16 +159,9 @@ object GpxGenerator {
         sb.appendLine("  </trk>")
         sb.appendLine("</gpx>")
 
-        Log.d(TAG, "✅ GPX gerado: ${pontos.size} pontos suavizados | ${tempoSegundos}s | '$nomeAtividade'")
+        Log.d(TAG, "✅ GPX gerado: ${pontos.size}→${pontosExport.size} pts (pipeline 4 estágios) | ${tempoSegundos}s | '$nomeAtividade'")
         return sb.toString()
     }
-
-    // ── FIX D: Suavização por segmento ────────────────────────────────────────
-    //
-    // 1. Divide a lista em segmentos separados por fronteiras (pausa ou âncora).
-    // 2. Aplica média ponderada gaussiana em cada segmento independentemente.
-    // 3. Reconstrói a lista mantendo timestamps, cadência e pace originais —
-    //    só lat, lng e alt são alterados.
 
     /**
      * Retorna a distancia total em metros calculada sobre os pontos SUAVIZADOS.
@@ -173,34 +197,258 @@ object GpxGenerator {
         return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Pipeline de suavização — 4 estágios em sequência
+    // ═══════════════════════════════════════════════════════════════════════════
+
     private fun suavizarPontos(pontos: List<LatLngPonto>): List<LatLngPonto> {
         if (pontos.size < 3) return pontos
 
-        // Identificar fronteiras entre pontos consecutivos
-        val ehFronteira = BooleanArray(pontos.size) { false }
-        for (i in 0 until pontos.size - 1) {
-            val gapMs = pontos[i + 1].tempo - pontos[i].tempo
-            val mesmaPos = pontos[i].lat == pontos[i + 1].lat &&
-                           pontos[i].lng == pontos[i + 1].lng
-            if (gapMs > GAP_FRONTEIRA_MS || mesmaPos) {
-                ehFronteira[i] = true
-            }
-        }
+        // Os 4 estágios são aplicados em sequência sobre a mesma lista.
+        // Timestamps, cadência e pace não são tocados em nenhum estágio.
+        val s1 = rejeitarPorAccuracy(pontos)
+        val s2 = rejeitarPorVelocidade(s1)
+        val s3 = aplicarMediana(s2)
+        val s4 = aplicarGaussiano(s3)
+        return s4
+    }
 
-        // Dividir em segmentos contíguos
-        val segmentos = mutableListOf<IntRange>()
+    // ── Utilitário compartilhado: fronteiras ──────────────────────────────────
+    //
+    // Uma fronteira separa dois pontos que NÃO devem ser suavizados juntos:
+    //   • gap temporal > GAP_FRONTEIRA_MS  → pausa intencional / auto-pause
+    //   • lat/lng idêntico ao vizinho      → ponto-âncora do RunningService
+    //
+    // Retorna array de booleanos onde ehFronteira[i] = true significa que
+    // existe uma fronteira APÓS o ponto i (entre i e i+1).
+
+    private fun calcularFronteiras(pontos: List<LatLngPonto>): BooleanArray {
+        val f = BooleanArray(pontos.size) { false }
+        for (i in 0 until pontos.size - 1) {
+            val gapMs  = pontos[i + 1].tempo - pontos[i].tempo
+            val ancora = pontos[i].lat == pontos[i + 1].lat &&
+                         pontos[i].lng == pontos[i + 1].lng
+            if (gapMs > GAP_FRONTEIRA_MS || ancora) f[i] = true
+        }
+        return f
+    }
+
+    private fun dividirEmSegmentos(
+        pontos: List<LatLngPonto>,
+        fronteiras: BooleanArray
+    ): List<IntRange> {
+        val segs = mutableListOf<IntRange>()
         var inicio = 0
         for (i in pontos.indices) {
-            if (ehFronteira[i] || i == pontos.lastIndex) {
-                segmentos.add(inicio..i)
+            if (fronteiras[i] || i == pontos.lastIndex) {
+                segs.add(inicio..i)
                 inicio = i + 1
             }
         }
+        return segs
+    }
 
-        // Suavizar cada segmento
+    // ── ESTÁGIO 1: Rejeição por accuracy ──────────────────────────────────────
+    //
+    // Pontos com accuracy > ACCURACY_MAX são interpolados linearmente no tempo
+    // entre o último ponto válido anterior e o próximo ponto válido posterior.
+    //
+    // "Válido" aqui significa: accuracy <= ACCURACY_MAX OU ponto-âncora.
+    // Ponto-âncora nunca é rejeitado — ele representa uma pausa intencional.
+    //
+    // Se não existe vizinho válido em nenhum dos lados (ex: primeiros/últimos
+    // pontos todos ruins), o ponto é mantido como está — melhor que descartar.
+
+    private fun rejeitarPorAccuracy(pontos: List<LatLngPonto>): List<LatLngPonto> {
+        val fronteiras = calcularFronteiras(pontos)
+        val resultado  = pontos.toMutableList()
+
+        for (i in pontos.indices) {
+            val p = pontos[i]
+
+            // Ponto-âncora: preservar sempre
+            val ancora = i > 0 && p.lat == pontos[i - 1].lat && p.lng == pontos[i - 1].lng
+            if (ancora) continue
+
+            // Accuracy dentro do limite: ok
+            if (p.accuracy <= 0f || p.accuracy <= ACCURACY_MAX) continue
+
+            // Ponto ruim — encontrar vizinhos válidos dentro do mesmo segmento
+            val limEsq = ultimoValidoAntes(pontos, fronteiras, i)
+            val limDir = primeiroValidoDepois(pontos, fronteiras, i)
+
+            resultado[i] = when {
+                limEsq != null && limDir != null ->
+                    interpolarLinear(pontos[limEsq], pontos[limDir], p.tempo)
+                limEsq != null ->
+                    p.copy(lat = pontos[limEsq].lat, lng = pontos[limEsq].lng,
+                           alt = pontos[limEsq].alt)
+                limDir != null ->
+                    p.copy(lat = pontos[limDir].lat, lng = pontos[limDir].lng,
+                           alt = pontos[limDir].alt)
+                else -> p   // nenhum vizinho válido: manter
+            }
+        }
+
+        Log.d(TAG, "  S1 accuracy: ${pontos.count { it.accuracy > ACCURACY_MAX && it.accuracy > 0f }} pts interpolados")
+        return resultado
+    }
+
+    /** Índice do último ponto com accuracy boa, antes de [idx], no mesmo segmento. */
+    private fun ultimoValidoAntes(
+        pontos: List<LatLngPonto>,
+        fronteiras: BooleanArray,
+        idx: Int
+    ): Int? {
+        for (j in idx - 1 downTo 0) {
+            if (fronteiras[j]) break   // cruzou fronteira: parar
+            val p = pontos[j]
+            if (p.accuracy <= 0f || p.accuracy <= ACCURACY_MAX) return j
+        }
+        return null
+    }
+
+    /** Índice do próximo ponto com accuracy boa, depois de [idx], no mesmo segmento. */
+    private fun primeiroValidoDepois(
+        pontos: List<LatLngPonto>,
+        fronteiras: BooleanArray,
+        idx: Int
+    ): Int? {
+        for (j in idx + 1..pontos.lastIndex) {
+            if (fronteiras[j - 1]) break   // cruzou fronteira: parar
+            val p = pontos[j]
+            if (p.accuracy <= 0f || p.accuracy <= ACCURACY_MAX) return j
+        }
+        return null
+    }
+
+    /**
+     * Interpolação linear no tempo entre dois pontos âncora [a] e [b].
+     * O resultado tem o timestamp [tempoAlvo] e lat/lng/alt proporcionais.
+     */
+    private fun interpolarLinear(
+        a: LatLngPonto,
+        b: LatLngPonto,
+        tempoAlvo: Long
+    ): LatLngPonto {
+        val span = (b.tempo - a.tempo).toDouble()
+        val t    = if (span > 0) (tempoAlvo - a.tempo).toDouble() / span else 0.5
+        return a.copy(
+            lat   = a.lat + t * (b.lat - a.lat),
+            lng   = a.lng + t * (b.lng - a.lng),
+            alt   = if (a.alt != 0.0 && b.alt != 0.0) a.alt + t * (b.alt - a.alt) else a.alt,
+            tempo = tempoAlvo
+        )
+    }
+
+    // ── ESTÁGIO 2: Rejeição por velocidade física impossível ──────────────────
+    //
+    // Calcula a velocidade implícita entre ponto[i] e ponto[i+1] via haversine.
+    // Se > VELOCIDADE_MAX_MS, o ponto[i+1] é marcado como inválido e interpolado
+    // entre o último ponto bom e o próximo ponto bom (mesma lógica do estágio 1).
+    //
+    // A varredura é feita da esquerda para a direita, usando o último ponto
+    // aceito como referência — assim uma sequência de pontos impossíveis é
+    // tratada corretamente (não apenas o primeiro deles).
+
+    private fun rejeitarPorVelocidade(pontos: List<LatLngPonto>): List<LatLngPonto> {
+        val fronteiras = calcularFronteiras(pontos)
+        val invalido   = BooleanArray(pontos.size) { false }
+        var ultimoBom  = 0
+
+        for (i in 1..pontos.lastIndex) {
+            if (fronteiras[i - 1]) { ultimoBom = i; continue }  // nova fronteira: resetar
+
+            val ref = pontos[ultimoBom]
+            val cur = pontos[i]
+            val dtS = ((cur.tempo - ref.tempo) / 1000.0)
+            if (dtS <= 0) continue
+
+            val dist = haversine(ref.lat, ref.lng, cur.lat, cur.lng)
+            if (dist / dtS > VELOCIDADE_MAX_MS) {
+                invalido[i] = true
+            } else {
+                ultimoBom = i
+            }
+        }
+
+        val rejeitados = invalido.count { it }
+        if (rejeitados == 0) return pontos
+
+        // Interpolar os pontos inválidos
         val resultado = pontos.toMutableList()
+        for (i in pontos.indices) {
+            if (!invalido[i]) continue
+            val limEsq = (i - 1 downTo 0).firstOrNull { !invalido[it] && !fronteiras[it] }
+            val limDir = (i + 1..pontos.lastIndex).firstOrNull { !invalido[it] }
+
+            resultado[i] = when {
+                limEsq != null && limDir != null ->
+                    interpolarLinear(pontos[limEsq], pontos[limDir], pontos[i].tempo)
+                limEsq != null ->
+                    pontos[i].copy(lat = pontos[limEsq].lat, lng = pontos[limEsq].lng,
+                                   alt = pontos[limEsq].alt)
+                limDir != null ->
+                    pontos[i].copy(lat = pontos[limDir].lat, lng = pontos[limDir].lng,
+                                   alt = pontos[limDir].alt)
+                else -> pontos[i]
+            }
+        }
+
+        Log.d(TAG, "  S2 velocidade: $rejeitados pts interpolados (>${VELOCIDADE_MAX_MS} m/s)")
+        return resultado
+    }
+
+    // ── ESTÁGIO 3: Filtro de mediana (janela deslizante) ─────────────────────
+    //
+    // Para cada ponto, substitui lat e lng pela mediana dos JANELA_MEDIANA vizinhos
+    // centrados nele (borda: janela truncada e renormalizada automaticamente).
+    //
+    // Mediana vs gaussiana: a mediana IGNORA o outlier; a gaussiana é PUXADA por ele.
+    // Com spike isolado de 30m num segmento de 5 pontos [A, A, SPIKE, A, A]:
+    //   • Mediana → A  (o spike é o único valor extremo, mediana do conjunto = A)
+    //   • Gaussiana → A + 4/10 * SPIKE (ainda distorcida)
+    //
+    // Altitude: não aplica mediana (já é ruidosa de forma difusa, não por spikes).
+    // O gaussiano de janela 7 do estágio 4 cuida dela bem.
+
+    private fun aplicarMediana(pontos: List<LatLngPonto>): List<LatLngPonto> {
+        if (pontos.size < JANELA_MEDIANA) return pontos
+
+        val fronteiras = calcularFronteiras(pontos)
+        val segmentos  = dividirEmSegmentos(pontos, fronteiras)
+        val resultado  = pontos.toMutableList()
+
         for (seg in segmentos) {
-            if (seg.last - seg.first < 2) continue  // segmento muito curto: não suavizar
+            if (seg.last - seg.first < 2) continue
+            val raio = JANELA_MEDIANA / 2
+            for (i in seg) {
+                val inicio = maxOf(seg.first, i - raio)
+                val fim    = minOf(seg.last,  i + raio)
+                val lats   = (inicio..fim).map { pontos[it].lat }.sorted()
+                val lngs   = (inicio..fim).map { pontos[it].lng }.sorted()
+                val meio   = lats.size / 2
+                resultado[i] = pontos[i].copy(
+                    lat = lats[meio],
+                    lng = lngs[meio]
+                )
+            }
+        }
+
+        return resultado
+    }
+
+    // ── ESTÁGIO 4: Gaussiano (igual ao original) ──────────────────────────────
+
+    private fun aplicarGaussiano(pontos: List<LatLngPonto>): List<LatLngPonto> {
+        if (pontos.size < 3) return pontos
+
+        val fronteiras = calcularFronteiras(pontos)
+        val segmentos  = dividirEmSegmentos(pontos, fronteiras)
+        val resultado  = pontos.toMutableList()
+
+        for (seg in segmentos) {
+            if (seg.last - seg.first < 2) continue
             for (i in seg) {
                 resultado[i] = pontos[i].copy(
                     lat = mediaGaussiana(pontos, i, seg, PESOS_COORD) { it.lat },
@@ -211,6 +459,7 @@ object GpxGenerator {
                 )
             }
         }
+
         return resultado
     }
 
