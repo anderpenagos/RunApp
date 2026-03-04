@@ -26,6 +26,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.runapp.service.RunningService
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import com.runapp.ui.screens.*
 import com.runapp.ui.viewmodel.ConfigViewModel
 import com.runapp.ui.viewmodel.CorridaViewModel

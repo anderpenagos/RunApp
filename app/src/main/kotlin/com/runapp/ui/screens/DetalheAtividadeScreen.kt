@@ -1234,6 +1234,7 @@ private fun CartaoCoach(estado: CoachUiState, onRegenerar: () -> Unit) {
                         CoachTexto(
                             texto = estado.texto,
                             foiCortado = foiCortado,
+                            onRegenerar = onRegenerar,
                             modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
                         )
                     }
@@ -1266,7 +1267,7 @@ private fun CartaoCoach(estado: CoachUiState, onRegenerar: () -> Unit) {
  * Mostra o texto completo — sem truncagem.
  */
 @Composable
-private fun CoachTexto(texto: String, foiCortado: Boolean = false, modifier: Modifier = Modifier) {
+private fun CoachTexto(texto: String, foiCortado: Boolean = false, onRegenerar: () -> Unit = {}, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(10.dp)
