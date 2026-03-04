@@ -203,7 +203,15 @@ class WorkoutRepository(private val api: IntervalsApi) {
     // Conversão de treino → passos de execução
     // ─────────────────────────────────────────────────────────────────────────
 
-    fun converterParaPassos(evento: WorkoutEvent, paceZones: List<PaceZone>): List<PassoExecucao> {
+    /** Extrai o threshold pace (m/s) do sport settings de corrida.
+     *  Usado para converter treinos com alvo em %pace. */
+    fun extrairThresholdPace(zonesResponse: ZonesResponse): Double? {
+        return zonesResponse.sportSettings
+            .firstOrNull { sport -> sport.types.any { it in listOf("Run", "VirtualRun", "TrailRun") } }
+            ?.thresholdPace
+    }
+
+    fun converterParaPassos(evento: WorkoutEvent, paceZones: List<PaceZone>, thresholdPaceMs: Double? = null): List<PassoExecucao> {
         Log.d(TAG, "=== CONVERSÃO DE TREINO ===")
         Log.d(TAG, "Evento: ${evento.name}, steps: ${evento.workoutDoc?.steps?.size}")
 
@@ -215,21 +223,23 @@ class WorkoutRepository(private val api: IntervalsApi) {
             )
         )
 
-        return expandirPassos(doc.steps, paceZones)
+        // Prioridade: threshold do atleta (sport settings) > threshold do doc do treino
+        val resolvedThreshold = thresholdPaceMs ?: doc.thresholdPace
+        return expandirPassos(doc.steps, paceZones, resolvedThreshold)
     }
 
-    private fun expandirPassos(steps: List<WorkoutStep>, paceZones: List<PaceZone>): List<PassoExecucao> {
+    private fun expandirPassos(steps: List<WorkoutStep>, paceZones: List<PaceZone>, thresholdPaceMs: Double? = null): List<PassoExecucao> {
         val resultado = mutableListOf<PassoExecucao>()
         for (step in steps) {
             if (step.reps != null && step.reps > 1 && !step.steps.isNullOrEmpty()) {
                 Log.d(TAG, "🔁 Bloco de repetição: ${step.reps}x com ${step.steps.size} sub-passos")
                 repeat(step.reps) { i ->
                     step.steps.forEach { subPasso ->
-                        resultado.add(converterStep(subPasso, paceZones, i + 1, step.reps))
+                        resultado.add(converterStep(subPasso, paceZones, i + 1, step.reps, thresholdPaceMs))
                     }
                 }
             } else {
-                resultado.add(converterStep(step, paceZones))
+                resultado.add(converterStep(step, paceZones, thresholdPaceMs = thresholdPaceMs))
             }
         }
         Log.d(TAG, "✅ Total de passos: ${resultado.size}")
@@ -240,7 +250,8 @@ class WorkoutRepository(private val api: IntervalsApi) {
         step: WorkoutStep,
         paceZones: List<PaceZone>,
         repAtual: Int? = null,
-        repsTotal: Int? = null
+        repsTotal: Int? = null,
+        thresholdPaceMs: Double? = null
     ): PassoExecucao {
         val paceTarget = step.pace ?: step.target
         Log.d(TAG, "converterStep → type=${step.type} pace={value=${paceTarget?.value}, start=${paceTarget?.start}, end=${paceTarget?.end}, units=${paceTarget?.units}}")
@@ -254,6 +265,31 @@ class WorkoutRepository(private val api: IntervalsApi) {
         when {
             isDescanso -> {
                 zona = 1
+            }
+
+            // Alvo em % do pace limiar (ex: 110-114% Pace do Intervals.icu).
+            // O JSON chega com units="%pace", start=110, end=114 (porcentagens).
+            // Conversão: velocidade = thresholdPace(m/s) × (pct/100)
+            //            pace(s/km) = 1000 / velocidade
+            // Percentagem maior = velocidade maior = pace MAIS RÁPIDO (menor número).
+            paceTarget?.units == "%pace" && (paceTarget.start ?: 0.0) > 0.0 -> {
+                val thresholdMs = thresholdPaceMs  // m/s do limiar do atleta
+                if (thresholdMs != null && thresholdMs > 0.0) {
+                    val pctRapido = paceTarget.end ?: paceTarget.start!!   // % maior → mais rápido
+                    val pctLento  = paceTarget.start!!                      // % menor → mais lento
+                    val velocRapido = thresholdMs * pctRapido / 100.0
+                    val velocLento  = thresholdMs * pctLento  / 100.0
+                    val paceRapidoSegM = 1.0 / velocRapido  // s/m (menor = mais rápido)
+                    val paceLentoSegM  = 1.0 / velocLento
+                    paceMinStr = formatarPace(paceRapidoSegM)  // ex: "4:08" (mais rápido)
+                    paceMaxStr = formatarPace(paceLentoSegM)   // ex: "4:17" (mais lento)
+                    zona = detectarZonaPorPace(paceRapidoSegM, paceZones)
+                    Log.d(TAG, "  %pace: ${paceTarget.start}–${paceTarget.end}% → $paceMinStr–$paceMaxStr/km (threshold=${formatarPace(1.0/thresholdMs)})")
+                } else {
+                    // Sem threshold disponível — fallback para Z4
+                    val (min, max) = getPaceFallback(4); paceMinStr = min; paceMaxStr = max; zona = 4
+                    Log.w(TAG, "  %pace sem threshold — usando fallback Z4")
+                }
             }
 
             paceTarget?.isPaceZone == true -> {

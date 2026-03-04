@@ -748,8 +748,12 @@ class CorridaViewModel(
                 resultado.fold(
                     onSuccess = { evento ->
                         val zonasResult = repo.getZonas(athleteId)
+                        var thresholdPaceMs: Double? = null
                         val paceZones = zonasResult.fold(
-                            onSuccess = { zonesResponse -> repo.processarZonas(zonesResponse) },
+                            onSuccess = { zonesResponse ->
+                                thresholdPaceMs = repo.extrairThresholdPace(zonesResponse)
+                                repo.processarZonas(zonesResponse)
+                            },
                             onFailure = { emptyList() }
                         )
                         paceZonesSalvas = paceZones  // guarda para usar no save da corrida
@@ -768,7 +772,7 @@ class CorridaViewModel(
                             container.preferencesRepository.salvarZonasFronteira(zonasFronteira)
                         }
 
-                        val passosProcessados = repo.converterParaPassos(evento, paceZones)
+                        val passosProcessados = repo.converterParaPassos(evento, paceZones, thresholdPaceMs)
                         _uiState.value = _uiState.value.copy(
                             treino     = evento,
                             passos     = passosProcessados,

@@ -18,7 +18,8 @@ data class WorkoutEvent(
 data class WorkoutDoc(
     val type: String = "running",
     val duration: Int = 0,
-    val steps: List<WorkoutStep> = emptyList()
+    val steps: List<WorkoutStep> = emptyList(),
+    @SerializedName("threshold_pace") val thresholdPace: Double? = null  // m/s — presente em treinos com alvo em %pace
 )
 
 data class WorkoutStep(
