@@ -65,7 +65,7 @@ data class StepTarget(
     val isPaceZone: Boolean get() = units?.contains("pace_zone", ignoreCase = true) == true ||
                                     type?.contains("zone", ignoreCase = true) == true
 
-    val isRest: Boolean get() = (units == "%pace" && value == 0.0) ||
+    val isRest: Boolean get() = (units == "%pace" && value == 0.0 && (start == null || start == 0.0)) ||
                                 (type == "pace" && value == 0.0 && start == null)
 }
 
