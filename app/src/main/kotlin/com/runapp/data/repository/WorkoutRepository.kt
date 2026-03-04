@@ -76,9 +76,20 @@ class WorkoutRepository(private val api: IntervalsApi) {
                 parseStepsFromJson(workoutDocJson.getAsJsonArray("steps"))
             } else emptyList()
 
+            // Lê threshold_pace do nível raiz do evento (não está dentro de workout_doc)
+            val thresholdPaceRaiz = root.get("threshold_pace")
+                ?.takeIf { !it.isJsonNull }?.asDouble
+            // Também tenta dentro de workout_doc caso venha em outro formato
+                ?: workoutDocJson?.get("threshold_pace")
+                    ?.takeIf { !it.isJsonNull }?.asDouble
+
             // Montar o evento corrigido com a árvore de steps completa
-            val docCorrigido = (evento.workoutDoc ?: WorkoutDoc()).copy(steps = stepsParseados)
+            val docCorrigido = (evento.workoutDoc ?: WorkoutDoc()).copy(
+                steps = stepsParseados,
+                thresholdPace = thresholdPaceRaiz
+            )
             val eventoCorrigido = evento.copy(workoutDoc = docCorrigido)
+            Log.d(TAG, "  threshold_pace do treino: $thresholdPaceRaiz m/s")
 
             Log.d(TAG, "✅ Treino '${eventoCorrigido.name}' processado com ${stepsParseados.size} steps.")
             Result.success(eventoCorrigido)
