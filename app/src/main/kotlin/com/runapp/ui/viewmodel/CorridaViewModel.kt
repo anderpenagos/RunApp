@@ -1196,7 +1196,7 @@ class CorridaViewModel(
                         // FIX: Só deleta o backup após confirmar que o save foi bem sucedido.
                         // Isso garante que um save parcial não apague o backup prematuramente.
                         try { backupFile.delete() } catch (_: Exception) {}
-                        android.util.Log.d("CorridaVM", "✅ GPX salvo: ${arquivo.absolutePath}")
+                        android.util.Log.d("CorridaVM", "✅ GPX salvo: ${resultado.arquivo.absolutePath}")
                     },
                     onFailure = { e ->
                         android.util.Log.e("CorridaVM", "❌ Erro ao salvar", e)
