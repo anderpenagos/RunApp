@@ -398,7 +398,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             paceAlvoMin = paceMinStr,
             paceAlvoMax = paceMaxStr,
             zona        = zona,
-            instrucao   = "[u=$debugUnits s=$debugStart $debugThreshold] " + (step.text ?: gerarInstrucao(step.type, paceMinStr, paceMaxStr)),
+            instrucao   = "[u=$debugUnits s=$debugStart thr=${thresholdPaceMs?.let{String.format("%.3f",it)} ?: "null"}] " + (step.text ?: gerarInstrucao(step.type, paceMinStr, paceMaxStr)),
             isDescanso  = isDescanso
         )
     }
