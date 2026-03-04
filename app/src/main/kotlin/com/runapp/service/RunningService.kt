@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -317,6 +319,50 @@ class RunningService : Service(), SensorEventListener {
     // ── GPS Cold Start (salto inicial após recovery) ──────────────────────────
     private var modoRecuperacaoGps = false
     private var contadorPontosRecuperacao = 0
+
+    // Receptor de tela ligada: quando o usuário desbloqueia o telefone, o
+    // FusedLocationProvider troca de provedor (cell-assisted → GPS puro) e
+    // entrega 1-3 pontos com posição levemente deslocada antes de reacquirir
+    // o sinal — causando spikes de pace e registros errados na rota.
+    // Ativando modoRecuperacaoGps aqui, o filtro de velocidade já existente
+    // descarta esses pontos silenciosamente até o GPS estabilizar.
+    private var screenOffTimestampMs = 0L
+
+    private val screenOnReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    // Registra quando a tela apagou para calcular quanto tempo ficou bloqueada
+                    screenOffTimestampMs = SystemClock.elapsedRealtime()
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    if (!estaCorrendo || estaPausado) return
+
+                    // Só ativa o recovery se a tela ficou apagada > 10s.
+                    // Se o usuário apenas "espiou" a hora e a tela apagou em <10s,
+                    // o GPS não teve tempo de entrar em batch mode — reset desnecessário.
+                    val tempoTelaApagadaMs = if (screenOffTimestampMs > 0)
+                        SystemClock.elapsedRealtime() - screenOffTimestampMs
+                    else
+                        Long.MAX_VALUE  // primeira vez sem SCREEN_OFF capturado → assume longo
+
+                    if (tempoTelaApagadaMs < 10_000L) {
+                        Log.d(TAG, "📱 Tela ligada após ${tempoTelaApagadaMs}ms — GPS ainda estável, recovery ignorado")
+                        return
+                    }
+
+                    modoRecuperacaoGps = true
+                    contadorPontosRecuperacao = 0
+                    ultimasLocalizacoes.clear()
+                    ultimoPaceEmaInterno = null
+                    bufferPace30s.clear()
+                    _paceAtual.value = "--:--"
+                    Log.d(TAG, "📱 Tela ligada após ${tempoTelaApagadaMs / 1000}s — modo GPS recovery ativado")
+                }
+            }
+        }
+    }
+    private var screenReceiverRegistrado = false
     private val MAX_VELOCIDADE_HUMANA_MS = 11.0  // ~40 km/h — cobre sprints de elite
 
     // Auto-pause
@@ -762,6 +808,10 @@ class RunningService : Service(), SensorEventListener {
         wakeLock?.let {
             if (it.isHeld) it.release()
         }
+        if (screenReceiverRegistrado) {
+            try { unregisterReceiver(screenOnReceiver) } catch (_: Exception) {}
+            screenReceiverRegistrado = false
+        }
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1000,10 +1050,26 @@ class RunningService : Service(), SensorEventListener {
         } catch (e: SecurityException) {
             Log.e(TAG, "❌ Erro de permissão GPS", e)
         }
+
+        // Registra receptor de tela ligada para ativar modoRecuperacaoGps
+        // ao desbloquear o telefone — evita spikes de pace pós-desbloqueio.
+        if (!screenReceiverRegistrado) {
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
+            }
+            registerReceiver(screenOnReceiver, filter)
+            screenReceiverRegistrado = true
+            Log.d(TAG, "📱 Receptor SCREEN_ON/OFF registrado")
+        }
     }
 
     private fun pararAtualizacoesGPS() {
         fusedLocationClient.removeLocationUpdates(locationCallback)
+        if (screenReceiverRegistrado) {
+            try { unregisterReceiver(screenOnReceiver) } catch (_: Exception) {}
+            screenReceiverRegistrado = false
+        }
         Log.d(TAG, "⏹️ GPS parado")
     }
 
