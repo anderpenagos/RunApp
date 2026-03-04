@@ -3,7 +3,6 @@ package com.runapp.data.api
 import com.runapp.data.model.ActivityUploadResponse
 import com.runapp.data.model.WorkoutEvent
 import com.runapp.data.model.WellnessSnapshot
-import com.runapp.data.model.ZonesResponse
 import okhttp3.MultipartBody
 import okhttp3.ResponseBody
 import retrofit2.http.*
@@ -30,9 +29,9 @@ interface IntervalsApi {
     ): ResponseBody
 
     @GET("athlete/{id}/zones")
-    suspend fun getZones(
+    suspend fun getZonesRaw(
         @Path("id") athleteId: String
-    ): ZonesResponse
+    ): ResponseBody
 
     /**
      * Retorna o snapshot de condicionamento físico (CTL/ATL/TSB) de um dia específico.
