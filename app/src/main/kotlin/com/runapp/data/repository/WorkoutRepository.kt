@@ -484,13 +484,13 @@ class WorkoutRepository(private val api: IntervalsApi) {
      * Fazer isso na Main thread causa jank visível na animação de "Salvando..." e pode
      * acionar o ANR watchdog em corridas longas (> 2h).
      */
-    /** Resultado de [salvarAtividade]: arquivo GPX + distancia oficial (suavizada).
-     *  A ViewModel usa distanciaFinalMetros para popular a ResumoScreen imediatamente,
-     *  sem re-buscar do banco, evitando o "Efeito Deception" (app dizia 5.00km,
-     *  historico mostra 4.91km). */
+    /** Resultado de [salvarAtividade]: arquivo GPX + métricas finais recalculadas.
+     *  A ViewModel usa esses valores para popular a ResumoScreen imediatamente,
+     *  garantindo que distância e pace exibidos batam com o que Intervals/Strava mostram. */
     data class SalvarAtividadeResult(
         val arquivo: java.io.File,
-        val distanciaFinalMetros: Double
+        val distanciaFinalMetros: Double,
+        val paceMediaFinal: String      // recalculado de distanciaFinal + tempoSegundos
     )
 
     suspend fun salvarAtividade(
@@ -536,6 +536,29 @@ class WorkoutRepository(private val api: IntervalsApi) {
                 .coerceAtLeast(distanciaMetros * 0.95)
             Log.d(TAG, "Distancia: bruta=${distanciaMetros.toInt()}m | smooth=${distanciaFinal.toInt()}m")
 
+            // ── Pace médio recalculado ─────────────────────────────────────────
+            // NÃO usar o parâmetro `paceMedia` que vem do RunningService.
+            //
+            // Durante a corrida, o service acumula distância em tempo real a partir
+            // dos pontos GPS *aceitos* pelo filtro de velocidade. Em trechos com
+            // sinal ruim (multipath de lagoa, túnel, predios), muitos pontos são
+            // descartados → `_distanciaMetros` fica subestimado → pace aparece
+            // mais lento do que o real (ex: 8:00/km em vez de 6:31/km).
+            //
+            // `distanciaFinal` é calculada sobre TODOS os pontos brutos após
+            // suavização → é o valor definitivo e correto. O `paceMediaFinal` é
+            // recalculado a partir dele para garantir consistência:
+            //   paceMedia = tempoTotal / distanciaFinal  ← sempre coerente com o mapa
+            val paceMediaFinal: String = if (distanciaFinal > 10.0 && tempoSegundos > 0) {
+                val segKm = (tempoSegundos.toDouble() / distanciaFinal) * 1000.0
+                val min = (segKm / 60).toInt()
+                val seg = (segKm % 60).toInt()
+                "%d:%02d".format(min, seg)
+            } else {
+                paceMedia   // fallback: mantém o valor do service se a distância for inválida
+            }
+            Log.d(TAG, "Pace: service='$paceMedia' → recalculado='$paceMediaFinal' (${distanciaFinal.toInt()}m / ${tempoSegundos}s)")
+
             val tempoH = tempoSegundos / 3600
             val tempoM = (tempoSegundos % 3600) / 60
             val tempoS = tempoSegundos % 60
@@ -568,7 +591,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             val meta = com.runapp.data.model.CorridaHistorico(
                 nome = nomeAtividade, data = dataHoraInicio.toString(),
                 distanciaKm = distanciaFinal / 1000.0, tempoFormatado = tempoStr,
-                paceMedia = paceMedia, pontosGps = rota.size, arquivoGpx = arquivo.name,
+                paceMedia = paceMediaFinal, pontosGps = rota.size, arquivoGpx = arquivo.name,
                 ganhoElevacaoM = ganhoElevacao,
                 cadenciaMedia = cadenciaMedia,
                 splitsParciais = splits,
@@ -584,7 +607,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             jsonFile.writeText(Gson().toJson(meta))
 
             Log.d(TAG, "✅ Salvo: ${arquivo.absolutePath} | D+=${ganhoElevacao}m | SPM=$cadenciaMedia | ${splits.size} splits | ${voltas.size} voltas")
-            Result.success(SalvarAtividadeResult(arquivo, distanciaFinal))
+            Result.success(SalvarAtividadeResult(arquivo, distanciaFinal, paceMediaFinal))
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao salvar atividade", e)
             Result.failure(e)

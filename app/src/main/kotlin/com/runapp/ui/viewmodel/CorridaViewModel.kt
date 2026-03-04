@@ -1193,9 +1193,11 @@ class CorridaViewModel(
                         arquivoGpxSalvo = resultado.arquivo
                         _uiState.value = _uiState.value.copy(
                             salvamentoEstado = SalvamentoEstado.SALVO,
-                            // Distancia final (suavizada) — mostrar na ResumoScreen
-                            // para que bata com o valor que Intervals/Strava vao exibir.
-                            distanciaFinalMetros = resultado.distanciaFinalMetros
+                            // Distancia e pace recalculados sobre os pontos suavizados —
+                            // garantem que ResumoScreen mostre os mesmos valores que
+                            // Intervals.icu e Strava vão exibir após o upload.
+                            distanciaFinalMetros = resultado.distanciaFinalMetros,
+                            paceMedia            = resultado.paceMediaFinal
                         )
                         // FIX: Só deleta o backup após confirmar que o save foi bem sucedido.
                         // Isso garante que um save parcial não apague o backup prematuramente.
