@@ -62,6 +62,7 @@ fun DetalheAtividadeScreen(
     corrida: CorridaHistorico,
     rota: List<LatLngPonto>,
     coachEstado: CoachUiState = CoachUiState.Inativo,
+    onRegenerar: () -> Unit = {},
     onVoltar: () -> Unit
 ) {
     val dados = remember(rota) { prepararDados(rota) }
@@ -138,7 +139,7 @@ fun DetalheAtividadeScreen(
             }
 
             // ── Análise do Coach (Gemini 2.5 Flash) ──────────────────────────
-            item { CartaoCoach(coachEstado) }
+            item { CartaoCoach(coachEstado, onRegenerar) }
         }
     }
 }
@@ -531,28 +532,20 @@ private fun EixoKm(
     ) {
         Spacer(modifier = Modifier.width(larguraEixoY))
 
-        // height(18.dp): texto 8sp tem ~13-14dp de altura. A altura anterior (12dp)
-        // clipava a parte superior dos caracteres — por isso os numeros apareciam
-        // cortados pela metade no eixo X. absoluteOffset posiciona horizontalmente
-        // sem sair dos limites do Box (coerceIn nas bordas).
-        BoxWithConstraints(modifier = Modifier.weight(1f).height(18.dp)) {
-            val boxWidthPx = constraints.maxWidth.toFloat()
+        // height(18.dp): texto 8sp tem ~13-14dp de altura.
+        // A altura anterior (12dp) clipava a metade superior dos caracteres.
+        // fillMaxWidth(frac) + wrapContentWidth(End) posiciona cada label
+        // na fração correta sem depender de constraints em tempo de composição.
+        Box(modifier = Modifier.weight(1f).height(18.dp)) {
             marcadores.forEachIndexed { i, frac ->
                 val label = labels.getOrElse(i) { "${i + 1}km" }
-                // Largura estimada do texto em px (8sp ~ 6px por caractere @ mdpi)
-                val labelWidthPx = label.length * 6f * (8f / 12f)
-                // Centro ideal do label = frac * largura total
-                // Clampear para que o label nunca saia fora do Box
-                val centerX = (frac * boxWidthPx)
-                    .coerceIn(labelWidthPx / 2f, boxWidthPx - labelWidthPx / 2f)
-                val offsetX = (centerX - labelWidthPx / 2f)
-                    .coerceAtLeast(0f)
                 Text(
                     text = label,
                     fontSize = 8.sp,
                     color = Color.White.copy(alpha = 0.35f),
                     modifier = Modifier
-                        .absoluteOffset(x = with(androidx.compose.ui.platform.LocalDensity.current) { offsetX.toDp() })
+                        .fillMaxWidth(frac)
+                        .wrapContentWidth(Alignment.End, unbounded = true)
                 )
             }
         }
@@ -1149,7 +1142,7 @@ private fun formatarDataDetalhe(iso: String): String = runCatching {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @Composable
-private fun CartaoCoach(estado: CoachUiState) {
+private fun CartaoCoach(estado: CoachUiState, onRegenerar: () -> Unit) {
     if (estado is CoachUiState.Inativo) return
 
     val corAccent = Color(0xFF80CBC4)
@@ -1291,8 +1284,10 @@ private fun CoachTexto(texto: String, foiCortado: Boolean = false, modifier: Mod
             Text(
                 text = "↩ análise incompleta — toque para regenerar",
                 fontSize = 10.sp,
-                color = Color(0xFF80CBC4).copy(alpha = 0.5f),
-                modifier = Modifier.padding(top = 2.dp)
+                color = Color(0xFF80CBC4).copy(alpha = 0.8f),
+                modifier = Modifier
+                    .padding(top = 4.dp)
+                    .clickable { onRegenerar() }
             )
         }
     }

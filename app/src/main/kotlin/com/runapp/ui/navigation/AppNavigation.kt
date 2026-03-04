@@ -302,48 +302,52 @@ fun AppNavigation(notificationIntent: Intent? = null) {
             }
 
             val estadoAtual = detalheEstado.value
+
+            // Função de geração do Coach — reutilizada no LaunchedEffect inicial
+            // e no botão "toque para regenerar" (analise incompleta por limite de tokens).
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
+            val gerarCoach: (corrida: com.runapp.data.model.CorridaHistorico, forcar: Boolean) -> Unit =
+                { corrida, forcar ->
+                    scope.launch {
+                        coachEstado = CoachUiState.Carregando
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            val app       = navController.context.applicationContext as com.runapp.RunApp
+                            val repo      = com.runapp.data.repository.HistoricoRepository(app)
+                            val coachRepo = com.runapp.data.repository.CoachRepository()
+
+                            val wellness = runCatching {
+                                val prefs     = app.container.preferencesRepository
+                                val apiKey    = prefs.apiKey.first()
+                                val athleteId = prefs.athleteId.first()
+                                if (!apiKey.isNullOrBlank() && !athleteId.isNullOrBlank()) {
+                                    val dataCorrida = corrida.data.take(10)
+                                    val intervalsApi = com.runapp.data.api.IntervalsClient.create(apiKey)
+                                    intervalsApi.getWellness(athleteId, dataCorrida)
+                                } else null
+                            }.getOrNull()
+
+                            coachRepo.gerarFeedback(corrida, wellness).fold(
+                                onSuccess = { feedback ->
+                                    if (forcar) repo.salvarFeedback(corrida.arquivoGpx, feedback)
+                                    coachEstado = CoachUiState.Pronto(feedback)
+                                },
+                                onFailure = { erro ->
+                                    android.util.Log.e("AppNav", "Coach falhou: ${erro.message}")
+                                    coachEstado = CoachUiState.Erro(erro.message ?: "Erro desconhecido")
+                                }
+                            )
+                        }
+                    }
+                }
+
             androidx.compose.runtime.LaunchedEffect(estadoAtual) {
                 if (estadoAtual !is DetalheEstado.Sucesso) return@LaunchedEffect
                 val corrida = estadoAtual.corrida
-
-                // Feedback já cacheado → usa direto, sem chamar a API
                 if (corrida.feedbackCoach != null) {
                     coachEstado = CoachUiState.Pronto(corrida.feedbackCoach)
                     return@LaunchedEffect
                 }
-
-                // Gera em background enquanto a UI já está visível
-                coachEstado = CoachUiState.Carregando
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    val app       = navController.context.applicationContext as com.runapp.RunApp
-                    val repo      = com.runapp.data.repository.HistoricoRepository(app)
-                    val coachRepo = com.runapp.data.repository.CoachRepository()
-
-                    // Tenta buscar CTL/ATL/TSB do dia da corrida no Intervals.icu.
-                    // Falha silenciosa — o Coach funciona normalmente sem esses dados.
-                    val wellness = runCatching {
-                        val prefs     = app.container.preferencesRepository
-                        val apiKey    = prefs.apiKey.first()
-                        val athleteId = prefs.athleteId.first()
-                        if (!apiKey.isNullOrBlank() && !athleteId.isNullOrBlank()) {
-                            // Extrai "yyyy-MM-dd" do campo data da corrida (formato ISO)
-                            val dataCorrida = corrida.data.take(10)
-                            val intervalsApi = com.runapp.data.api.IntervalsClient.create(apiKey)
-                            intervalsApi.getWellness(athleteId, dataCorrida)
-                        } else null
-                    }.getOrNull()
-
-                    coachRepo.gerarFeedback(corrida, wellness).fold(
-                        onSuccess = { feedback ->
-                            repo.salvarFeedback(corrida.arquivoGpx, feedback)
-                            coachEstado = CoachUiState.Pronto(feedback)
-                        },
-                        onFailure = { erro ->
-                            android.util.Log.e("AppNav", "❌ Coach falhou: ${erro.message}")
-                            coachEstado = CoachUiState.Erro(erro.message ?: "Erro desconhecido")
-                        }
-                    )
-                }
+                gerarCoach(corrida, true)
             }
 
             when (val estado = estadoAtual) {
@@ -370,10 +374,11 @@ fun AppNavigation(notificationIntent: Intent? = null) {
                 }
                 is DetalheEstado.Sucesso -> {
                     DetalheAtividadeScreen(
-                        corrida     = estado.corrida,
-                        rota        = estado.rota,
-                        coachEstado = coachEstado,
-                        onVoltar    = { navController.popBackStack() }
+                        corrida       = estado.corrida,
+                        rota          = estado.rota,
+                        coachEstado   = coachEstado,
+                        onRegenerar   = { gerarCoach(estado.corrida, false) },
+                        onVoltar      = { navController.popBackStack() }
                     )
                 }
             }

@@ -142,7 +142,7 @@ class CoachRepository {
             })
             add("generationConfig", JsonObject().apply {
                 addProperty("temperature", 0.45)
-                addProperty("maxOutputTokens", 800)   // resposta concisa: ~5 blocos curtos
+                addProperty("maxOutputTokens", 2000)  // teto de segurança — o prompt controla a concisao
             })
         })
     }
