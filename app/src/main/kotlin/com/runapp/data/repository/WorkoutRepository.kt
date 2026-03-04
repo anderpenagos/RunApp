@@ -101,45 +101,9 @@ class WorkoutRepository(private val api: IntervalsApi) {
 
     suspend fun getZonas(athleteId: String): Result<ZonesResponse> {
         return try {
-            val body = api.getZonesRaw(athleteId).string()
-            Log.d(TAG, "Zonas raw: ${body.take(500)}")
-
-            val root = JsonParser.parseString(body)
-
-            // A API pode retornar o objeto direto OU dentro de array
-            val obj = when {
-                root.isJsonArray  -> root.asJsonArray.firstOrNull()?.asJsonObject
-                root.isJsonObject -> root.asJsonObject
-                else              -> null
-            } ?: return Result.failure(Exception("Resposta de zonas inesperada"))
-
-            // Lê sportSettings — tenta camelCase e snake_case
-            val sportSettingsJson = obj.getAsJsonArray("sportSettings")
-                ?: obj.getAsJsonArray("sport_settings")
-                ?: return Result.failure(Exception("sportSettings não encontrado"))
-
-            val settings = sportSettingsJson.map { el ->
-                val s = el.asJsonObject
-                SportSetting(
-                    id        = s.get("id")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
-                    types     = s.getAsJsonArray("types")
-                                  ?.mapNotNull { it.takeIf { !it.isJsonNull }?.asString }
-                                  ?: emptyList(),
-                    thresholdPace = s.get("threshold_pace")?.takeIf { !it.isJsonNull }?.asDouble,
-                    paceUnits     = s.get("pace_units")?.takeIf { !it.isJsonNull }?.asString,
-                    paceZones     = s.getAsJsonArray("pace_zones")
-                                      ?.mapNotNull { it.takeIf { !it.isJsonNull }?.asDouble },
-                    paceZoneNames = s.getAsJsonArray("pace_zone_names")
-                                      ?.mapNotNull { it.takeIf { !it.isJsonNull }?.asString }
-                )
-            }
-
-            Log.d(TAG, "Zonas recebidas: ${settings.size} sport settings")
-            settings.forEach { s ->
-                Log.d(TAG, "  types=${s.types}, threshold=${s.thresholdPace}, zones=${s.paceZones?.size}")
-            }
-
-            Result.success(ZonesResponse(sportSettings = settings))
+            val zonas = api.getZones(athleteId)
+            Log.d(TAG, "Zonas recebidas: ${zonas.sportSettings.size} sport settings")
+            Result.success(zonas)
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao buscar zonas", e)
             Result.failure(e)
@@ -414,6 +378,11 @@ class WorkoutRepository(private val api: IntervalsApi) {
 
         Log.d(TAG, "  → Final: Z$zona, $paceMinStr – $paceMaxStr")
 
+        // DEBUG TEMPORARIO: mostra unidade e threshold no nome
+        val debugThreshold = paceZones.getOrNull(3)?.min?.let { "T=${(1.0/it*1000/60).toInt()}:${((1.0/it*1000)%60).toInt()}" } ?: "T=null"
+        val debugUnits = paceTarget?.units ?: "noUnit"
+        val debugStart = paceTarget?.start?.toInt() ?: 0
+
         val nomePasso = when {
             step.type == "Warmup"   -> "Aquecimento"
             step.type == "Cooldown" -> "Desaceleração"
@@ -429,7 +398,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             paceAlvoMin = paceMinStr,
             paceAlvoMax = paceMaxStr,
             zona        = zona,
-            instrucao   = step.text ?: gerarInstrucao(step.type, paceMinStr, paceMaxStr),
+            instrucao   = "[u=$debugUnits s=$debugStart $debugThreshold] " + (step.text ?: gerarInstrucao(step.type, paceMinStr, paceMaxStr)),
             isDescanso  = isDescanso
         )
     }
