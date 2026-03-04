@@ -401,6 +401,15 @@ class WorkoutRepository(private val api: IntervalsApi) {
      * Fazer isso na Main thread causa jank visível na animação de "Salvando..." e pode
      * acionar o ANR watchdog em corridas longas (> 2h).
      */
+    /** Resultado de [salvarAtividade]: arquivo GPX + distancia oficial (suavizada).
+     *  A ViewModel usa distanciaFinalMetros para popular a ResumoScreen imediatamente,
+     *  sem re-buscar do banco, evitando o "Efeito Deception" (app dizia 5.00km,
+     *  historico mostra 4.91km). */
+    data class SalvarAtividadeResult(
+        val arquivo: java.io.File,
+        val distanciaFinalMetros: Double
+    )
+
     suspend fun salvarAtividade(
         context: android.content.Context,
         athleteId: String,
@@ -415,7 +424,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
         stepLengthBaseline: Double = 0.0,   // EMA do Auto-Learner no início da corrida
         treinoNome: String? = null,          // nome do WorkoutEvent, se havia plano
         treinoPassosJson: String? = null     // JSON de List<PassoResumo>, se havia plano
-    ): Result<java.io.File> {
+    ): Result<SalvarAtividadeResult> {
         return try {
             Log.d(TAG, "=== SALVANDO ATIVIDADE ===")
             if (rota.isEmpty()) return Result.failure(Exception("Nenhum dado GPS para salvar"))
@@ -434,6 +443,15 @@ class WorkoutRepository(private val api: IntervalsApi) {
             val timestamp = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss").format(dataHoraInicio)
             val arquivo = java.io.File(pastaGpx, "corrida_$timestamp.gpx")
             arquivo.writeText(gpxContent)
+
+            // Distancia oficial = calculada sobre os pontos suavizados, para que
+            // o resumo da corrida bata com o que Intervals.icu e Strava mostram.
+            // O coerceAtLeast(95%) e uma seguranca contra edge cases (ex: corrida
+            // de 5 pontos onde o smoothing nao se aplica).
+            val distanciaFinal = com.runapp.util.GpxGenerator
+                .calcularDistanciaSmoothed(rota)
+                .coerceAtLeast(distanciaMetros * 0.95)
+            Log.d(TAG, "Distancia: bruta=${distanciaMetros.toInt()}m | smooth=${distanciaFinal.toInt()}m")
 
             val tempoH = tempoSegundos / 3600
             val tempoM = (tempoSegundos % 3600) / 60
@@ -461,12 +479,12 @@ class WorkoutRepository(private val api: IntervalsApi) {
             // Comprimento de passada neste treino: distância / total de passos
             // Passos totais ≈ cadência (passos/min) × tempo (min)
             val stepLengthTreino = if (cadenciaMedia > 0 && tempoSegundos > 0)
-                distanciaMetros / (cadenciaMedia * tempoSegundos / 60.0)
+                distanciaFinal / (cadenciaMedia * tempoSegundos / 60.0)
             else 0.0
 
             val meta = com.runapp.data.model.CorridaHistorico(
                 nome = nomeAtividade, data = dataHoraInicio.toString(),
-                distanciaKm = distanciaMetros / 1000.0, tempoFormatado = tempoStr,
+                distanciaKm = distanciaFinal / 1000.0, tempoFormatado = tempoStr,
                 paceMedia = paceMedia, pontosGps = rota.size, arquivoGpx = arquivo.name,
                 ganhoElevacaoM = ganhoElevacao,
                 cadenciaMedia = cadenciaMedia,
@@ -483,7 +501,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             jsonFile.writeText(Gson().toJson(meta))
 
             Log.d(TAG, "✅ Salvo: ${arquivo.absolutePath} | D+=${ganhoElevacao}m | SPM=$cadenciaMedia | ${splits.size} splits | ${voltas.size} voltas")
-            Result.success(arquivo)
+            Result.success(SalvarAtividadeResult(arquivo, distanciaFinal))
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao salvar atividade", e)
             Result.failure(e)

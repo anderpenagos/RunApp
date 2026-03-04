@@ -93,32 +93,37 @@ class CoachRepository {
 
     private fun construirRequest(corrida: CorridaHistorico, wellness: WellnessSnapshot?): String {
         val system = """
-            Você é o RunApp Pro Coach, treinador de corrida de elite especializado em fisiologia e biomecânica.
-            Suas diretrizes:
-            1. Adesão ao Plano: se houver treino planejado, compare pace real vs alvo de cada passo. Seja específico com os números.
-            2. Esforço Real (GAP): use o Ritmo Ajustado à Inclinação para avaliar o esforço verdadeiro em subidas/descidas.
-            3. Biomecânica: compare a passada deste treino com o baseline histórico. Queda >5% = sinal de fadiga mecânica.
-            4. Zonas: verifique se a distribuição de zonas condiz com o objetivo do treino.
-            5. Intervalos: se houver voltas/tiros detectados, analise consistência do pace nos tiros e qualidade da recuperação.
-            6. Condicionamento: se CTL/ATL/TSB estiverem disponíveis, use-os para contextualizar o desempenho.
-               TSB muito negativo (< -10) = atleta fatigado — performance abaixo do esperado é normal e merece nota.
-               TSB positivo (> +5) = atleta descansado — exigir mais de si era possível.
-               Ramp Rate > 8 pontos/semana = risco de overtraining — alerta preventivo obrigatório.
-            7. Tom: profissional, encorajador e honesto. Cite números reais do treino. Sem rodeios nem elogios genéricos.
+            Você é um coach de corrida de elite. Sua comunicação é curta, direta e técnica — como um treinador profissional falaria no vestiário, não como um relatório.
+            Regras absolutas:
+            - NUNCA narre o que aconteceu. O atleta sabe o que fez. Vá direto ao diagnóstico.
+            - NUNCA use frases introdutórias como "Este treino foi...", "Observa-se que...", "Em relação a...".
+            - Use números reais do treino em TODA afirmação técnica. Afirmação sem número = afirmação inválida.
+            - Cada ponto deve ter no máximo 2 linhas. Se precisar de mais, você está narrando — corte.
+            - Tom: seco, honesto, encorajador apenas quando os dados justificam.
         """.trimIndent()
 
         val prompt = """
-            Analise o treino abaixo em 5 parágrafos claros e detalhados (sem títulos, sem marcadores):
-            1. Avaliação geral: adesão ao plano e cumprimento dos objetivos.
-            2. Esforço real: GAP, elevação e splits relevantes — o que os números dizem?
-            3. Intervalos / estrutura do treino: consistência dos tiros, qualidade da recuperação, variação de pace entre séries.
-            4. Biomecânica: cadência, passada — houve fadiga ao longo do treino?
-            5. Recomendação prática e acionável para o próximo treino.
+            Responda com EXATAMENTE esta estrutura (use os títulos em negrito, sem alterar):
+
+            **EXECUÇÃO**
+            [1-2 linhas: adesão ao plano ou objetivo do treino. Só números e desvios. Ex: "Pace alvo 5:00/km, executado 5:12/km (+4%). Dentro do aceitável para Z2."]
+
+            **ESFORÇO REAL**
+            [1-2 linhas: GAP vs pace, D+, o que a inclinação explica. Se D+=0, diga em 1 linha.]
+
+            **ESTRUTURA / INTERVALOS**
+            [1-2 linhas: se houver tiros — consistência e recuperação com números. Se corrida contínua — variação de pace e o que ela indica.]
+
+            **BIOMECÂNICA**
+            [1-2 linhas: cadência, passada vs baseline. Queda >5% = alerta de fadiga mecânica. Se sem baseline, diga só o número e se é adequado para o pace.]
+
+            **PRÓXIMO TREINO**
+            [1 linha específica e acionável. Ex: "Adicione 10min ao volume. Mantenha Z2." ou "Reduza carga — TSB -18, risco real de overtraining."]
 
             ${construirContexto(corrida, wellness)}
 
-            Responda em Português BR. Use **negrito** apenas em métricas numéricas chave.
-            Seja detalhado e específico — use os dados reais do treino para cada afirmação.
+            Responda em Português BR. Use **negrito** apenas em métricas numéricas que merecem atenção.
+            Seja cirúrgico — cada palavra deve justificar sua presença.
         """.trimIndent()
 
         return gson.toJson(JsonObject().apply {
@@ -136,8 +141,8 @@ class CoachRepository {
                 })
             })
             add("generationConfig", JsonObject().apply {
-                addProperty("temperature", 0.65)
-                addProperty("maxOutputTokens", 2560)  // ~1900 palavras PT-BR
+                addProperty("temperature", 0.45)
+                addProperty("maxOutputTokens", 800)   // resposta concisa: ~5 blocos curtos
             })
         })
     }

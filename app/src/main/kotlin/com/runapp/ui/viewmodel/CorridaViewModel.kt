@@ -117,7 +117,12 @@ data class CorridaUiState(
     val erro: String? = null,
 
     // Corrida livre (sem plano de treino — só rastreamento GPS)
-    val corridaLivre: Boolean = false
+    val corridaLivre: Boolean = false,
+
+    // Distancia oficial pos-treino (suavizada, coincide com o GPX exportado).
+    // Populada no momento do save — usada pela ResumoScreen para evitar que
+    // o usuario veja um valor diferente do que estava no contador em tempo real.
+    val distanciaFinalMetros: Double = 0.0
 )
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1180,10 +1185,13 @@ class CorridaViewModel(
                 )
                 
                 result.fold(
-                    onSuccess = { arquivo ->
-                        arquivoGpxSalvo = arquivo
+                    onSuccess = { resultado ->
+                        arquivoGpxSalvo = resultado.arquivo
                         _uiState.value = _uiState.value.copy(
-                            salvamentoEstado = SalvamentoEstado.SALVO
+                            salvamentoEstado = SalvamentoEstado.SALVO,
+                            // Distancia final (suavizada) — mostrar na ResumoScreen
+                            // para que bata com o valor que Intervals/Strava vao exibir.
+                            distanciaFinalMetros = resultado.distanciaFinalMetros
                         )
                         // FIX: Só deleta o backup após confirmar que o save foi bem sucedido.
                         // Isso garante que um save parcial não apague o backup prematuramente.

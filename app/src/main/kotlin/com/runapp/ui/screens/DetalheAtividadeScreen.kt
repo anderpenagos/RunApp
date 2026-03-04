@@ -531,16 +531,28 @@ private fun EixoKm(
     ) {
         Spacer(modifier = Modifier.width(larguraEixoY))
 
-        Box(modifier = Modifier.weight(1f).height(12.dp)) {
+        // height(18.dp): texto 8sp tem ~13-14dp de altura. A altura anterior (12dp)
+        // clipava a parte superior dos caracteres — por isso os numeros apareciam
+        // cortados pela metade no eixo X. absoluteOffset posiciona horizontalmente
+        // sem sair dos limites do Box (coerceIn nas bordas).
+        BoxWithConstraints(modifier = Modifier.weight(1f).height(18.dp)) {
+            val boxWidthPx = constraints.maxWidth.toFloat()
             marcadores.forEachIndexed { i, frac ->
                 val label = labels.getOrElse(i) { "${i + 1}km" }
+                // Largura estimada do texto em px (8sp ~ 6px por caractere @ mdpi)
+                val labelWidthPx = label.length * 6f * (8f / 12f)
+                // Centro ideal do label = frac * largura total
+                // Clampear para que o label nunca saia fora do Box
+                val centerX = (frac * boxWidthPx)
+                    .coerceIn(labelWidthPx / 2f, boxWidthPx - labelWidthPx / 2f)
+                val offsetX = (centerX - labelWidthPx / 2f)
+                    .coerceAtLeast(0f)
                 Text(
                     text = label,
                     fontSize = 8.sp,
                     color = Color.White.copy(alpha = 0.35f),
                     modifier = Modifier
-                        .fillMaxWidth(frac)
-                        .wrapContentWidth(Alignment.End)
+                        .absoluteOffset(x = with(androidx.compose.ui.platform.LocalDensity.current) { offsetX.toDp() })
                 )
             }
         }
