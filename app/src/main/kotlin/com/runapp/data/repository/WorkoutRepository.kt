@@ -286,9 +286,17 @@ class WorkoutRepository(private val api: IntervalsApi) {
                     zona = detectarZonaPorPace(paceRapidoSegM, paceZones)
                     Log.d(TAG, "  %%pace via _pace: $paceMinStr–$paceMaxStr/km")
                 } else {
-                    // Sem _pace — fallback Z4
-                    val (min, max) = getPaceFallback(4); paceMinStr = min; paceMaxStr = max; zona = 4
-                    Log.w(TAG, "  %%pace sem _pace — fallback Z4")
+                    // Sem _pace — calcula via threshold derivado de Z4
+                    val thresholdMs = paceZones.getOrNull(3)?.min?.takeIf { it > 0.0 }?.let { 1.0 / it }
+                    if (thresholdMs != null) {
+                        val pctRapido = paceTarget.end ?: paceTarget.start!!
+                        val pctLento  = paceTarget.start!!
+                        paceMinStr = formatarPace(1.0 / (thresholdMs * pctRapido / 100.0))
+                        paceMaxStr = formatarPace(1.0 / (thresholdMs * pctLento  / 100.0))
+                        zona = detectarZonaPorPace(1.0 / (thresholdMs * pctRapido / 100.0), paceZones)
+                    } else {
+                        val (min, max) = getPaceFallback(4); paceMinStr = min; paceMaxStr = max; zona = 4
+                    }
                 }
             }
 

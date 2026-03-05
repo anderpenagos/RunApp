@@ -4,7 +4,9 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonDeserializationContext
 import com.google.gson.JsonDeserializer
 import com.google.gson.JsonElement
+import com.runapp.data.model.SportSetting
 import com.runapp.data.model.StepTarget
+import com.runapp.data.model.ZonesResponse
 import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -53,8 +55,23 @@ object IntervalsClient {
         }
     }
 
+    private val sportSettingDeserializer = object : JsonDeserializer<SportSetting> {
+        override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): SportSetting {
+            val o = json.asJsonObject
+            return SportSetting(
+                id            = o.get("id")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                types         = o.getAsJsonArray("types")?.mapNotNull { it.takeIf { !it.isJsonNull }?.asString } ?: emptyList(),
+                thresholdPace = o.get("threshold_pace")?.takeIf { !it.isJsonNull }?.asDouble,
+                paceUnits     = o.get("pace_units")?.takeIf { !it.isJsonNull }?.asString,
+                paceZones     = o.getAsJsonArray("pace_zones")?.mapNotNull { it.takeIf { !it.isJsonNull }?.asDouble },
+                paceZoneNames = o.getAsJsonArray("pace_zone_names")?.mapNotNull { it.takeIf { !it.isJsonNull }?.asString }
+            )
+        }
+    }
+
     private val gson = GsonBuilder()
         .registerTypeAdapter(StepTarget::class.java, stepTargetDeserializer)
+        .registerTypeAdapter(SportSetting::class.java, sportSettingDeserializer)
         .create()
 
     fun create(apiKey: String): IntervalsApi {
