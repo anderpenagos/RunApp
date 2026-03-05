@@ -30,7 +30,10 @@ data class WorkoutStep(
     @SerializedName("cadence") val cadence: StepTarget? = null,
     val text: String? = null,
     val reps: Int? = null,
-    val steps: List<WorkoutStep>? = null  // sub-passos em intervalos
+    val steps: List<WorkoutStep>? = null,  // sub-passos em intervalos
+    // Pace pré-calculado pelo Intervals.icu (presente em treinos com %pace)
+    // start=velocidade mais lenta (% menor), end=velocidade mais rápida (% maior), em m/s
+    @SerializedName("_pace") val precomputedPace: StepTarget? = null
 )
 
 /**

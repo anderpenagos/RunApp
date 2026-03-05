@@ -120,13 +120,14 @@ class WorkoutRepository(private val api: IntervalsApi) {
             if (!el.isJsonObject) return@mapNotNull null
             val o = el.asJsonObject
             WorkoutStep(
-                type     = o.get("type")?.takeIf { !it.isJsonNull }?.asString ?: "SteadyState",
-                duration = o.get("duration")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
-                pace     = parseStepTargetFromJson(o.getAsJsonObject("pace")),
-                target   = parseStepTargetFromJson(o.getAsJsonObject("power")),
-                text     = o.get("text")?.takeIf { !it.isJsonNull }?.asString,
-                reps     = o.get("reps")?.takeIf { !it.isJsonNull }?.asInt,
-                steps    = parseStepsFromJson(o.getAsJsonArray("steps"))
+                type             = o.get("type")?.takeIf { !it.isJsonNull }?.asString ?: "SteadyState",
+                duration         = o.get("duration")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+                pace             = parseStepTargetFromJson(o.getAsJsonObject("pace")),
+                target           = parseStepTargetFromJson(o.getAsJsonObject("power")),
+                text             = o.get("text")?.takeIf { !it.isJsonNull }?.asString,
+                reps             = o.get("reps")?.takeIf { !it.isJsonNull }?.asInt,
+                steps            = parseStepsFromJson(o.getAsJsonArray("steps")),
+                precomputedPace  = parseStepTargetFromJson(o.getAsJsonObject("_pace"))
             )
         }
     }
@@ -214,15 +215,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
     // Conversão de treino → passos de execução
     // ─────────────────────────────────────────────────────────────────────────
 
-    /** Extrai o threshold pace (m/s) do sport settings de corrida.
-     *  Usado para converter treinos com alvo em %pace. */
-    fun extrairThresholdPace(zonesResponse: ZonesResponse): Double? {
-        return zonesResponse.sportSettings
-            .firstOrNull { sport -> sport.types.any { it in listOf("Run", "VirtualRun", "TrailRun") } }
-            ?.thresholdPace
-    }
-
-    fun converterParaPassos(evento: WorkoutEvent, paceZones: List<PaceZone>, thresholdPaceMs: Double? = null): List<PassoExecucao> {
+    fun converterParaPassos(evento: WorkoutEvent, paceZones: List<PaceZone>): List<PassoExecucao> {
         Log.d(TAG, "=== CONVERSÃO DE TREINO ===")
         Log.d(TAG, "Evento: ${evento.name}, steps: ${evento.workoutDoc?.steps?.size}")
 
@@ -234,24 +227,21 @@ class WorkoutRepository(private val api: IntervalsApi) {
             )
         )
 
-        // Prioridade: threshold do atleta (sport settings) > threshold do doc do treino
-        val resolvedThreshold = thresholdPaceMs ?: doc.thresholdPace
-        Log.d(TAG, "converterParaPassos: thresholdPaceMs=$thresholdPaceMs doc.thresholdPace=${doc.thresholdPace} resolved=$resolvedThreshold")
-        return expandirPassos(doc.steps, paceZones, resolvedThreshold)
+        return expandirPassos(doc.steps, paceZones)
     }
 
-    private fun expandirPassos(steps: List<WorkoutStep>, paceZones: List<PaceZone>, thresholdPaceMs: Double? = null): List<PassoExecucao> {
+    private fun expandirPassos(steps: List<WorkoutStep>, paceZones: List<PaceZone>): List<PassoExecucao> {
         val resultado = mutableListOf<PassoExecucao>()
         for (step in steps) {
             if (step.reps != null && step.reps > 1 && !step.steps.isNullOrEmpty()) {
                 Log.d(TAG, "🔁 Bloco de repetição: ${step.reps}x com ${step.steps.size} sub-passos")
                 repeat(step.reps) { i ->
                     step.steps.forEach { subPasso ->
-                        resultado.add(converterStep(subPasso, paceZones, i + 1, step.reps, thresholdPaceMs))
+                        resultado.add(converterStep(subPasso, paceZones, i + 1, step.reps))
                     }
                 }
             } else {
-                resultado.add(converterStep(step, paceZones, thresholdPaceMs = thresholdPaceMs))
+                resultado.add(converterStep(step, paceZones))
             }
         }
         Log.d(TAG, "✅ Total de passos: ${resultado.size}")
@@ -262,8 +252,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
         step: WorkoutStep,
         paceZones: List<PaceZone>,
         repAtual: Int? = null,
-        repsTotal: Int? = null,
-        thresholdPaceMs: Double? = null
+        repsTotal: Int? = null
     ): PassoExecucao {
         val paceTarget = step.pace ?: step.target
         Log.d(TAG, "converterStep → type=${step.type} pace={value=${paceTarget?.value}, start=${paceTarget?.start}, end=${paceTarget?.end}, units=${paceTarget?.units}}")
@@ -285,28 +274,21 @@ class WorkoutRepository(private val api: IntervalsApi) {
             //            pace(s/km) = 1000 / velocidade
             // Percentagem maior = velocidade maior = pace MAIS RÁPIDO (menor número).
             paceTarget?.units == "%pace" && (paceTarget.start ?: 0.0) > 0.0 -> {
-                // Fallback: deriva threshold de Z4.min se não foi passado explicitamente.
-                // Z4 (índice 3) tem limite superior em 100% do threshold,
-                // então Z4.min (s/m) = thresholdSecsPerMeter → thresholdMs = 1/Z4.min
-                val thresholdDerivado = paceZones.getOrNull(3)?.min
-                    ?.takeIf { it > 0.0 }?.let { 1.0 / it }
-                val thresholdMs = thresholdPaceMs ?: thresholdDerivado
-                Log.d(TAG, "  %%pace: thresholdPaceMs=$thresholdPaceMs derivado=$thresholdDerivado usado=$thresholdMs start=${paceTarget.start} end=${paceTarget.end}")
-                if (thresholdMs != null && thresholdMs > 0.0) {
-                    val pctRapido = paceTarget.end ?: paceTarget.start!!   // % maior → mais rápido
-                    val pctLento  = paceTarget.start!!                      // % menor → mais lento
-                    val velocRapido = thresholdMs * pctRapido / 100.0
-                    val velocLento  = thresholdMs * pctLento  / 100.0
-                    val paceRapidoSegM = 1.0 / velocRapido  // s/m (menor = mais rápido)
-                    val paceLentoSegM  = 1.0 / velocLento
-                    paceMinStr = formatarPace(paceRapidoSegM)  // ex: "4:08" (mais rápido)
-                    paceMaxStr = formatarPace(paceLentoSegM)   // ex: "4:17" (mais lento)
+                val precomp = step.precomputedPace
+                if (precomp != null && (precomp.end ?: 0.0) > 0.0) {
+                    // Usa _pace pré-calculado pelo Intervals.icu (m/s)
+                    // _pace.end = velocidade mais rápida (% maior) → paceMin
+                    // _pace.start = velocidade mais lenta (% menor) → paceMax
+                    val paceRapidoSegM = 1.0 / precomp.end!!   // s/m
+                    val paceLentoSegM  = 1.0 / precomp.start!! // s/m
+                    paceMinStr = formatarPace(paceRapidoSegM)
+                    paceMaxStr = formatarPace(paceLentoSegM)
                     zona = detectarZonaPorPace(paceRapidoSegM, paceZones)
-                    Log.d(TAG, "  %pace: ${paceTarget.start}–${paceTarget.end}% → $paceMinStr–$paceMaxStr/km (threshold=${formatarPace(1.0/thresholdMs)})")
+                    Log.d(TAG, "  %%pace via _pace: $paceMinStr–$paceMaxStr/km")
                 } else {
-                    // Sem threshold disponível — fallback para Z4
+                    // Sem _pace — fallback Z4
                     val (min, max) = getPaceFallback(4); paceMinStr = min; paceMaxStr = max; zona = 4
-                    Log.w(TAG, "  %pace sem threshold — usando fallback Z4")
+                    Log.w(TAG, "  %%pace sem _pace — fallback Z4")
                 }
             }
 
@@ -378,11 +360,6 @@ class WorkoutRepository(private val api: IntervalsApi) {
 
         Log.d(TAG, "  → Final: Z$zona, $paceMinStr – $paceMaxStr")
 
-        // DEBUG TEMPORARIO: mostra unidade e threshold no nome
-        val debugThreshold = paceZones.getOrNull(3)?.min?.let { "T=${(1.0/it*1000/60).toInt()}:${((1.0/it*1000)%60).toInt()}" } ?: "T=null"
-        val debugUnits = paceTarget?.units ?: "noUnit"
-        val debugStart = paceTarget?.start?.toInt() ?: 0
-
         val nomePasso = when {
             step.type == "Warmup"   -> "Aquecimento"
             step.type == "Cooldown" -> "Desaceleração"
@@ -398,7 +375,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             paceAlvoMin = paceMinStr,
             paceAlvoMax = paceMaxStr,
             zona        = zona,
-            instrucao   = "[u=$debugUnits s=$debugStart thr=${thresholdPaceMs?.let{String.format("%.3f",it)} ?: "null"}] " + (step.text ?: gerarInstrucao(step.type, paceMinStr, paceMaxStr)),
+            instrucao   = step.text ?: gerarInstrucao(step.type, paceMinStr, paceMaxStr),
             isDescanso  = isDescanso
         )
     }

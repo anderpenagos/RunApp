@@ -4,9 +4,7 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonDeserializationContext
 import com.google.gson.JsonDeserializer
 import com.google.gson.JsonElement
-import com.runapp.data.model.SportSetting
 import com.runapp.data.model.StepTarget
-import com.runapp.data.model.ZonesResponse
 import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -55,48 +53,8 @@ object IntervalsClient {
         }
     }
 
-    private val sportSettingDeserializer = object : JsonDeserializer<SportSetting> {
-        override fun deserialize(
-            json: JsonElement,
-            typeOfT: Type,
-            context: JsonDeserializationContext
-        ): SportSetting {
-            val o = json.asJsonObject
-            val types = o.getAsJsonArray("types")
-                ?.mapNotNull { it.takeIf { !it.isJsonNull }?.asString }
-                ?: emptyList()
-            return SportSetting(
-                id            = o.get("id")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
-                types         = types,
-                thresholdPace = o.get("threshold_pace")?.takeIf { !it.isJsonNull }?.asDouble,
-                paceUnits     = o.get("pace_units")?.takeIf { !it.isJsonNull }?.asString,
-                paceZones     = o.getAsJsonArray("pace_zones")
-                                  ?.mapNotNull { it.takeIf { !it.isJsonNull }?.asDouble },
-                paceZoneNames = o.getAsJsonArray("pace_zone_names")
-                                  ?.mapNotNull { it.takeIf { !it.isJsonNull }?.asString }
-            )
-        }
-    }
-
-    private val zonesResponseDeserializer = object : JsonDeserializer<ZonesResponse> {
-        override fun deserialize(
-            json: JsonElement,
-            typeOfT: Type,
-            context: JsonDeserializationContext
-        ): ZonesResponse {
-            val o = json.asJsonObject
-            val arr = o.getAsJsonArray("sportSettings")
-                ?: o.getAsJsonArray("sport_settings")
-                ?: return ZonesResponse()
-            val settings = arr.map { context.deserialize<SportSetting>(it, SportSetting::class.java) }
-            return ZonesResponse(sportSettings = settings)
-        }
-    }
-
     private val gson = GsonBuilder()
         .registerTypeAdapter(StepTarget::class.java, stepTargetDeserializer)
-        .registerTypeAdapter(SportSetting::class.java, sportSettingDeserializer)
-        .registerTypeAdapter(ZonesResponse::class.java, zonesResponseDeserializer)
         .create()
 
     fun create(apiKey: String): IntervalsApi {
