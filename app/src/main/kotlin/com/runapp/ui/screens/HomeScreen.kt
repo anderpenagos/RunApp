@@ -3,6 +3,7 @@ package com.runapp.ui.screens
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PlayArrow
@@ -12,7 +13,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import com.runapp.util.GpsDebugLogger
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.time.LocalDate
@@ -26,9 +29,12 @@ fun HomeScreen(
     onCorridaLivre: () -> Unit,
     onVerHistorico: () -> Unit,
     onConfigurar: () -> Unit,
+    onDebugLog: () -> Unit = {},
     corridaAtiva: Boolean = false,
     onVoltarParaCorrida: () -> Unit = {}
 ) {
+    val context = LocalContext.current
+    val temLog = remember { GpsDebugLogger.existe(context) }
     val hoje = LocalDate.now()
     val formatter = DateTimeFormatter.ofPattern("EEEE, d 'de' MMMM", Locale("pt", "BR"))
     val dataFormatada = hoje.format(formatter).replaceFirstChar { it.uppercase() }
@@ -38,6 +44,11 @@ fun HomeScreen(
             TopAppBar(
                 title = { Text("RunApp 🏃", fontWeight = FontWeight.Bold) },
                 actions = {
+                    if (temLog) {
+                        IconButton(onClick = onDebugLog) {
+                            Icon(Icons.Default.BugReport, contentDescription = "Debug GPS", tint = Color(0xFFEF5350))
+                        }
+                    }
                     IconButton(onClick = onConfigurar) {
                         Icon(Icons.Default.Settings, contentDescription = "Configurações")
                     }

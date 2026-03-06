@@ -51,6 +51,7 @@ import android.os.SystemClock
 import com.google.gson.Gson
 import com.runapp.data.db.RoutePointEntity
 import com.runapp.data.db.RunDatabase
+import com.runapp.util.GpsDebugLogger
 import java.io.File
 import java.util.UUID
 
@@ -334,6 +335,7 @@ class RunningService : Service(), SensorEventListener {
                 Intent.ACTION_SCREEN_OFF -> {
                     // Registra quando a tela apagou para calcular quanto tempo ficou bloqueada
                     screenOffTimestampMs = SystemClock.elapsedRealtime()
+                    GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_OFF — última EMA=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}s/km  pace=${_paceAtual.value}  ultimasLocs=${ultimasLocalizacoes.size}")
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     if (!estaCorrendo || estaPausado) return
@@ -380,6 +382,7 @@ class RunningService : Service(), SensorEventListener {
                     // NÃO zera ultimoPaceEmaInterno — evita EMA recomeçar com valor ruim
                     // NÃO limpa bufferPace30s — preserva referência para dead reckoning
                     // NÃO seta _paceAtual = "--:--" — evita flickering no display
+                    GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_ON após ${tempoTelaApagadaMs / 1000}s — modoRecuperacaoGps=true  EMA=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}s/km  pace=${_paceAtual.value}  ultimasLocs=${ultimasLocalizacoes.size}")
                     Log.d(TAG, "📱 Tela ligada após ${tempoTelaApagadaMs / 1000}s — " +
                         "modoRecuperacaoGps ativado (EMA/buffers preservados para evitar spike de pace)")
                 }
@@ -1131,11 +1134,13 @@ class RunningService : Service(), SensorEventListener {
             SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos
         )
         if (idadeMs > 10_000L) {
+            GpsDebugLogger.log(applicationContext, "GPS", "ZUMBI descartado idade=${idadeMs}ms  speed=${location.speed}  accuracy=${location.accuracy}m")
             Log.d(TAG, "👻 Ponto GPS 'zumbi' descartado: ${idadeMs}ms de atraso (elapsedRealtimeNanos)")
             return
         }
 
         if (location.accuracy > MAX_ACCURACY_METERS) {
+            GpsDebugLogger.log(applicationContext, "GPS", "ACCURACY descartado accuracy=${location.accuracy}m  speed=${location.speed}  modoRecovery=$modoRecuperacaoGps")
             Log.d(TAG, "⚠️ Localização descartada: accuracy=${location.accuracy}m")
             return
         }
@@ -1595,6 +1600,14 @@ class RunningService : Service(), SensorEventListener {
         val paceEma = ultimoPaceEmaInterno?.let { anterior ->
             (paceBruto * alpha) + (anterior * (1.0 - alpha))
         } ?: paceBruto
+
+        // Log para diagnóstico de spike de pace pós-desbloqueio
+        if (modoRecuperacaoGps || (ultimoPaceEmaInterno != null && kotlin.math.abs(paceEma - (ultimoPaceEmaInterno ?: paceEma)) > 60)) {
+            GpsDebugLogger.log(applicationContext, "PACE",
+                "distJanela=${"%.1f".format(distanciaJanela)}m  tempoJanela=${"%.1f".format(tempoJanelaSegundos)}s  " +
+                "paceBruto=${"%.0f".format(paceBruto)}  EMA_antes=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}  " +
+                "EMA_depois=${"%.0f".format(paceEma)}  pontosJanela=${pontosJanela.size}  modoRecovery=$modoRecuperacaoGps")
+        }
 
         ultimoPaceEmaInterno = paceEma
         _paceAtual.value = formatarPace(paceEma)
