@@ -1838,7 +1838,7 @@ class RunningService : Service(), SensorEventListener {
         const val ACTION_SHOW_RUNNING = "ACTION_SHOW_RUNNING_SCREEN"
         const val EXTRA_EVENT_ID = "EVENT_ID"
         
-        const val MAX_ACCURACY_METERS = 25f       // descarta da UI
+        const val MAX_ACCURACY_METERS = 35f       // descarta da UI (aumentado de 25→35 para reduzir gaps em GPS urbano)
         const val ROOM_ACCURACY_METERS = 15f      // descarta da persistência
     }
 }
