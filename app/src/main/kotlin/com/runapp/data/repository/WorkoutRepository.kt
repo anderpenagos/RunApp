@@ -503,6 +503,26 @@ class WorkoutRepository(private val api: IntervalsApi) {
             val tempoStr = if (tempoH > 0) "%d:%02d:%02d".format(tempoH, tempoM, tempoS)
                            else "%02d:%02d".format(tempoM, tempoS)
 
+            // ── Pace médio oficial — calculado sobre distanciaFinal (GPS suavizado) ────
+            // CORREÇÃO: o paceMedia vindo do serviço usa _distanciaMetros (acumulado via
+            // Doppler + Haversine bruto), que pode divergir até ~20% da distância GPS
+            // suavizada exibida ao usuário. Isso causava exibição de pace absurdo no
+            // histórico (ex: 5:55 real mostrado como 7:27).
+            // A solução é sempre recalcular o pace a partir dos valores oficiais
+            // (distanciaFinal e tempoSegundos) que são exibidos na mesma tela,
+            // garantindo coerência: distância / tempo / pace sempre consistentes.
+            val paceMediaOficial = run {
+                val paceSegKm = (tempoSegundos.toDouble() / distanciaFinal) * 1000.0
+                if (paceSegKm in 90.0..1200.0) {
+                    val min = (paceSegKm / 60).toInt()
+                    val seg = (paceSegKm % 60).toInt()
+                    "%d:%02d".format(min, seg)
+                } else {
+                    paceMedia // fallback para o valor do serviço em casos extremos
+                }
+            }
+            Log.d(TAG, "Pace: servico=$paceMedia | oficial=$paceMediaOficial (${tempoSegundos}s / ${distanciaFinal.toInt()}m)")
+
             // ── Métricas avançadas para o dashboard ────────────────────────
             val ganhoElevacao = calcularGanhoElevacao(rota)
             val cadenciaMedia = calcularCadenciaMedia(rota)
@@ -529,7 +549,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             val meta = com.runapp.data.model.CorridaHistorico(
                 nome = nomeAtividade, data = dataHoraInicio.toString(),
                 distanciaKm = distanciaFinal / 1000.0, tempoFormatado = tempoStr,
-                paceMedia = paceMedia, pontosGps = rota.size, arquivoGpx = arquivo.name,
+                paceMedia = paceMediaOficial, pontosGps = rota.size, arquivoGpx = arquivo.name,
                 ganhoElevacaoM = ganhoElevacao,
                 cadenciaMedia = cadenciaMedia,
                 splitsParciais = splits,

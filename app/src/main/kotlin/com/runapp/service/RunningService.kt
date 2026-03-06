@@ -351,13 +351,37 @@ class RunningService : Service(), SensorEventListener {
                         return
                     }
 
+                    // FIX: Ativa apenas o filtro de salto de posição (modoRecuperacaoGps).
+                    //
+                    // BUG ANTERIOR: limpar ultimasLocalizacoes + ultimoPaceEmaInterno +
+                    // bufferPace30s causava um spike de pace no desbloqueio da tela.
+                    //
+                    // Mecanismo do bug:
+                    //  1. Buffers zerados → cálculo de pace começa do zero.
+                    //  2. O FusedLocationProvider entrega 1-2 pontos com posição
+                    //     "travada" (GPS chipset reativando) — distância ≈ 0, mas o
+                    //     tempo já avança 1-2s.
+                    //  3. paceBruto = tempoJanela / distanciaJanela → valor ENORME
+                    //     (ex: 700 s/km) torna-se o valor semente da EMA.
+                    //  4. Com alpha = 0.25, a EMA demora 15-20s para convergir ao
+                    //     pace real → spike visível no display E gravado como
+                    //     paceNoPonto nos pontos da rota → aparece no gráfico e
+                    //     no mapa do histórico.
+                    //
+                    // Solução: o GPS estava funcionando durante a tela apagada
+                    // (comprovado pelo pace correto anunciado pelo AudioCoach).
+                    // Preservar a EMA e o histórico de localizações garante que o
+                    // pace continue estável ao desbloquear. O modoRecuperacaoGps
+                    // (filtro de salto de posição) é suficiente para rejeitar
+                    // qualquer drift de GPS no momento do wake-up.
                     modoRecuperacaoGps = true
                     contadorPontosRecuperacao = 0
-                    ultimasLocalizacoes.clear()
-                    ultimoPaceEmaInterno = null
-                    bufferPace30s.clear()
-                    _paceAtual.value = "--:--"
-                    Log.d(TAG, "📱 Tela ligada após ${tempoTelaApagadaMs / 1000}s — modo GPS recovery ativado")
+                    // NÃO limpa ultimasLocalizacoes — mantém a janela de 12s de dados bons
+                    // NÃO zera ultimoPaceEmaInterno — evita EMA recomeçar com valor ruim
+                    // NÃO limpa bufferPace30s — preserva referência para dead reckoning
+                    // NÃO seta _paceAtual = "--:--" — evita flickering no display
+                    Log.d(TAG, "📱 Tela ligada após ${tempoTelaApagadaMs / 1000}s — " +
+                        "modoRecuperacaoGps ativado (EMA/buffers preservados para evitar spike de pace)")
                 }
             }
         }
@@ -995,8 +1019,33 @@ class RunningService : Service(), SensorEventListener {
                 getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_GPS_ERROR_ID)
                 atualizarNotificacao()
             }
-            result.lastLocation?.let { location ->
-                processarNovaLocalizacao(location)
+
+            // FIX CRÍTICO: processar TODAS as localizações do lote, não só a última.
+            //
+            // O FusedLocationProvider opera em "batch mode" quando a tela está bloqueada:
+            // acumula pontos GPS e os entrega todos de uma vez quando a tela é desbloqueada.
+            // Ex: tela bloqueada por 8s → 8 pontos chegam simultaneamente em result.locations.
+            //
+            // Usando apenas result.lastLocation (posição correta mas sem o percurso intermediário):
+            //   - ultimasLocalizacoes recebe 1 ponto onde deveria ter recebido 8
+            //   - calcularPaceAtual vê: distancia_do_salto / 1s = velocidade impossível
+            //     Ex: salto de 13m em 1s = 13 m/s → passa do filtro 6.5 m/s → "--:--" ou spike
+            //   - primeiropontoAposGap=false porque não havia "gap" detectado (GPS estava ok),
+            //     então a distância do salto É somada ao total → distância inflada
+            //
+            // Processando result.locations (lista ordenada cronologicamente):
+            //   - Cada ponto é processado em ordem, com deltaMs real entre pontos consecutivos
+            //   - ultimasLocalizacoes constrói a janela corretamente (8 pontos, 8s de dados)
+            //   - calcularPaceAtual vê velocidades normais em cada segmento
+            //   - Distância acumulada correta (cada salto de ~1.6m, não um salto de 13m)
+            val locations = result.locations
+            if (locations.isNotEmpty()) {
+                if (locations.size > 1) {
+                    Log.d(TAG, "📦 Lote de ${locations.size} pontos GPS — processando em ordem")
+                }
+                for (location in locations) {
+                    processarNovaLocalizacao(location)
+                }
             }
         }
 
@@ -1502,11 +1551,30 @@ class RunningService : Service(), SensorEventListener {
 
         var distanciaJanela = 0.0
         for (i in 1 until pontosJanela.size) {
+            val dtMs = (pontosJanela[i].time - pontosJanela[i - 1].time).coerceAtLeast(100L)
+            val dtS  = dtMs / 1000.0
             val d = calcularDistancia(
                 pontosJanela[i - 1].latitude, pontosJanela[i - 1].longitude,
                 pontosJanela[i].latitude,     pontosJanela[i].longitude
             )
-            if (d > 0.5) distanciaJanela += d
+            // FIX: descarta segmentos fora da faixa de velocidade humana (0.5m..6.5 m/s).
+            //
+            // Bug real: ao desbloquear a tela, o GPS chipset reativa e entrega 1-2 pontos
+            // com pequeno drift de posicao (~5-15m a frente). Esse drift nao chega a 11 m/s
+            // (filtro modoRecuperacaoGps), mas na janela curta apos limpar o buffer:
+            //   distJanela = drift(~10m) + real(~2.8m) = ~12.8m em 1s
+            //   paceBruto = (1/12.8)*1000 = 78 s/km = 1:18/km — ultraveloz, passa no filtro >90
+            // Isso vira semente da EMA e o pace exibido fica muito rapido por 15-20s,
+            // ficando registrado no grafico e no mapa do historico.
+            //
+            // Filtrando por velocidade do segmento (nao apenas d > 0.5):
+            //   - Descarta drift GPS (veloc > 6.5 m/s = ~2:34/km)
+            //   - Descarta GPS travado (d < 0.5m)
+            // Apenas o segmento outlier e descartado; o tempo total da janela permanece
+            // correto (last.time - first.time) pois esses pontos ainda estao na janela.
+            val velocidadeSegMs = d / dtS
+            if (velocidadeSegMs > 6.5 || d < 0.5) continue
+            distanciaJanela += d
         }
 
         val tempoJanelaSegundos = (pontosJanela.last().time - pontosJanela.first().time) / 1000.0
