@@ -29,7 +29,7 @@ interface IntervalsApi {
         @Path("eventId") eventId: Long
     ): ResponseBody
 
-    @GET("athlete/{id}/zones")
+    @GET("athlete/{id}")
     suspend fun getZones(
         @Path("id") athleteId: String
     ): ZonesResponse

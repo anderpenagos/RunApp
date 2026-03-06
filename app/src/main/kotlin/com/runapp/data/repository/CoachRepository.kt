@@ -142,7 +142,14 @@ class CoachRepository {
             })
             add("generationConfig", JsonObject().apply {
                 addProperty("temperature", 0.45)
-                addProperty("maxOutputTokens", 2000)  // teto de segurança — o prompt controla a concisao
+                addProperty("maxOutputTokens", 4096)  // margem para treinos longos com muitos splits
+                // Desativa os "thinking tokens" do Gemini 2.5 Flash.
+                // Por padrão, o modelo usa tokens internos de raciocínio que consomem
+                // do mesmo budget de maxOutputTokens — causando truncação na resposta real.
+                // Para feedback estruturado e conciso, o thinking é desnecessário.
+                add("thinkingConfig", JsonObject().apply {
+                    addProperty("thinkingBudget", 0)
+                })
             })
         })
     }
