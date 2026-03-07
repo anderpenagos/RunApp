@@ -328,6 +328,7 @@ class RunningService : Service(), SensorEventListener {
     // Ativando modoRecuperacaoGps aqui, o filtro de velocidade já existente
     // descarta esses pontos silenciosamente até o GPS estabilizar.
     private var screenOffTimestampMs = 0L
+    private var screenOnTimestampMs  = 0L   // último SCREEN_ON — para logar os 30s seguintes
 
     private val screenOnReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -378,13 +379,15 @@ class RunningService : Service(), SensorEventListener {
                     // qualquer drift de GPS no momento do wake-up.
                     modoRecuperacaoGps = true
                     contadorPontosRecuperacao = 0
-                    // NÃO limpa ultimasLocalizacoes — mantém a janela de 12s de dados bons
-                    // NÃO zera ultimoPaceEmaInterno — evita EMA recomeçar com valor ruim
-                    // NÃO limpa bufferPace30s — preserva referência para dead reckoning
-                    // NÃO seta _paceAtual = "--:--" — evita flickering no display
-                    GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_ON após ${tempoTelaApagadaMs / 1000}s — modoRecuperacaoGps=true  EMA=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}s/km  pace=${_paceAtual.value}  ultimasLocs=${ultimasLocalizacoes.size}")
-                    Log.d(TAG, "📱 Tela ligada após ${tempoTelaApagadaMs / 1000}s — " +
-                        "modoRecuperacaoGps ativado (EMA/buffers preservados para evitar spike de pace)")
+                    screenOnTimestampMs = SystemClock.elapsedRealtime()
+                    // Limpa buffers de pace — pontos acumulados durante o bloqueio
+                    // refletem velocidade diferente da atual e distorcem o cálculo.
+                    // O pace mostra "--:--" por ~10s até acumular pontos novos.
+                    ultimasLocalizacoes.clear()
+                    ultimoPaceEmaInterno = null
+                    _paceAtual.value = "--:--"
+                    GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_ON após ${tempoTelaApagadaMs / 1000}s — modoRecuperacaoGps=true  buffers limpos  EMA zerada")
+                    Log.d(TAG, "📱 Tela ligada após ${tempoTelaApagadaMs / 1000}s — buffers limpos para evitar spike de pace")
                 }
             }
         }
@@ -1578,7 +1581,14 @@ class RunningService : Service(), SensorEventListener {
             // Apenas o segmento outlier e descartado; o tempo total da janela permanece
             // correto (last.time - first.time) pois esses pontos ainda estao na janela.
             val velocidadeSegMs = d / dtS
-            if (velocidadeSegMs > 6.5 || d < 0.5) continue
+            if (velocidadeSegMs > 6.5 || d < 0.5) {
+                val msDesdeOn = if (screenOnTimestampMs > 0) SystemClock.elapsedRealtime() - screenOnTimestampMs else Long.MAX_VALUE
+                if (msDesdeOn < 30_000L) {
+                    GpsDebugLogger.log(applicationContext, "PACE",
+                        "+${"%.1f".format(msDesdeOn/1000.0)}s  SEG_DESCARTADO d=${"%.1f".format(d)}m  dt=${"%.1f".format(dtS)}s  vel=${"%.1f".format(velocidadeSegMs)}m/s")
+                }
+                continue
+            }
             distanciaJanela += d
         }
 
@@ -1601,10 +1611,13 @@ class RunningService : Service(), SensorEventListener {
             (paceBruto * alpha) + (anterior * (1.0 - alpha))
         } ?: paceBruto
 
-        // Log para diagnóstico de spike de pace pós-desbloqueio
-        if (modoRecuperacaoGps || (ultimoPaceEmaInterno != null && kotlin.math.abs(paceEma - (ultimoPaceEmaInterno ?: paceEma)) > 60)) {
+        // Log para diagnóstico de spike de pace pós-desbloqueio.
+        // Captura TODOS os cálculos nos 30s após SCREEN_ON — não só os com delta grande.
+        val msDesdeScreenOn = if (screenOnTimestampMs > 0)
+            SystemClock.elapsedRealtime() - screenOnTimestampMs else Long.MAX_VALUE
+        if (msDesdeScreenOn < 30_000L) {
             GpsDebugLogger.log(applicationContext, "PACE",
-                "distJanela=${"%.1f".format(distanciaJanela)}m  tempoJanela=${"%.1f".format(tempoJanelaSegundos)}s  " +
+                "+${"%.1f".format(msDesdeScreenOn / 1000.0)}s  distJanela=${"%.1f".format(distanciaJanela)}m  tempoJanela=${"%.1f".format(tempoJanelaSegundos)}s  " +
                 "paceBruto=${"%.0f".format(paceBruto)}  EMA_antes=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}  " +
                 "EMA_depois=${"%.0f".format(paceEma)}  pontosJanela=${pontosJanela.size}  modoRecovery=$modoRecuperacaoGps")
         }
