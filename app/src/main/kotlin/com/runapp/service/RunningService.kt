@@ -301,6 +301,11 @@ class RunningService : Service(), SensorEventListener {
         get() = ultimoPaceEmaInterno
         set(value) { ultimoPaceEmaInterno = value }
 
+    // Último pace válido para gravar no gráfico — nunca zerado no SCREEN_ON.
+    // Garante que pontos pós-desbloqueio não criem gap no gráfico (pace=0).
+    // Só é atualizado quando há um pace real calculado.
+    private var ultimoPaceValidoGrafico: Double = 0.0
+
     // Timestamps — DOIS conjuntos por design intencional:
     // *Wall clock* (currentTimeMillis): para exibir horário de início ("às 08:00")
     // *ElapsedRealtime* (SystemClock): monotônico, imune a NTP/fuso/DST — para duração
@@ -385,6 +390,7 @@ class RunningService : Service(), SensorEventListener {
                     // O pace mostra "--:--" por ~10s ate acumular pontos novos.
                     ultimasLocalizacoes.clear()
                     ultimoPaceEmaInterno = null
+                    bufferPace30s.clear()
                     _paceAtual.value = "--:--"
                     GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_ON apos ${tempoTelaApagadaMs / 1000}s - modoRecuperacaoGps=true buffers limpos EMA zerada")
                     Log.d(TAG, "Tela ligada apos ${tempoTelaApagadaMs / 1000}s - buffers limpos para evitar spike de pace")
@@ -1197,7 +1203,7 @@ class RunningService : Service(), SensorEventListener {
                 val ultimoValido = rota.last()
                 val pontoAncora = ultimoValido.copy(
                     tempo           = agoraRecovery - 1L,
-                    paceNoPonto     = 0.0,
+                    paceNoPonto     = ultimoPaceValidoGrafico,
                     cadenciaNoPonto = 0
                 )
                 rota.add(pontoAncora)
@@ -1268,7 +1274,7 @@ class RunningService : Service(), SensorEventListener {
             alt = location.altitude,
             tempo = agora,
             accuracy = location.accuracy,
-            paceNoPonto = ultimoPaceEma ?: 0.0,
+            paceNoPonto = ultimoPaceValidoGrafico,
             cadenciaNoPonto = _cadencia.value
         )
 
@@ -1623,7 +1629,17 @@ class RunningService : Service(), SensorEventListener {
                 "EMA_depois=${"%.0f".format(paceEma)}  pts=${pontosJanela.size}  acc=[$accuracies]")
         }
 
+        // Quarentena de 3s após SCREEN_ON: GPS ainda estabilizando,
+        // paceBruto pode estar distorcido. Atualiza EMA internamente
+        // mas não exibe no display nem grava no grafico ainda.
+        if (msDesdeScreenOn < 3_000L) {
+            ultimoPaceEmaInterno = paceEma
+            _paceAtual.value = "--:--"
+            return
+        }
+
         ultimoPaceEmaInterno = paceEma
+        ultimoPaceValidoGrafico = paceEma  // atualiza referencia para o grafico
         _paceAtual.value = formatarPace(paceEma)
     }
 
