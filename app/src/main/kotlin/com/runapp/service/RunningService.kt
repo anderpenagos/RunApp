@@ -1616,10 +1616,11 @@ class RunningService : Service(), SensorEventListener {
         val msDesdeScreenOn = if (screenOnTimestampMs > 0)
             SystemClock.elapsedRealtime() - screenOnTimestampMs else Long.MAX_VALUE
         if (msDesdeScreenOn < 30_000L) {
+            val accuracies = pontosJanela.joinToString(",") { "%.0f".format(it.accuracy) }
             GpsDebugLogger.log(applicationContext, "PACE",
                 "+${"%.1f".format(msDesdeScreenOn / 1000.0)}s  distJanela=${"%.1f".format(distanciaJanela)}m  tempoJanela=${"%.1f".format(tempoJanelaSegundos)}s  " +
                 "paceBruto=${"%.0f".format(paceBruto)}  EMA_antes=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}  " +
-                "EMA_depois=${"%.0f".format(paceEma)}  pontosJanela=${pontosJanela.size}  modoRecovery=$modoRecuperacaoGps")
+                "EMA_depois=${"%.0f".format(paceEma)}  pts=${pontosJanela.size}  acc=[$accuracies]")
         }
 
         ultimoPaceEmaInterno = paceEma
