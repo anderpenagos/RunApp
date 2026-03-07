@@ -1,7 +1,7 @@
 package com.runapp.data.model
 
 /**
- * Representa  uma  corrida salva localmente no dispositivo.
+ * Representa uma  corrida salva localmente no dispositivo.
  *
  * Os campos são lidos do arquivo de metadados (.json) que é gravado
  * junto com o arquivo GPX em cada corrida concluída.
