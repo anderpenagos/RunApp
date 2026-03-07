@@ -12,7 +12,9 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.autofill.AutofillType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -21,6 +23,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.runapp.ui.viewmodel.ConfigViewModel
+import com.runapp.util.autofill
 
 @Composable
 fun ConfigScreen(
@@ -67,7 +70,12 @@ fun ConfigScreen(
                 Text("intervals.icu → Settings → Developer Settings → Athlete ID")
             },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .autofill(
+                    autofillTypes = listOf(AutofillType.Username),
+                    onFill = viewModel::onAthleteIdChange
+                )
         )
 
         // Campo API Key
@@ -91,7 +99,12 @@ fun ConfigScreen(
                 Text("intervals.icu → Settings → Developer Settings → API Key")
             },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .autofill(
+                    autofillTypes = listOf(AutofillType.Password),
+                    onFill = viewModel::onApiKeyChange
+                )
         )
 
         // Configurações Gerais
