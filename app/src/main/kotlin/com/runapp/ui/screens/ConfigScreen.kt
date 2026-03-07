@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.sp
 import com.runapp.ui.viewmodel.ConfigViewModel
 import com.runapp.util.autofill
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun ConfigScreen(
     viewModel: ConfigViewModel,
