@@ -380,24 +380,14 @@ class RunningService : Service(), SensorEventListener {
                     modoRecuperacaoGps = true
                     contadorPontosRecuperacao = 0
                     screenOnTimestampMs = SystemClock.elapsedRealtime()
-<<<<<<< HEAD
-                    // Limpa buffers de pace — pontos acumulados durante o bloqueio
-                    // refletem velocidade diferente da atual e distorcem o cálculo.
-                    // O pace mostra "--:--" por ~10s até acumular pontos novos.
+                    // Limpa buffers de pace: pontos acumulados durante o bloqueio
+                    // refletem velocidade diferente da atual e distorcem o calculo.
+                    // O pace mostra "--:--" por ~10s ate acumular pontos novos.
                     ultimasLocalizacoes.clear()
                     ultimoPaceEmaInterno = null
                     _paceAtual.value = "--:--"
-                    GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_ON após ${tempoTelaApagadaMs / 1000}s — modoRecuperacaoGps=true  buffers limpos  EMA zerada")
-                    Log.d(TAG, "📱 Tela ligada após ${tempoTelaApagadaMs / 1000}s — buffers limpos para evitar spike de pace")
-=======
-                    // NÃO limpa ultimasLocalizacoes — mantém a janela de 12s de dados bons
-                    // NÃO zera ultimoPaceEmaInterno — evita EMA recomeçar com valor ruim
-                    // NÃO limpa bufferPace30s — preserva referência para dead reckoning
-                    // NÃO seta _paceAtual = "--:--" — evita flickering no display
-                    GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_ON após ${tempoTelaApagadaMs / 1000}s — modoRecuperacaoGps=true  EMA=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}s/km  pace=${_paceAtual.value}  ultimasLocs=${ultimasLocalizacoes.size}")
-                    Log.d(TAG, "📱 Tela ligada após ${tempoTelaApagadaMs / 1000}s — " +
-                        "modoRecuperacaoGps ativado (EMA/buffers preservados para evitar spike de pace)")
->>>>>>> e636e2292ce6d9b9e547868a1347570cbbf00e7f
+                    GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_ON apos ${tempoTelaApagadaMs / 1000}s - modoRecuperacaoGps=true buffers limpos EMA zerada")
+                    Log.d(TAG, "Tela ligada apos ${tempoTelaApagadaMs / 1000}s - buffers limpos para evitar spike de pace")
                 }
             }
         }
