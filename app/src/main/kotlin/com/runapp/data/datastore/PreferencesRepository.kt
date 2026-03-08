@@ -5,7 +5,9 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -27,6 +29,20 @@ class PreferencesRepository(private val context: Context) {
         // técnica). Trechos planos e descidas suaves recebem apenas o pace, sem análise
         // de esforço ajustado. Ideal para quem prefere menos informação em corridas simples.
         val GAP_TELEMETRIA_REDUZIDA   = booleanPreferencesKey("gap_telemetria_reduzida")
+
+        // Controles de feedback de áudio durante a corrida.
+        // Todos ativos por padrão: usuário novo recebe a experiência completa
+        // e pode reduzir conforme preferir.
+        val AUDIO_MASTER_ENABLED  = booleanPreferencesKey("audio_master_enabled")
+        val AUDIO_PACE_ALERTS     = booleanPreferencesKey("audio_pace_alerts")
+        val AUDIO_SPLITS_KM       = booleanPreferencesKey("audio_splits_km")
+
+        // Intervalo dos splits de áudio em metros (500, 1000 ou 2000).
+        val SPLIT_INTERVALO_METROS = intPreferencesKey("split_intervalo_metros")
+
+        // Conjunto de flags que define quais dados são falados no split.
+        // Valores possíveis: "distancia", "tempo", "pace_atual", "pace_medio"
+        val SPLIT_DADOS_FLAGS      = stringSetPreferencesKey("split_dados_flags")
 
         // Cache das zonas de pace do Intervals.icu — persistido em JSON para sobreviver
         // a process death. Atualizado toda vez que zonas são buscadas com sucesso.
@@ -65,6 +81,50 @@ class PreferencesRepository(private val context: Context) {
         context.dataStore.edit { prefs ->
             prefs[GAP_TELEMETRIA_REDUZIDA] = enabled
         }
+    }
+
+    // ── Controles de áudio ───────────────────────────────────────────────────
+
+    val audioMasterEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[AUDIO_MASTER_ENABLED] ?: true
+    }
+
+    val audioPaceAlerts: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[AUDIO_PACE_ALERTS] ?: true
+    }
+
+    val audioSplitsKm: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[AUDIO_SPLITS_KM] ?: true
+    }
+
+    // Default: 1000m (1 km)
+    val splitIntervaloMetros: Flow<Int> = context.dataStore.data.map { prefs ->
+        prefs[SPLIT_INTERVALO_METROS] ?: 1000
+    }
+
+    // Default: distância + ritmo médio — informação mínima útil sem sobrecarregar
+    val splitDadosFlags: Flow<Set<String>> = context.dataStore.data.map { prefs ->
+        prefs[SPLIT_DADOS_FLAGS] ?: setOf("distancia", "pace_medio")
+    }
+
+    suspend fun setAudioMasterEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs -> prefs[AUDIO_MASTER_ENABLED] = enabled }
+    }
+
+    suspend fun setAudioPaceAlerts(enabled: Boolean) {
+        context.dataStore.edit { prefs -> prefs[AUDIO_PACE_ALERTS] = enabled }
+    }
+
+    suspend fun setAudioSplitsKm(enabled: Boolean) {
+        context.dataStore.edit { prefs -> prefs[AUDIO_SPLITS_KM] = enabled }
+    }
+
+    suspend fun setSplitIntervaloMetros(metros: Int) {
+        context.dataStore.edit { prefs -> prefs[SPLIT_INTERVALO_METROS] = metros }
+    }
+
+    suspend fun setSplitDadosFlags(flags: Set<String>) {
+        context.dataStore.edit { prefs -> prefs[SPLIT_DADOS_FLAGS] = flags }
     }
 
     suspend fun saveCredentials(apiKey: String, athleteId: String) {
