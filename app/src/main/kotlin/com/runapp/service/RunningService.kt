@@ -46,6 +46,7 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 import android.os.Build
+import android.os.Handler
 import android.content.pm.ServiceInfo
 import android.os.SystemClock
 import com.google.gson.Gson
@@ -151,8 +152,44 @@ class RunningService : Service(), SensorEventListener {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
-    
-    private val rota = mutableListOf<LatLngPonto>()
+
+    // ── Buffer Circular de Rota ───────────────────────────────────────────────
+    // Mantém apenas os últimos BUFFER_MAX_PONTOS em RAM (≈ 5 minutos a 1pt/s).
+    // Room persiste TODOS os pontos → consumo de memória constante em qualquer
+    // distância (5k, maratona, ultramaratona de 24h) → previne ANR em mid-range.
+    //
+    // getRotaCompleta() faz merge Room + buffer para GPX export e tela de resumo.
+    // _rotaAtual emite apenas o buffer (trecho recente → suficiente para o mapa).
+    private val rota = ArrayDeque<LatLngPonto>()
+    private val BUFFER_MAX_PONTOS = 300          // ~5 minutos de buffer em RAM
+    private var rotaTotalPontos   = 0            // contador total (não o tamanho do buffer)
+
+    /** Adiciona ponto ao buffer circular; pontos mais antigos são descartados da RAM (já estão no Room). */
+    private fun adicionarPontoRota(ponto: LatLngPonto) {
+        rota.addLast(ponto)
+        rotaTotalPontos++
+        if (rota.size > BUFFER_MAX_PONTOS) rota.removeFirst()
+    }
+
+    /**
+     * Retorna a rota COMPLETA: Room (histórico) + buffer RAM (últimos 5min).
+     *
+     * Fence por timestamp: garante que nenhum ponto seja duplicado no limiar
+     * entre o que foi persistido e o que ainda está em memória.
+     * sortedBy { tempo }: protege contra inserções fora de ordem por latência de IO.
+     */
+    suspend fun getRotaCompletaComRoom(): List<LatLngPonto> = withContext(Dispatchers.IO) {
+        try {
+            val pontosRoom   = database.routePointDao().getSessionPoints(sessionId)
+                .map { it.toLatLngPonto() }
+            val ultimoTempo  = pontosRoom.lastOrNull()?.tempo ?: 0L
+            val pontosBuffer = rota.toList().filter { it.tempo > ultimoTempo }
+            (pontosRoom + pontosBuffer).sortedBy { it.tempo }
+        } catch (e: Exception) {
+            Log.e(TAG, "⚠️ Falha no merge Room+buffer", e)
+            rota.toList()  // fallback para o buffer em RAM
+        }
+    }
     private val ultimasLocalizacoes = mutableListOf<Location>()
 
     private var janelaAtualSegundos = 12
@@ -178,7 +215,7 @@ class RunningService : Service(), SensorEventListener {
     fun getIndexPassoAtivo(): Int = indexPassoAtivo
     fun isCorrendo(): Boolean = estaCorrendo
     fun isPausado(): Boolean = estaPausado
-    fun getRotaCompleta(): List<LatLngPonto> = rota.toList()
+    fun getRotaCompleta(): List<LatLngPonto> = rota.toList()   // buffer RAM (trecho recente)
     fun getSessionId(): String = sessionId
 
     fun pularPasso() {
@@ -249,7 +286,23 @@ class RunningService : Service(), SensorEventListener {
     private var kalmanLat: Double = 0.0
     private var kalmanLng: Double = 0.0
     private var kalmanVariancia: Float = -1f
-    private val KALMAN_Q = 3.0f
+
+    // ── Kalman Q Dinâmico ─────────────────────────────────────────────────────
+    // Q (ruído de processo) controla o equilíbrio entre confiança no modelo de
+    // movimento vs. confiança na medição GPS. Com Q fixo, o filtro é igualmente
+    // "rígido" com GPS excelente (5m) e GPS degradado (30m).
+    //
+    // Lógica: GPS ruim → confiar mais no modelo cinético (inércia do corredor).
+    //   accuracy < 8m  → Q=2.0  (GPS limpo: deixa a medição ter mais peso)
+    //   accuracy 8–20m → Q=3.0  (padrão)
+    //   accuracy 20–35m→ Q=6.0  (sinal degradado: aumenta inércia do filtro)
+    //   accuracy > 35m → Q=10.0 (urban canyon: filtro quase só usa velocidade)
+    private fun kalmanQDinamico(accuracy: Float): Float = when {
+        accuracy < 8f  -> 2.0f
+        accuracy < 20f -> 3.0f
+        accuracy < 35f -> 6.0f
+        else           -> 10.0f
+    }
 
     private var timestampVoltouDoGap = 0L
     private val KALMAN_REENTRY_MS = 3_000L
@@ -266,7 +319,7 @@ class RunningService : Service(), SensorEventListener {
         }
 
         val deltaS = (deltaMs / 1000.0f).coerceAtLeast(0.1f)
-        kalmanVariancia += KALMAN_Q * deltaS
+        kalmanVariancia += kalmanQDinamico(accuracy) * deltaS
 
         val agora = System.currentTimeMillis()
         val emReentrada = timestampVoltouDoGap > 0 && (agora - timestampVoltouDoGap) < KALMAN_REENTRY_MS
@@ -439,6 +492,18 @@ class RunningService : Service(), SensorEventListener {
     private var acelerometro: Sensor? = null
     private var usandoStepDetector = false
 
+    // ── Barômetro (Fusão GPS + Pressão) ──────────────────────────────────────
+    // TYPE_PRESSURE fornece altitude relativa (variações de cm). O GPS fornece
+    // a âncora absoluta. A fusão por offset entrega o melhor dos dois mundos:
+    // baixo ruído do barômetro + estabilidade de longo prazo do GPS.
+    private var barometro: Sensor? = null
+    private var altitudeBarometricaUltima: Double? = null
+    private var baroOffset: Double = 0.0
+    private var baroOffsetInicializado = false
+    // ALPHA ultra-lento: corrige drift climático sem injetar ruído do GPS.
+    // Com erro inicial de 5m, o offset muda apenas 0.005m/ponto — invisível para a Regressão.
+    private val ALPHA_CALIBRACAO_BARO = 0.001
+
     private val timestampsPassos = ArrayDeque<Long>(50)
     private var ultimoTimestampPasso = 0L
 
@@ -460,6 +525,160 @@ class RunningService : Service(), SensorEventListener {
     private val GAP_TIMEOUT_MS      = 120_000L  // gap > 2min desativa acúmulo (túnel longo)
     private var gapTimeoutNotificado = false     // evita spam de notificação
     private var primeiropontoAposGap = false
+
+    // ── Filtro de Altitude: Mediana(5) + Regressão Linear(10) ────────────────
+    // Pipeline: altitude_bruta → Mediana(5 pts) → buffer_regressão(10 pts) → gradiente_GAP
+    //
+    // Mediana: elimina spikes pontuais do GPS vertical (Urban Canyon pode causar
+    // saltos de ±20m). Com N=5, resiste a 2 outliers simultâneos.
+    //
+    // Regressão linear (mínimos quadrados): calcula a TENDÊNCIA de altitude vs.
+    // distância, eliminando o zig-zag sistemático do GPS vertical. Vantagem vs.
+    // EMA: sem lag — a inclinação real de uma subida íngreme é detectada imediatamente,
+    // não apenas ao chegar ao topo (onde o EMA pesado finalmente converge).
+    //
+    // Buffer (altMediana, distAcum): usa distância acumulada como eixo X, garantindo
+    // que o slope da regressão seja diretamente o gradiente em m/m (adimensional).
+    private val bufferAltBruta  = ArrayDeque<Double>(5)
+    private data class AltDistPonto(val altMediana: Double, val distAcum: Double)
+    private val bufferAltDist   = ArrayDeque<AltDistPonto>(10)
+
+    /** Alimenta o pipeline de altitude e retorna a altitude mediada. */
+    private fun processarAltitude(rawAlt: Double): Double {
+        bufferAltBruta.addLast(rawAlt)
+        if (bufferAltBruta.size > 5) bufferAltBruta.removeFirst()
+
+        val arr = bufferAltBruta.toDoubleArray().also { it.sort() }
+        return arr[arr.size / 2]  // mediana — imune a outliers
+    }
+
+    /**
+     * Gradiente via regressão linear de mínimos quadrados sobre o buffer de 10 pontos.
+     *
+     * slope = (N·Σxy − Σx·Σy) / (N·Σx² − (Σx)²)
+     *   x = distância acumulada (metros) — eixo físico real, não índice temporal
+     *   y = altitude mediada (metros)
+     *   resultado = m/m = fração adimensional (ex: 0.05 = 5% de subida)
+     *
+     * Usar distância como X (não índice de ponto) garante que pontos GPS chegando
+     * em lotes (batch mode com tela bloqueada) não distorçam o gradiente.
+     */
+    private fun calcularGradienteRegressao(): Double {
+        if (bufferAltDist.size < 3) return 0.0
+        val n = bufferAltDist.size.toDouble()
+        var sumX = 0.0; var sumY = 0.0; var sumXY = 0.0; var sumX2 = 0.0
+        bufferAltDist.forEach { p ->
+            sumX  += p.distAcum;  sumY  += p.altMediana
+            sumXY += p.distAcum * p.altMediana
+            sumX2 += p.distAcum * p.distAcum
+        }
+        val denom = n * sumX2 - sumX * sumX
+        return if (denom == 0.0) 0.0
+        else ((n * sumXY - sumX * sumY) / denom).coerceIn(-0.45, 0.45)
+    }
+
+    /**
+     * Fusão GPS + Barômetro por Offset Dinâmico.
+     *
+     * Princípio: barômetro fornece VARIAÇÕES de altitude com baixo ruído (~cm),
+     * GPS fornece a ÂNCORA ABSOLUTA com estabilidade de longo prazo.
+     *
+     * offset = gpsAlt - baroAlt (calibrado no primeiro ponto e corrigido lentamente)
+     * altitudeFundida = baroAlt + offset
+     *
+     * Calibração lenta (ALPHA=0.001): corrige drift climático (frentes de pressão)
+     * sem injetar o ruído pontual do GPS na altitude calculada.
+     *
+     * Fallback: se barômetro indisponível (altitudeBarometricaUltima == null),
+     * retorna gpsAlt puro — pipeline de Mediana+Regressão continua normalmente.
+     */
+    private fun obterAltitudeFusion(gpsAlt: Double, accuracy: Float): Double {
+        val baroAlt = altitudeBarometricaUltima ?: return gpsAlt
+
+        if (!baroOffsetInicializado) {
+            baroOffset = gpsAlt - baroAlt
+            baroOffsetInicializado = true
+            Log.d(TAG, "⛰️ Baro offset calibrado: ${String.format("%.2f", baroOffset)}m (GPS=${String.format("%.1f", gpsAlt)}m, Baro=${String.format("%.1f", baroAlt)}m)")
+            return gpsAlt   // primeiro ponto: GPS é a verdade, baro ainda calibrando
+        }
+
+        // Calibração contínua: apenas quando GPS está confiável (accuracy < 15m)
+        if (accuracy < 15f) {
+            val erro = gpsAlt - (baroAlt + baroOffset)
+            baroOffset += erro * ALPHA_CALIBRACAO_BARO
+        }
+
+        return baroAlt + baroOffset
+    }
+
+    /**
+     * Reset completo da pipeline de elevação.
+     *
+     * Chamado em 3 situações:
+     *   1. iniciarRastreamento()      — nova corrida, estado limpo
+     *   2. retomarRastreamento()      — pausa pode ter mudado pressão atmosférica
+     *   3. recuperarAposProcessDeath() — processo morreu, offset desatualizado
+     *
+     * Limpar bufferAltBruta + bufferAltDist é essencial: sem limpeza, o primeiro
+     * ponto pós-pausa (com novo offset barométrico) criaria um "degrau" que a
+     * Regressão Linear interpretaria como inclinação infinita → GAP absurdo por 10s.
+     */
+    private fun resetarPipelineElevacao() {
+        baroOffsetInicializado = false
+        bufferAltBruta.clear()
+        bufferAltDist.clear()
+        Log.d(TAG, "🧹 Pipeline de elevação resetada (offset + buffers Mediana/Regressão)")
+    }
+
+    /**
+     * Único ponto de registro de sensores — garante idempotência.
+     *
+     * Realiza unregisterListener(this) preventivo antes de registrar, evitando
+     * duplicidade de callbacks em qualquer cenário de reinício parcial pelo Android.
+     *
+     * ⚠️ NÃO chamar em retomarRastreamento(): sensores permanecem registrados
+     * durante a pausa intencionalmente (barômetro deve atualizar a pressão
+     * para que o offset seja calibrado com dado fresco ao retomar).
+     *
+     * Barômetro: Handler(MainLooper) garante entrega na mesma thread do GPS,
+     * eliminando race condition com processarNovaLocalizacao.
+     */
+    private fun registrarSensores() {
+        // Unregister preventivo: garante estado limpo mesmo se chamado duas vezes
+        sensorManager.unregisterListener(this)
+
+        // 1. Barômetro — MainThread via Handler para thread safety com GPS
+        barometro?.let {
+            sensorManager.registerListener(
+                this, it, SensorManager.SENSOR_DELAY_NORMAL, Handler(Looper.getMainLooper())
+            )
+            Log.d(TAG, "⛰️ Barômetro registrado (MainThread Handler)")
+        }
+
+        // 2. Sensor de passos (hardware nativo) ou acelerômetro (fallback)
+        if (usandoStepDetector) {
+            stepDetector?.let {
+                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+                Log.d(TAG, "👟 STEP_DETECTOR registrado")
+            }
+        } else {
+            acelerometro?.let {
+                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+                Log.d(TAG, "📡 LINEAR_ACCELERATION registrado (fallback, SENSOR_DELAY_NORMAL)")
+            }
+        }
+    }
+
+    // ── Retomada Híbrida: STEP_DETECTOR + Validação GPS ──────────────────────
+    // O STEP_DETECTOR detecta movimento em ~200ms, enquanto o GPS pode demorar
+    // 2-4s para confirmar a retomada após um semáforo. Usar o sensor de passos
+    // como gatilho de retomada elimina esse gap e preserva a distância percorrida.
+    //
+    // Anti falso-positivo: janela deslizante de 3s (não contador absoluto).
+    // Passos acumulados ao longo de 2min de semáforo são automaticamente
+    // descartados — apenas passos dos últimos 3 segundos contam.
+    private val timestampsPassosAutoPause = ArrayDeque<Long>(10)
+    private var ultimaLocalizacaoParaAutoPause: Location? = null
 
     // ── Buffer de pace dos últimos 30s ────────────────────────────────────────
     private data class PaceSnapshot(val timestampMs: Long, val paceSegKm: Double)
@@ -592,6 +811,14 @@ class RunningService : Service(), SensorEventListener {
             }
         }
 
+        // Barômetro: fusão com GPS para altitude de alta fidelidade
+        barometro = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
+        if (barometro != null) {
+            Log.d(TAG, "⛰️ Barômetro disponível — fusão GPS/Baro ativa")
+        } else {
+            Log.i(TAG, "📊 Barômetro não disponível — usando altitude GPS pura (Mediana + Regressão)")
+        }
+
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
@@ -662,7 +889,24 @@ class RunningService : Service(), SensorEventListener {
                     .getSessionPoints(checkpoint.sessionId)
                     .map { it.toLatLngPonto() }
             }
-            rota.addAll(pontosRecuperados)
+            // Buffer circular: carrega apenas os últimos BUFFER_MAX_PONTOS em RAM.
+            // Room já tem a rota completa — o buffer é só para operações em tempo real.
+            rotaTotalPontos = pontosRecuperados.size
+            val pontosParaBuffer = if (pontosRecuperados.size > BUFFER_MAX_PONTOS)
+                pontosRecuperados.takeLast(BUFFER_MAX_PONTOS) else pontosRecuperados
+            rota.clear()
+            rota.addAll(pontosParaBuffer)
+            // Reconstrói buffer de altitude com os últimos pontos disponíveis
+            // resetarPipelineElevacao() garante estado limpo; buffers serão
+            // reaquecidos pelos pontos históricos abaixo antes de retomar o GPS ao vivo.
+            resetarPipelineElevacao()
+            timestampsPassosAutoPause.clear()
+            ultimaLocalizacaoParaAutoPause = null
+            // Reaquece buffers de regressão com pontos históricos (sem calcular gradiente)
+            pontosParaBuffer.takeLast(10).forEach { p ->
+                val medianed = processarAltitude(p.alt)
+                bufferAltDist.addLast(AltDistPonto(medianed, _distanciaMetros.value))
+            }
             if (pontosRecuperados.isNotEmpty()) {
                 _rotaAtual.value = rota.toList()
                 _posicaoAtual.value = pontosRecuperados.last()
@@ -695,11 +939,7 @@ class RunningService : Service(), SensorEventListener {
             iniciarForeground("♻️ Corrida recuperada — ${String.format("%.2f", checkpoint.distanciaMetros / 1000)}km já registrados")
             wakeLock?.acquire(6 * 60 * 60 * 1000L)
 
-            if (usandoStepDetector) {
-                stepDetector?.let { sensorManager.registerListener(this@RunningService, it, SensorManager.SENSOR_DELAY_NORMAL) }
-            } else {
-                acelerometro?.let { sensorManager.registerListener(this@RunningService, it, SensorManager.SENSOR_DELAY_GAME) }
-            }
+            registrarSensores()
 
             iniciarAtualizacoesGPS()
             iniciarTimer()
@@ -740,9 +980,17 @@ class RunningService : Service(), SensorEventListener {
         kalmanVariancia = -1f
 
         rota.clear()
+        rotaTotalPontos = 0
         ultimasLocalizacoes.clear()
         ultimoPaceEmaInterno = null
         janelaAtualSegundos = 12
+
+        // Reset filtros de altitude
+        resetarPipelineElevacao()
+
+        // Reset retomada híbrida
+        timestampsPassosAutoPause.clear()
+        ultimaLocalizacaoParaAutoPause = null
         // Capturar ambas âncoras no mesmo instante
         timestampInicioWall   = System.currentTimeMillis()     // para display
         elapsedRealtimeInicio = SystemClock.elapsedRealtime()  // para cronômetro
@@ -782,17 +1030,7 @@ class RunningService : Service(), SensorEventListener {
         _modoMontanha.value        = false
         _gradienteAtual.value      = 0.0
 
-        if (usandoStepDetector) {
-            stepDetector?.let {
-                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
-                Log.d(TAG, "👟 STEP_DETECTOR registrado")
-            }
-        } else {
-            acelerometro?.let {
-                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
-                Log.d(TAG, "📡 LINEAR_ACCELERATION registrado (fallback)")
-            }
-        }
+        registrarSensores()
         
         iniciarAtualizacoesGPS()
         iniciarTimer()
@@ -811,6 +1049,16 @@ class RunningService : Service(), SensorEventListener {
         if (estaPausado) {
             val tempoPausaMs = SystemClock.elapsedRealtime() - elapsedRealtimePausaInicio
             tempoPausadoTotalMs += tempoPausaMs
+
+            // Reset da pipeline de elevação: forçar recalibração do offset barométrico.
+            // Durante a pausa a pressão atmosférica pode ter mudado (frente de pressão,
+            // entrada em local fechado). Com baroOffsetInicializado=false, o próximo
+            // ponto GPS bom recalibra o offset contra a pressão ATUAL do ar.
+            // bufferAltBruta/AltDist também são limpos para evitar "degrau" de altitude
+            // que a Regressão Linear interpretaria como inclinação absurda.
+            resetarPipelineElevacao()
+            Log.d(TAG, "▶️ Retomada: offset barométrico resetado para recalibração com pressão atual")
+
             estaPausado = false
             atualizarNotificacao("Corrida em andamento")
         }
@@ -820,7 +1068,24 @@ class RunningService : Service(), SensorEventListener {
         Log.d(TAG, "⏹️ Parando rastreamento")
 
         estaCorrendo = false
-        _rotaAtual.value = rota.toList()
+
+        // Emite a rota COMPLETA (Room + buffer) para o ViewModel usar no GPX.
+        // Assíncrono — o ViewModel coleta via StateFlow após o stop.
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val pontosRoom = database.routePointDao()
+                    .getSessionPoints(sessionId)
+                    .map { it.toLatLngPonto() }
+                val ultimoTempo  = pontosRoom.lastOrNull()?.tempo ?: 0L
+                val pontosBuffer = rota.toList().filter { it.tempo > ultimoTempo }
+                val rotaCompleta = (pontosRoom + pontosBuffer).sortedBy { it.tempo }
+                _rotaAtual.value = rotaCompleta
+                Log.d(TAG, "📦 Rota final emitida: ${rotaCompleta.size} pontos (Room=${pontosRoom.size} + buffer=${pontosBuffer.size})")
+            } catch (e: Exception) {
+                Log.e(TAG, "⚠️ Falha ao carregar rota completa — usando buffer", e)
+                _rotaAtual.value = rota.toList()
+            }
+        }
 
         sensorManager.unregisterListener(this)
         _cadencia.value = 0
@@ -862,7 +1127,22 @@ class RunningService : Service(), SensorEventListener {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (!estaCorrendo || estaPausado || event == null) return
+        if (event == null) return
+
+        // BARÔMETRO: atualiza sempre — mesmo pausado ou fora de corrida.
+        // Garante que altitudeBarometricaUltima tenha dado FRESCO no exato momento
+        // em que obterAltitudeFusion() calibra o novo offset após a retomada.
+        // Sem isso, o offset seria calculado contra pressão de "antes da pausa".
+        if (event.sensor.type == Sensor.TYPE_PRESSURE) {
+            altitudeBarometricaUltima = android.hardware.SensorManager.getAltitude(
+                android.hardware.SensorManager.PRESSURE_STANDARD_ATMOSPHERE,
+                event.values[0]
+            ).toDouble()
+            return  // otimização: evita avaliar o when abaixo
+        }
+
+        // Sensores de movimento: apenas durante corrida ativa (não pausada)
+        if (!estaCorrendo || estaPausado) return
 
         when (event.sensor.type) {
             Sensor.TYPE_STEP_DETECTOR -> {
@@ -894,6 +1174,24 @@ class RunningService : Service(), SensorEventListener {
             if (spm in 60..220) {
                 _cadencia.value = spm
             }
+        }
+
+        // ── Retomada Híbrida: STEP_DETECTOR como gatilho de auto-resume ───────
+        // Janela deslizante de 3s — passos mais antigos são automaticamente
+        // descartados, impedindo que passos acumulados durante minutos de semáforo
+        // disparem uma retomada indevida.
+        if (_autoPausado.value && autoPauseFuncaoAtiva) {
+            timestampsPassosAutoPause.addLast(agora)
+            while (timestampsPassosAutoPause.isNotEmpty() &&
+                   timestampsPassosAutoPause.first() < agora - 3_000L) {
+                timestampsPassosAutoPause.removeFirst()
+            }
+            // 2 passos em 3s → acionar validação; GPS arbitra se retoma ou não
+            if (timestampsPassosAutoPause.size >= 2) {
+                tentarRetomadaViaPassos()
+            }
+        } else {
+            timestampsPassosAutoPause.clear()
         }
 
         if (emGapGps && estaCorrendo && !estaPausado && !_autoPausado.value) {
@@ -991,6 +1289,42 @@ class RunningService : Service(), SensorEventListener {
         if (bufferPace30s.isEmpty()) return 0.0
         val validos = bufferPace30s.filter { it.paceSegKm in 60.0..1200.0 }
         return if (validos.isEmpty()) 0.0 else validos.map { it.paceSegKm }.average()
+    }
+
+    /**
+     * Tenta retomar o auto-pause baseado em evidência de passos recentes.
+     *
+     * O STEP_DETECTOR é o árbitro rápido (~200ms). O GPS é o árbitro de qualidade.
+     * Para evitar falsos positivos (pular no lugar, balançar o braço no semáforo):
+     *   - Prioridade 1: location.speed (Doppler — muito mais confiável que posição)
+     *   - Fallback: distância desde a última posição significativa
+     *
+     * Só retoma se GPS confirmar movimento real. Se GPS ainda não tem dados,
+     * aguarda o próximo passo — a janela de 3s garante que tentará novamente.
+     */
+    private fun tentarRetomadaViaPassos() {
+        val loc = ultimaLocalizacaoParaAutoPause ?: return
+
+        val emMovimento = if (loc.hasSpeed() &&
+            (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O ||
+             loc.speedAccuracyMetersPerSecond < 1.5f)) {
+            loc.speed >= 0.5f
+        } else {
+            val ultimaSignif = ultimaLocalizacaoSignificativa ?: return
+            calcularDistancia(
+                ultimaSignif.latitude, ultimaSignif.longitude,
+                loc.latitude, loc.longitude
+            ) >= DISTANCIA_MINIMA_MOVIMENTO
+        }
+
+        if (emMovimento) {
+            Log.d(TAG, "👟 Retomada híbrida: ${timestampsPassosAutoPause.size} passos em 3s + GPS confirma movimento (speed=${loc.speed} m/s)")
+            _autoPausado.value = false
+            contadorEmMovimento = 0
+            contadorSemMovimento = 0
+            timestampsPassosAutoPause.clear()
+            atualizarNotificacao("Corrida em andamento")
+        }
     }
 
     private fun calcularPaceSegKmInterno(paceFormatado: String): Double {
@@ -1213,7 +1547,7 @@ class RunningService : Service(), SensorEventListener {
                     paceNoPonto     = ultimoPaceValidoGrafico,
                     cadenciaNoPonto = 0
                 )
-                rota.add(pontoAncora)
+                adicionarPontoRota(pontoAncora)
                 primeiropontoAposGap = true
 
                 if (ultimoValido.accuracy <= ROOM_ACCURACY_METERS) {
@@ -1275,10 +1609,26 @@ class RunningService : Service(), SensorEventListener {
         val deltaMs = if (rota.isNotEmpty()) (agora - rota.last().tempo).coerceAtLeast(100L) else 1000L
         val (latK, lngK) = aplicarKalman(location.latitude, location.longitude, location.accuracy, deltaMs)
 
+        // ── Pipeline de Altitude: Fusão GPS/Baro → Mediana(5) → Regressão(10) ─
+        // 1. obterAltitudeFusion: barômetro fornece variações de cm; GPS ancora a altitude
+        //    absoluta. Fallback transparente se barômetro indisponível.
+        // 2. processarAltitude (Mediana 5pts): elimina spikes residuais do baro (rafas de
+        //    vento no sensor) e glitches pontuais do GPS vertical.
+        // 3. bufferAltDist → calcularGradienteRegressao(): gradiente instantâneo sem lag.
+        val altitudeFundida = obterAltitudeFusion(location.altitude, location.accuracy)
+        val altMediana = processarAltitude(altitudeFundida)
+        // Alimenta buffer de (altMediana, distAcum) para regressão linear.
+        // distAcum ANTES de somar o novo segmento → eixo X consistente com "onde estava".
+        bufferAltDist.addLast(AltDistPonto(altMediana, _distanciaMetros.value))
+        if (bufferAltDist.size > 10) bufferAltDist.removeFirst()
+
+        // ── Atualiza referência GPS para retomada híbrida ─────────────────────
+        ultimaLocalizacaoParaAutoPause = location
+
         val pontoNovo = LatLngPonto(
             lat = latK,
             lng = lngK,
-            alt = location.altitude,
+            alt = altMediana,       // altitude filtrada (mediana) — melhor para GPX e elevação
             tempo = agora,
             accuracy = location.accuracy,
             paceNoPonto = ultimoPaceValidoGrafico,
@@ -1288,7 +1638,7 @@ class RunningService : Service(), SensorEventListener {
         _posicaoAtual.value = pontoNovo
 
         if (rota.isEmpty()) {
-            rota.add(pontoNovo)
+            adicionarPontoRota(pontoNovo)
             _rotaAtual.value = rota.toList()
             ultimaLocalizacaoSignificativa = location
             return
@@ -1304,7 +1654,7 @@ class RunningService : Service(), SensorEventListener {
 
         val ultimoPonto = rota.last()
 
-        // DISTÂNCIA VIA VELOCIDADE DOPPLER vs HAVERSINE
+        // DISTÂNCIA VIA VELOCIDADE DOPPLER vs HAVERSINE (2D)
         val deltaTSegundos = deltaMs / 1000.0
         val usarDoppler = location.hasSpeed() &&
             location.speed > 0.1f &&
@@ -1312,7 +1662,7 @@ class RunningService : Service(), SensorEventListener {
             (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O ||
              location.speedAccuracyMetersPerSecond < 0.5f)
 
-        val distancia = if (usarDoppler) {
+        val distancia2D = if (usarDoppler) {
             val speedAnterior = ultimasLocalizacoes.lastOrNull()?.speed?.toDouble() ?: location.speed.toDouble()
             val speedMedia = (speedAnterior + location.speed) / 2.0
             speedMedia * deltaTSegundos
@@ -1320,7 +1670,16 @@ class RunningService : Service(), SensorEventListener {
             calcularDistancia(ultimoPonto.lat, ultimoPonto.lng, pontoNovo.lat, pontoNovo.lng)
         }
 
-        Log.d(TAG, "📏 Dist: ${String.format("%.1f", distancia)}m via ${if (usarDoppler) "Doppler(${String.format("%.1f", location.speed)}m/s)" else "Haversine"}")
+        // ── Distância 3D (Pitágoras) ──────────────────────────────────────────
+        // Usa altitude FILTRADA (mediana) para evitar que spikes de GPS vertical
+        // inflacionem a distância. Efeito relevante em subidas > 10% (Trail Running).
+        // Em plano: dist3D ≈ dist2D (diferença < 0.05% com dAlt < 1m).
+        val dAltFiltrada = if (bufferAltDist.size >= 2) {
+            bufferAltDist.last().altMediana - bufferAltDist[bufferAltDist.size - 2].altMediana
+        } else 0.0
+        val distancia = sqrt(distancia2D * distancia2D + dAltFiltrada * dAltFiltrada)
+
+        Log.d(TAG, "📏 Dist: ${String.format("%.1f", distancia)}m (2D=${String.format("%.1f", distancia2D)}m dAlt=${String.format("%.1f", dAltFiltrada)}m) via ${if (usarDoppler) "Doppler(${String.format("%.1f", location.speed)}m/s)" else "Haversine"}")
 
         // Alimenta janela deslizante de 5s para o filtro de stride length
         val passosUltimoSegundo = timestampsPassos.count { it >= System.currentTimeMillis() - 1_000L }
@@ -1329,7 +1688,7 @@ class RunningService : Service(), SensorEventListener {
             bufferStride5s.removeFirst()
         }
 
-        rota.add(pontoNovo)
+        adicionarPontoRota(pontoNovo)
 
         if (primeiropontoAposGap) {
             primeiropontoAposGap = false
@@ -1344,13 +1703,10 @@ class RunningService : Service(), SensorEventListener {
                 if (passosDesdeUltimoGpsBom >= 30) {
                     val passadaMedida = distDesdeUltimoGpsBom / passosDesdeUltimoGpsBom
 
-                    val inclinacaoAtual = if (rota.size >= 2) {
-                        val dAlt = rota.last().alt - rota[rota.size - 2].alt
-                        val dDist = calcularDistancia(
-                            rota[rota.size - 2].lat, rota[rota.size - 2].lng,
-                            rota.last().lat, rota.last().lng
-                        ).coerceAtLeast(0.1)
-                        kotlin.math.abs(dAlt / dDist * 100)
+                    val inclinacaoAtual = if (bufferAltDist.size >= 2) {
+                        val dAltJanela = bufferAltDist.last().altMediana - bufferAltDist.first().altMediana
+                        val dDistJanela = (bufferAltDist.last().distAcum - bufferAltDist.first().distAcum).coerceAtLeast(0.1)
+                        kotlin.math.abs(dAltJanela / dDistJanela * 100)
                     } else 0.0
 
                     val emInclinacaoAcentuada = inclinacaoAtual > 2.0
@@ -1386,13 +1742,14 @@ class RunningService : Service(), SensorEventListener {
             _distanciaMetros.value += distancia
 
             // ── GAP (Grade Adjusted Pace) — Minetti (2002) ────────────────────
-            // Calcula o pace ajustado à inclinação para cada segmento GPS.
-            // Ponderamos pela distância do segmento (não pelo nº de pontos), porque
-            // pontos GPS podem chegar de 1 em 1s em plano e de 3 em 3s numa subida —
-            // a média simples seria enviesada contra exatamente o trecho que queremos medir.
+            // Gradiente via REGRESSÃO LINEAR sobre os últimos 10 pontos de altitude
+            // mediada. Vantagens vs. dAlt pontual:
+            //   1. Sem spike: outlier de altitude já foi eliminado pela mediana
+            //   2. Sem lag: a regressão responde imediatamente à tendência real
+            //   3. Sem zigzag: o zig-zag sistemático do GPS vertical é filtrado
+            //      pela melhor reta, não pela diferença entre dois pontos ruidosos
             if (rota.size >= 2 && distancia > 0.5) {
-                val dAlt = pontoNovo.alt - rota[rota.size - 2].alt
-                val gradiente = (dAlt / distancia).coerceIn(-0.45, 0.45)
+                val gradiente = calcularGradienteRegressao()
                 val paceInstantaneo = ultimoPaceEmaInterno ?: 0.0
 
                 if (paceInstantaneo in 60.0..1200.0) {
@@ -1464,7 +1821,7 @@ class RunningService : Service(), SensorEventListener {
         }
 
         if (_rotaAtual.subscriptionCount.value > 0) {
-            if (rota.size == 1 || rota.size % 5 == 0) {
+            if (rotaTotalPontos == 1 || rotaTotalPontos % 5 == 0) {
                 _rotaAtual.value = rota.toList()
             }
         }
