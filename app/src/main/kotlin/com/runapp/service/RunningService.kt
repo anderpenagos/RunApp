@@ -391,6 +391,7 @@ class RunningService : Service(), SensorEventListener {
                     ultimasLocalizacoes.clear()
                     ultimoPaceEmaInterno = null
                     bufferPace30s.clear()
+                    bufferStride5s.clear()
                     _paceAtual.value = "--:--"
                     GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_ON apos ${tempoTelaApagadaMs / 1000}s - modoRecuperacaoGps=true buffers limpos EMA zerada")
                     Log.d(TAG, "Tela ligada apos ${tempoTelaApagadaMs / 1000}s - buffers limpos para evitar spike de pace")
@@ -444,6 +445,12 @@ class RunningService : Service(), SensorEventListener {
     private var thresholdAceleracao = 13.0f
     private var somaUltimosPicos = 0f
     private var contadorPicos = 0
+
+    // ── Filtro de Stride Length — janela deslizante de 5s ────────────────────
+    // Substitui acumuladores globais que perdiam sensibilidade com o tempo.
+    // A janela deslizante mantém o filtro sempre "alerta" durante todo o trajeto.
+    private data class StrideSnapshot(val timestampMs: Long, val distM: Double, val passos: Int)
+    private val bufferStride5s = ArrayDeque<StrideSnapshot>(10)
 
     // ── Gap-fill por cadência (Dead Reckoning) ────────────────────────────────
     private var ultimoTempoGps      = 0L
@@ -1315,6 +1322,13 @@ class RunningService : Service(), SensorEventListener {
 
         Log.d(TAG, "📏 Dist: ${String.format("%.1f", distancia)}m via ${if (usarDoppler) "Doppler(${String.format("%.1f", location.speed)}m/s)" else "Haversine"}")
 
+        // Alimenta janela deslizante de 5s para o filtro de stride length
+        val passosUltimoSegundo = timestampsPassos.count { it >= System.currentTimeMillis() - 1_000L }
+        bufferStride5s.addLast(StrideSnapshot(agora, distancia, passosUltimoSegundo))
+        while (bufferStride5s.isNotEmpty() && bufferStride5s.first().timestampMs < agora - 5_000L) {
+            bufferStride5s.removeFirst()
+        }
+
         rota.add(pontoNovo)
 
         if (primeiropontoAposGap) {
@@ -1612,26 +1626,88 @@ class RunningService : Service(), SensorEventListener {
             return
         }
 
-        val alpha = if (janelaAtualSegundos <= 5) 0.4 else 0.25
+        val msDesdeScreenOn = if (screenOnTimestampMs > 0)
+            SystemClock.elapsedRealtime() - screenOnTimestampMs else Long.MAX_VALUE
+
+        // ── Filtro de Stride Length — janela deslizante de 5s ──────────────────
+        //
+        // REGRA A (biomecânica): stride = distJanela5s / passosJanela5s > 1.9m → bloqueia
+        //   Guard de cold start: só aplica rigorosamente com >= 3s de dados ou >= 4 passos.
+        //   Abaixo disso a janela é muito pequena e um tremido isolado dispara falso positivo.
+        //
+        // REGRA B (fail-safe): passos=0 mas GPS em movimento
+        //   Accuracy normal:           <= 15m aceita (sinal limpo)
+        //   Durante modoRecuperacaoGps: <= 25m aceita (folga para lag de batching do sensor)
+        //   Velocidade > 10 m/s (carro/ônibus): sempre bloqueia.
+        run {
+            val distJanela5s   = bufferStride5s.sumOf { it.distM }
+            val passosJanela5s = bufferStride5s.sumOf { it.passos }
+            val janelaSeg      = if (bufferStride5s.size >= 2)
+                (bufferStride5s.last().timestampMs - bufferStride5s.first().timestampMs) / 1000.0
+                else 0.0
+            val velocidadeGps  = location.speed  // m/s
+            val janelaQuente   = janelaSeg >= 3.0 || passosJanela5s >= 4
+
+            if (passosJanela5s > 0) {
+                val stride = distJanela5s / passosJanela5s
+                if (janelaQuente && stride > 1.9) {
+                    // REGRA A — passada impossível, GPS exagerando
+                    GpsDebugLogger.log(applicationContext, "STRIDE",
+                        "+${"%.1f".format(msDesdeScreenOn / 1000.0)}s  REGRA_A  " +
+                        "stride=${"%.2f".format(stride)}m  dist5s=${"%.1f".format(distJanela5s)}m  " +
+                        "passos5s=$passosJanela5s  janela=${"%.1f".format(janelaSeg)}s  BLOQUEADO")
+                    _paceAtual.value = "--:--"
+                    return
+                }
+                if (msDesdeScreenOn < 30_000L) {
+                    GpsDebugLogger.log(applicationContext, "STRIDE",
+                        "+${"%.1f".format(msDesdeScreenOn / 1000.0)}s  REGRA_A  " +
+                        "stride=${"%.2f".format(stride)}m  janela=${"%.1f".format(janelaSeg)}s  " +
+                        if (!janelaQuente) "COLD_START_SKIP" else "ACEITO")
+                }
+            } else if (velocidadeGps > 0.5f) {
+                // REGRA B — sem passos mas GPS em movimento
+                // Folga maior durante recuperação para absorver lag de batching do sensor
+                val limiteAccuracy = if (modoRecuperacaoGps) 25f else 15f
+                if (location.accuracy > limiteAccuracy || velocidadeGps > 10.0f) {
+                    GpsDebugLogger.log(applicationContext, "STRIDE",
+                        "+${"%.1f".format(msDesdeScreenOn / 1000.0)}s  REGRA_B  passos=0  " +
+                        "acc=${"%.1f".format(location.accuracy)}m  vel=${"%.1f".format(velocidadeGps)}m/s  " +
+                        "limiteAcc=${limiteAccuracy}m  BLOQUEADO")
+                    _paceAtual.value = "--:--"
+                    return
+                }
+                if (msDesdeScreenOn < 30_000L) {
+                    GpsDebugLogger.log(applicationContext, "STRIDE",
+                        "+${"%.1f".format(msDesdeScreenOn / 1000.0)}s  REGRA_B  passos=0  " +
+                        "acc=${"%.1f".format(location.accuracy)}m  ACEITO (sinal limpo)")
+                }
+            }
+        }
+
+        // Alpha reduzido nos primeiros 15s após SCREEN_ON — GPS ainda estabilizando.
+        // alpha=0.05 em vez de 0.25 torna a EMA muito mais inerte, impedindo que
+        // paceBruto errado derrube a EMA rapidamente.
+        val alpha = when {
+            msDesdeScreenOn < 15_000L -> 0.05
+            janelaAtualSegundos <= 5  -> 0.4
+            else                      -> 0.25
+        }
         val paceEma = ultimoPaceEmaInterno?.let { anterior ->
             (paceBruto * alpha) + (anterior * (1.0 - alpha))
         } ?: paceBruto
 
         // Log para diagnóstico de spike de pace pós-desbloqueio.
-        // Captura TODOS os cálculos nos 30s após SCREEN_ON — não só os com delta grande.
-        val msDesdeScreenOn = if (screenOnTimestampMs > 0)
-            SystemClock.elapsedRealtime() - screenOnTimestampMs else Long.MAX_VALUE
         if (msDesdeScreenOn < 30_000L) {
             val accuracies = pontosJanela.joinToString(",") { "%.0f".format(it.accuracy) }
             GpsDebugLogger.log(applicationContext, "PACE",
                 "+${"%.1f".format(msDesdeScreenOn / 1000.0)}s  distJanela=${"%.1f".format(distanciaJanela)}m  tempoJanela=${"%.1f".format(tempoJanelaSegundos)}s  " +
                 "paceBruto=${"%.0f".format(paceBruto)}  EMA_antes=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}  " +
-                "EMA_depois=${"%.0f".format(paceEma)}  pts=${pontosJanela.size}  acc=[$accuracies]")
+                "EMA_depois=${"%.0f".format(paceEma)}  pts=${pontosJanela.size}  acc=[$accuracies]  alpha=${"%.2f".format(alpha)}")
         }
 
-        // Quarentena de 3s após SCREEN_ON: GPS ainda estabilizando,
-        // paceBruto pode estar distorcido. Atualiza EMA internamente
-        // mas não exibe no display nem grava no grafico ainda.
+        // Quarentena de 3s após SCREEN_ON: GPS ainda estabilizando.
+        // Atualiza EMA internamente mas não exibe no display nem grava no grafico.
         if (msDesdeScreenOn < 3_000L) {
             ultimoPaceEmaInterno = paceEma
             _paceAtual.value = "--:--"
@@ -1639,7 +1715,7 @@ class RunningService : Service(), SensorEventListener {
         }
 
         ultimoPaceEmaInterno = paceEma
-        ultimoPaceValidoGrafico = paceEma  // atualiza referencia para o grafico
+        ultimoPaceValidoGrafico = paceEma
         _paceAtual.value = formatarPace(paceEma)
     }
 
