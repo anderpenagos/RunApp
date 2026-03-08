@@ -1491,7 +1491,7 @@ class RunningService : Service(), SensorEventListener {
             return
         }
 
-        calcularPaceAtual()
+        calcularPaceAtual(location)
         calcularPaceMedia()
 
         Log.d(TAG, "📍 Dist: ${String.format("%.1f", _distanciaMetros.value)}m | Pace: ${_paceAtual.value} | Janela: ${ultimasLocalizacoes.size}")
@@ -1558,7 +1558,7 @@ class RunningService : Service(), SensorEventListener {
         }.getOrDefault(0.0)
     }
 
-    private fun calcularPaceAtual() {
+    private fun calcularPaceAtual(location: android.location.Location) {
         if (ultimasLocalizacoes.size < 2) {
             _paceAtual.value = "--:--"
             return
