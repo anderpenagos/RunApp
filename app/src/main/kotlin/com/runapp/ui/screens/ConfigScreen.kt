@@ -9,8 +9,7 @@ import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.*import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -174,6 +173,165 @@ fun ConfigScreen(
                         checked = state.gapTelemetriaReduzida,
                         onCheckedChange = { viewModel.onGapTelemetriaReduzidaToggle(it) }
                     )
+                }
+            }
+        }
+
+        // Feedback de Áudio
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            ),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "🔊 Feedback de Áudio",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // ── Master switch ─────────────────────────────────────────────
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Feedback de voz",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Ativa ou desativa todos os anúncios de áudio durante a corrida",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
+                    Switch(
+                        checked = state.audioMasterEnabled,
+                        onCheckedChange = { viewModel.onAudioMasterToggle(it) }
+                    )
+                }
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 12.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
+                )
+
+                // ── Alertas de ritmo ──────────────────────────────────────────
+                val alphaFilhos = if (state.audioMasterEnabled) 1f else 0.4f
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Alertas de ritmo",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alphaFilhos)
+                        )
+                        Text(
+                            text = "Avisa quando o ritmo está fora do intervalo do treino",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alphaFilhos * 0.7f)
+                        )
+                    }
+                    Switch(
+                        checked = state.audioPaceAlerts,
+                        onCheckedChange = { viewModel.onAudioPaceAlertsToggle(it) },
+                        enabled = state.audioMasterEnabled
+                    )
+                }
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 12.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
+                )
+
+                // ── Parciais ──────────────────────────────────────────────────
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Parciais",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alphaFilhos)
+                        )
+                        Text(
+                            text = "Anuncia dados ao atingir cada intervalo de distância",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alphaFilhos * 0.7f)
+                        )
+                    }
+                    Switch(
+                        checked = state.audioSplitsKm,
+                        onCheckedChange = { viewModel.onAudioSplitsKmToggle(it) },
+                        enabled = state.audioMasterEnabled
+                    )
+                }
+
+                // ── Opções de parciais (só visíveis quando o switch está ON) ─
+                val splitsAtivo = state.audioMasterEnabled && state.audioSplitsKm
+                if (splitsAtivo) {
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Intervalo
+                    Text(
+                        text = "Intervalo de anúncio",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(500 to "500 m", 1000 to "1 km", 2000 to "2 km").forEach { (metros, label) ->
+                            val selecionado = state.splitIntervaloMetros == metros
+                            FilterChip(
+                                selected = selecionado,
+                                onClick = { viewModel.onSplitIntervaloChange(metros) },
+                                label = { Text(label, fontSize = 12.sp) }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Dados do anúncio
+                    Text(
+                        text = "Dados anunciados",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    val opcoesDados = listOf(
+                        "distancia"  to "Distância",
+                        "tempo"      to "Tempo",
+                        "pace_atual" to "Ritmo atual",
+                        "pace_medio" to "Ritmo médio"
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        opcoesDados.forEach { (flag, label) ->
+                            val selecionado = flag in state.splitDadosFlags
+                            FilterChip(
+                                selected = selecionado,
+                                onClick = { viewModel.onSplitDadosFlagToggle(flag) },
+                                label = { Text(label, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                }
+
                 }
             }
         }

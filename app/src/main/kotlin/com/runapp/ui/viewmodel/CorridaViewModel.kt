@@ -172,9 +172,17 @@ class CorridaViewModel(
     private val INTERVALO_PACE_FEEDBACK_MS = 20_000L
     private var tempoInicioPassoAtual = 0L   // tempo (segundos) em que o passo atual começou
 
-    // Preferência lida uma vez ao iniciar a corrida e mantida durante a sessão.
-    // Não precisa ser reativa — mudar no meio de uma corrida não faz sentido de UX.
-    private var gapTelemetriaReduzida = false
+    // Preferências lidas uma vez ao iniciar a corrida e mantidas durante a sessão.
+    // Não precisam ser reativas — mudar no meio de uma corrida não faz sentido de UX.
+    private var gapTelemetriaReduzida  = false
+    private var audioPaceAlertsEnabled = true
+    private var audioSplitsKmEnabled   = true
+    private var splitIntervaloMetros   = 1000
+    private var splitDadosFlags        = setOf("distancia", "pace_medio")
+
+    // Distância (metros) do último split anunciado. Substitui ultimoKmAnunciado
+    // para suportar intervalos configuráveis (500m, 1km, 2km).
+    private var ultimaSplitMetros      = 0.0
     private var indexPassoAnunciado = -1     // evita reanunciar o mesmo passo
     
     // Service
@@ -562,35 +570,36 @@ class CorridaViewModel(
     }
 
     private fun verificarAnuncioDistancia(distanciaMetros: Double) {
-        val kmPercorridos = (distanciaMetros / 1000).toInt()
-        if (kmPercorridos > ultimoKmAnunciado && kmPercorridos > 0) {
-            val service = runningService
+        if (!audioSplitsKmEnabled) return
 
-            // Fechar o acumulador GAP do km que acabou de ser concluído.
-            // `null` significa que o GPS foi insuficiente durante o km — usa anúncio simples.
-            val gapResult  = service?.fecharEObterGapKm()
-            val paceMedia  = _uiState.value.paceMedia
+        val proximoSplit = ultimaSplitMetros + splitIntervaloMetros
+        if (distanciaMetros < proximoSplit || proximoSplit <= 0) return
 
-            if (gapResult != null) {
-                val paceRealSegKm      = paceParaSegundos(paceMedia).toDouble()
-                // Pace médio geral da corrida inteira (usado para avaliar eficiência na subida)
-                val paceMediaGeralSegKm = paceParaSegundos(_uiState.value.paceMedia).toDouble()
-                audioCoach.anunciarKmComGap(
-                    distanciaKm           = kmPercorridos.toDouble(),
-                    paceMedia             = paceMedia,
-                    paceRealSegKm         = paceRealSegKm,
-                    gapMedioSegKm         = gapResult.gapMedioSegKm,
-                    gradienteMedio        = gapResult.gradienteMedio,
-                    paceMediaGeralSegKm   = paceMediaGeralSegKm,
-                    telemetriaReduzida    = gapTelemetriaReduzida
-                )
-            } else {
-                // Fallback: GPS ruim o km todo, ou primeiros metros sem altitude
-                audioCoach.anunciarKm(kmPercorridos.toDouble(), paceMedia)
-            }
+        val service   = runningService
+        val paceMedia = _uiState.value.paceMedia
+        val paceAtual = _uiState.value.paceAtual
+        val tempo     = _uiState.value.tempoTotalSegundos
 
-            ultimoKmAnunciado = kmPercorridos
-        }
+        // GAP só disponível e relevante para splits de 1km
+        val gapResult = if (splitIntervaloMetros == 1000) service?.fecharEObterGapKm() else null
+        val paceMediaGeralSegKm = paceParaSegundos(paceMedia).toDouble()
+
+        audioCoach.anunciarSplit(
+            distanciaMetros       = proximoSplit,
+            tempoSegundos         = tempo,
+            paceAtual             = paceAtual,
+            paceMedia             = paceMedia,
+            intervaloMetros       = splitIntervaloMetros,
+            dadosFlags            = splitDadosFlags,
+            gapResult             = gapResult,
+            gradienteMedio        = gapResult?.gradienteMedio ?: 0.0,
+            paceMediaGeralSegKm   = paceMediaGeralSegKm,
+            telemetriaReduzida    = gapTelemetriaReduzida
+        )
+
+        ultimaSplitMetros = proximoSplit
+        // Mantém ultimoKmAnunciado para compatibilidade com qualquer outra lógica que o use
+        ultimoKmAnunciado = (proximoSplit / 1000).toInt()
     }
 
     /** Converte "M:SS" → segundos totais. Retorna 0 se inválido. */
@@ -605,6 +614,7 @@ class CorridaViewModel(
         val state = _uiState.value
         if (state.fase != FaseCorrida.CORRENDO) return
         if (state.autoPausado) return
+        if (!audioPaceAlertsEnabled) return
 
         // Sem pace real ainda (início da corrida), não avisa
         if (paceAtual == "--:--") return
@@ -809,12 +819,22 @@ class CorridaViewModel(
         indexPassoAnunciado = 0
         ultimoKmAnunciado = 0
         ultimoPaceFeedback = 0L
+        ultimaSplitMetros = 0.0
 
         // Ler preferências de corrida uma única vez no início da sessão.
         // Não faz sentido alterar mid-run: o corredor está com fone na orelha, não no telefone.
         viewModelScope.launch {
-            gapTelemetriaReduzida = container.preferencesRepository.gapTelemetriaReduzida.first()
-            android.util.Log.d("CorridaVM", "⚙️ GAP Telemetria Reduzida: $gapTelemetriaReduzida")
+            val prefs = container.preferencesRepository
+            gapTelemetriaReduzida  = prefs.gapTelemetriaReduzida.first()
+            audioPaceAlertsEnabled = prefs.audioPaceAlerts.first()
+            audioSplitsKmEnabled   = prefs.audioSplitsKm.first()
+            splitIntervaloMetros   = prefs.splitIntervaloMetros.first()
+            splitDadosFlags        = prefs.splitDadosFlags.first()
+            audioCoach.masterEnabled = prefs.audioMasterEnabled.first()
+            android.util.Log.d("CorridaVM", "⚙️ Áudio: master=${audioCoach.masterEnabled} " +
+                "paceAlerts=$audioPaceAlertsEnabled splits=$audioSplitsKmEnabled " +
+                "intervalo=${splitIntervaloMetros}m flags=$splitDadosFlags " +
+                "gapReduzido=$gapTelemetriaReduzida")
         }
 
         // Iniciar o service

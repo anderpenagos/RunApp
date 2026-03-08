@@ -19,6 +19,12 @@ data class ConfigUiState(
     val isConfigured: Boolean = false,
     val autoPauseEnabled: Boolean = true,
     val gapTelemetriaReduzida: Boolean = false,
+    // Controles de áudio
+    val audioMasterEnabled: Boolean = true,
+    val audioPaceAlerts: Boolean = true,
+    val audioSplitsKm: Boolean = true,
+    val splitIntervaloMetros: Int = 1000,
+    val splitDadosFlags: Set<String> = setOf("distancia", "pace_medio"),
     // true enquanto o Room ainda não respondeu — impede decisões de navegação precipitadas
     val isLoading: Boolean = true
 )
@@ -36,13 +42,23 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
             val athleteId           = prefs.athleteId.first()
             val autoPause           = prefs.autoPauseEnabled.first()
             val telemetriaReduzida  = prefs.gapTelemetriaReduzida.first()
+            val audioMaster         = prefs.audioMasterEnabled.first()
+            val audioPace           = prefs.audioPaceAlerts.first()
+            val audioSplits         = prefs.audioSplitsKm.first()
+            val splitIntervalo      = prefs.splitIntervaloMetros.first()
+            val splitFlags          = prefs.splitDadosFlags.first()
             _uiState.value = ConfigUiState(
                 apiKey                = apiKey ?: "",
                 athleteId             = athleteId ?: "",
                 isConfigured          = !apiKey.isNullOrBlank() && !athleteId.isNullOrBlank(),
                 autoPauseEnabled      = autoPause,
                 gapTelemetriaReduzida = telemetriaReduzida,
-                isLoading             = false  // Room respondeu — navegação pode prosseguir
+                audioMasterEnabled    = audioMaster,
+                audioPaceAlerts       = audioPace,
+                audioSplitsKm         = audioSplits,
+                splitIntervaloMetros  = splitIntervalo,
+                splitDadosFlags       = splitFlags,
+                isLoading             = false
             )
         }
     }
@@ -59,6 +75,35 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             prefs.setGapTelemetriaReduzida(enabled)
         }
+    }
+
+    fun onAudioMasterToggle(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(audioMasterEnabled = enabled)
+        viewModelScope.launch { prefs.setAudioMasterEnabled(enabled) }
+    }
+
+    fun onAudioPaceAlertsToggle(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(audioPaceAlerts = enabled)
+        viewModelScope.launch { prefs.setAudioPaceAlerts(enabled) }
+    }
+
+    fun onAudioSplitsKmToggle(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(audioSplitsKm = enabled)
+        viewModelScope.launch { prefs.setAudioSplitsKm(enabled) }
+    }
+
+    fun onSplitIntervaloChange(metros: Int) {
+        _uiState.value = _uiState.value.copy(splitIntervaloMetros = metros)
+        viewModelScope.launch { prefs.setSplitIntervaloMetros(metros) }
+    }
+
+    fun onSplitDadosFlagToggle(flag: String) {
+        val flags = _uiState.value.splitDadosFlags.toMutableSet()
+        if (flag in flags) flags.remove(flag) else flags.add(flag)
+        // Garante ao menos 1 dado selecionado — silêncio total seria confuso
+        if (flags.isEmpty()) flags.add("distancia")
+        _uiState.value = _uiState.value.copy(splitDadosFlags = flags)
+        viewModelScope.launch { prefs.setSplitDadosFlags(flags) }
     }
 
     fun onApiKeyChange(value: String) {

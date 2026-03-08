@@ -16,6 +16,10 @@ class AudioCoach(private val context: Context) {
     private var lastAnnouncementTime = 0L
     private val MIN_INTERVAL_MS = 8000L // mínimo 8s entre anúncios
 
+    // Setado pelo CorridaViewModel uma única vez ao iniciar a sessão (read-once philosophy).
+    // Sem coroutines aqui — o ViewModel é o gatekeeper de todas as decisões de áudio.
+    var masterEnabled: Boolean = true
+
     init {
         tts = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
@@ -30,6 +34,7 @@ class AudioCoach(private val context: Context) {
      * Fala uma mensagem imediatamente (interrompe a atual).
      */
     fun falarUrgente(mensagem: String) {
+        if (!masterEnabled) return
         tts?.speak(mensagem, TextToSpeech.QUEUE_FLUSH, null, "urgente")
         lastAnnouncementTime = System.currentTimeMillis()
     }
@@ -46,6 +51,7 @@ class AudioCoach(private val context: Context) {
      * que precisam interromper qualquer coisa (ex: "Intervalo iniciado!").
      */
     fun falar(mensagem: String, respeitarIntervalo: Boolean = true) {
+        if (!masterEnabled) return
         if (!isReady) return
         if (respeitarIntervalo) {
             val agora = System.currentTimeMillis()
@@ -53,6 +59,96 @@ class AudioCoach(private val context: Context) {
         }
         tts?.speak(mensagem, TextToSpeech.QUEUE_ADD, null, "msg_${System.currentTimeMillis()}")
         lastAnnouncementTime = System.currentTimeMillis()
+    }
+
+    /**
+     * Anúncio de split configurável pelo usuário.
+     *
+     * Monta a frase dinamicamente com base nas flags escolhidas nas configurações.
+     * Para splits de 1km com GAP disponível, delega para anunciarKmComGap/anunciarKm
+     * para preservar a lógica de terreno (subida/descida) já existente.
+     *
+     * @param distanciaMetros   distância acumulada no momento do split
+     * @param tempoSegundos     tempo total da corrida no momento do split
+     * @param paceAtual         ritmo atual formatado "M:SS"
+     * @param paceMedia         ritmo médio formatado "M:SS"
+     * @param intervaloMetros   intervalo configurado (500, 1000 ou 2000)
+     * @param dadosFlags        conjunto de flags: "distancia","tempo","pace_atual","pace_medio"
+     * @param gapResult         resultado GAP do km (null se indisponível ou intervalo ≠ 1000m)
+     * @param gradienteMedio    gradiente médio do km (usado quando gapResult != null)
+     * @param paceMediaGeralSegKm pace médio geral da corrida para análise de eficiência
+     * @param telemetriaReduzida  modo telemetria reduzida
+     */
+    fun anunciarSplit(
+        distanciaMetros: Double,
+        tempoSegundos: Long,
+        paceAtual: String,
+        paceMedia: String,
+        intervaloMetros: Int,
+        dadosFlags: Set<String>,
+        gapResult: RunningService.GapKmResult? = null,
+        gradienteMedio: Double = 0.0,
+        paceMediaGeralSegKm: Double = 0.0,
+        telemetriaReduzida: Boolean = false
+    ) {
+        // Para 1km com GAP disponível, usa a lógica rica de terreno existente
+        if (intervaloMetros == 1000 && gapResult != null) {
+            val kmPercorridos = (distanciaMetros / 1000).toInt()
+            anunciarKmComGap(
+                distanciaKm           = kmPercorridos.toDouble(),
+                paceMedia             = paceMedia,
+                paceRealSegKm         = paceParaSegundos(paceMedia).toDouble(),
+                gapMedioSegKm         = gapResult.gapMedioSegKm,
+                gradienteMedio        = gradienteMedio,
+                paceMediaGeralSegKm   = paceMediaGeralSegKm,
+                telemetriaReduzida    = telemetriaReduzida
+            )
+            return
+        }
+
+        // Para demais casos: monta frase com os dados selecionados pelo usuário
+        val partes = mutableListOf<String>()
+
+        if ("distancia" in dadosFlags) {
+            partes.add(formatarDistanciaParaFala(distanciaMetros, intervaloMetros))
+        }
+
+        if ("tempo" in dadosFlags) {
+            val min = tempoSegundos / 60
+            val seg = tempoSegundos % 60
+            val tempoTexto = if (seg == 0L) "$min minutos"
+                             else "$min minutos e $seg segundos"
+            partes.add(tempoTexto)
+        }
+
+        if ("pace_atual" in dadosFlags && paceAtual != "--:--") {
+            partes.add("Ritmo atual: ${formatarPaceParaFala(paceAtual)}")
+        }
+
+        if ("pace_medio" in dadosFlags && paceMedia != "--:--") {
+            partes.add("Ritmo médio: ${formatarPaceParaFala(paceMedia)}")
+        }
+
+        if (partes.isEmpty()) return
+        falar(partes.joinToString(". ") + ".", respeitarIntervalo = false)
+    }
+
+    /**
+     * Formata a distância para fala de acordo com o intervalo configurado.
+     * 500m → "500 metros", 1000m → "1 quilômetro", 1500m → "1 quilômetro e 500 metros", etc.
+     */
+    private fun formatarDistanciaParaFala(metros: Double, intervaloMetros: Int): String {
+        val m = metros.toLong()
+        val km = m / 1000
+        val resto = m % 1000
+        return when {
+            km == 0L       -> "$m metros"
+            resto == 0L    -> if (km == 1L) "1 quilômetro" else "$km quilômetros"
+            else           -> {
+                val kmStr  = if (km == 1L) "1 quilômetro" else "$km quilômetros"
+                "$kmStr e $resto metros"
+            }
+        }
     }
 
     // ---- Mensagens específicas ----
@@ -221,15 +317,15 @@ class AudioCoach(private val context: Context) {
         val mensagem = when {
             paceAtual == "--:--" || atualSecs <= 0 -> {
                 android.util.Log.d("AudioCoach", "⚠️ PARADO OU MUITO DEVAGAR (pace --:--)")
-                "Você está parado ou muito devagar. Acelere para ${formatarPaceParaFala(paceAlvoMax)}."
+                "Sem ritmo detectado. Mantenha o movimento."
             }
             atualSecs < minSecs - 10 -> {
                 android.util.Log.d("AudioCoach", "⚠️ MUITO RÁPIDO!")
-                "Você está muito rápido. Reduza o ritmo para ${formatarPaceParaFala(paceAlvoMin)}."
+                "Ritmo acima do intervalo. Reduza para ${formatarPaceParaFala(paceAlvoMin)}."
             }
             atualSecs > maxSecs + 10 -> {
                 android.util.Log.d("AudioCoach", "⚠️ MUITO DEVAGAR!")
-                "Você está devagar demais. Acelere para ${formatarPaceParaFala(paceAlvoMax)}."
+                "Ritmo abaixo do intervalo. Aumente para ${formatarPaceParaFala(paceAlvoMax)}."
             }
             else -> {
                 android.util.Log.d("AudioCoach", "✅ Dentro do alvo")
@@ -244,16 +340,20 @@ class AudioCoach(private val context: Context) {
 
     fun anunciarUltimosSegundos(segundos: Int, duracaoPasso: Int) {
         // Hierarquia de countdown baseada na duração do passo:
-        // > 60s  → avisa em 30s, 10s, 5s, 3s, 2s, 1s
+        // > 120s → avisa em 60s, 30s, 10s, 5s, 3s, 2s, 1s
+        // 60–120s→ avisa em 30s, 10s, 5s, 3s, 2s, 1s
         // 30–60s → avisa em 10s, 5s, 3s, 2s, 1s
-        // < 30s  → só 3s, 2s, 1s (corredor está em esforço máximo, silêncio é respeito)
+        // < 30s  → só 3s, 2s, 1s (corredor em esforço máximo — silêncio é respeito)
         val pontosAviso = when {
+            duracaoPasso > 120 -> setOf(60, 30, 10, 5, 3, 2, 1)
             duracaoPasso > 60  -> setOf(30, 10, 5, 3, 2, 1)
             duracaoPasso >= 30 -> setOf(10, 5, 3, 2, 1)
             else               -> setOf(3, 2, 1)
         }
         if (segundos in pontosAviso) {
-            falar("$segundos", respeitarIntervalo = false)
+            // 60s: fala "um minuto" em vez de "sessenta" — mais natural no fone
+            val texto = if (segundos == 60) "um minuto" else "$segundos"
+            falar(texto, respeitarIntervalo = false)
         }
     }
 
