@@ -438,16 +438,17 @@ class RunningService : Service(), SensorEventListener {
                     modoRecuperacaoGps = true
                     contadorPontosRecuperacao = 0
                     screenOnTimestampMs = SystemClock.elapsedRealtime()
-                    // Limpa buffers de pace: pontos acumulados durante o bloqueio
-                    // refletem velocidade diferente da atual e distorcem o calculo.
-                    // O pace mostra "--:--" por ~10s ate acumular pontos novos.
+                    // Limpa apenas os buffers de janela deslizante: misturar pontos
+                    // de minutos atrás com os novos distorceria distJanela/tempoJanela.
+                    // A EMA (ultimoPaceEmaInterno) é PRESERVADA intencionalmente —
+                    // ela é a âncora histórica que impede spikes de pace no desbloqueio.
+                    // O display (_paceAtual) também é preservado: o corredor continua
+                    // vendo o último pace válido em vez de "--:--".
                     ultimasLocalizacoes.clear()
-                    ultimoPaceEmaInterno = null
                     bufferPace30s.clear()
                     bufferStride5s.clear()
-                    _paceAtual.value = "--:--"
-                    GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_ON apos ${tempoTelaApagadaMs / 1000}s - modoRecuperacaoGps=true buffers limpos EMA zerada")
-                    Log.d(TAG, "Tela ligada apos ${tempoTelaApagadaMs / 1000}s - buffers limpos para evitar spike de pace")
+                    GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_ON apos ${tempoTelaApagadaMs / 1000}s - modoRecuperacaoGps=true buffers limpos EMA PRESERVADA=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}")
+                    Log.d(TAG, "Tela ligada apos ${tempoTelaApagadaMs / 1000}s - buffers limpos, EMA preservada para evitar spike de pace")
                 }
             }
         }
@@ -2042,11 +2043,12 @@ class RunningService : Service(), SensorEventListener {
             }
         }
 
-        // Alpha reduzido nos primeiros 15s após SCREEN_ON — GPS ainda estabilizando.
-        // alpha=0.05 em vez de 0.25 torna a EMA muito mais inerte, impedindo que
-        // paceBruto errado derrube a EMA rapidamente.
+        // Alpha reduzido nos primeiros 20s após SCREEN_ON — GPS ainda estabilizando.
+        // alpha=0.02 (2% novo dado, 98% memória) torna a EMA praticamente imóvel:
+        // um paceBruto de 361 s/km com EMA=881 resulta em EMA≈871 — spike invisível.
+        // O A54 leva até 20s para estabilizar o Doppler completamente.
         val alpha = when {
-            msDesdeScreenOn < 15_000L -> 0.05
+            msDesdeScreenOn < 20_000L -> 0.02
             janelaAtualSegundos <= 5  -> 0.4
             else                      -> 0.25
         }
@@ -2063,11 +2065,12 @@ class RunningService : Service(), SensorEventListener {
                 "EMA_depois=${"%.0f".format(paceEma)}  pts=${pontosJanela.size}  acc=[$accuracies]  alpha=${"%.2f".format(alpha)}")
         }
 
-        // Quarentena de 3s após SCREEN_ON: GPS ainda estabilizando.
-        // Atualiza EMA internamente mas não exibe no display nem grava no grafico.
-        if (msDesdeScreenOn < 3_000L) {
+        // Quarentena de 10s após SCREEN_ON: GPS ainda estabilizando.
+        // Atualiza EMA internamente mas não grava no gráfico nem altera o display.
+        // O corredor continua vendo o último pace válido enquanto o chip GNSS
+        // recalibra o Doppler. Log confirma que o A54 leva ~10s para convergir.
+        if (msDesdeScreenOn < 10_000L) {
             ultimoPaceEmaInterno = paceEma
-            _paceAtual.value = "--:--"
             return
         }
 
