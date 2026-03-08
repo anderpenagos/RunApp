@@ -332,7 +332,6 @@ fun ConfigScreen(
                     }
                 }
 
-                }
             }
         }
 
