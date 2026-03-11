@@ -348,14 +348,13 @@ private fun GraficoPaceElevacao(
                         listOf(CorElevacao.copy(alpha = 0.4f), Color.Transparent), startY = 0f, endY = h))
                 }
                 
-                // Linha pace
+                // Linha pace — pontos inválidos (GPS spike) interpolados linearmente
                 if (dados.paceNorm.size >= 2) {
+                    val paceInterp = interpolarInvalidos(dados.paceNorm)
                     val path = Path()
-                    var first = true
-                    dados.paceNorm.forEachIndexed { i, v ->
-                        val x = i.toFloat() / (dados.paceNorm.size - 1) * w
-                        if (v < 0f) { first = true; return@forEachIndexed }
-                        if (first) { path.moveTo(x, 4f + drawH * v); first = false }
+                    paceInterp.forEachIndexed { i, v ->
+                        val x = i.toFloat() / (paceInterp.size - 1) * w
+                        if (i == 0) path.moveTo(x, 4f + drawH * v)
                         else path.lineTo(x, 4f + drawH * v)
                     }
                     drawPath(path, CorPace, style = Stroke(width = 2.5f, cap = StrokeCap.Round))
@@ -417,21 +416,20 @@ private fun GraficoGAP(dados: DadosGrafico, frac: Float, onFracChange: (Float) -
                         strokeWidth = 1f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f)))
                 }
                 if (dados.gapNorm.size >= 2) {
+                    val gapInterp = interpolarInvalidos(dados.gapNorm)
                     val pathArea = Path().apply {
                         moveTo(0f, h)
-                        dados.gapNorm.forEachIndexed { i, v ->
-                            val safeV = if (v < 0f) 1f else v
-                            lineTo(i.toFloat() / (dados.gapNorm.size - 1) * w, 4f + drawH * safeV)
+                        gapInterp.forEachIndexed { i, v ->
+                            lineTo(i.toFloat() / (gapInterp.size - 1) * w, 4f + drawH * v)
                         }
                         lineTo(w, h); close()
                     }
                     drawPath(pathArea, Brush.verticalGradient(listOf(CorGAP.copy(alpha = 0.2f), Color.Transparent), 0f, h))
                     val pathLine = Path()
-                    var first = true
-                    dados.gapNorm.forEachIndexed { i, v ->
-                        val x = i.toFloat() / (dados.gapNorm.size - 1) * w
-                        if (v < 0f) { first = true; return@forEachIndexed }
-                        if (first) { pathLine.moveTo(x, 4f + drawH * v); first = false } else pathLine.lineTo(x, 4f + drawH * v)
+                    gapInterp.forEachIndexed { i, v ->
+                        val x = i.toFloat() / (gapInterp.size - 1) * w
+                        if (i == 0) pathLine.moveTo(x, 4f + drawH * v)
+                        else pathLine.lineTo(x, 4f + drawH * v)
                     }
                     drawPath(pathLine, CorGAP, style = Stroke(width = 2f, cap = StrokeCap.Round))
                 }
@@ -822,6 +820,33 @@ private fun Modifier.cursorInput(onFrac: (Float) -> Unit): Modifier =
 private fun fracToIndex(frac: Float, size: Int): Int {
     if (frac < 0f || size == 0) return -1
     return (frac * (size - 1)).roundToInt().coerceIn(0, size - 1)
+}
+
+/**
+ * Preenche os valores -1f (pontos inválidos de GPS spike) com interpolação linear
+ * entre o último ponto válido anterior e o próximo ponto válido posterior.
+ * Se não existir ponto válido antes, usa o próximo. Se não existir depois, usa o anterior.
+ * Isso evita buracos visuais no gráfico sem distorcer os valores reais nos pontos bons.
+ */
+private fun interpolarInvalidos(lista: List<Float>): List<Float> {
+    if (lista.none { it < 0f }) return lista  // nada a fazer
+    val resultado = lista.toMutableList()
+    for (i in lista.indices) {
+        if (lista[i] >= 0f) continue
+        // Busca vizinho válido mais próximo antes e depois
+        val antes = (i - 1 downTo 0).firstOrNull { lista[it] >= 0f }
+        val depois = (i + 1..lista.lastIndex).firstOrNull { lista[it] >= 0f }
+        resultado[i] = when {
+            antes != null && depois != null -> {
+                val t = (i - antes).toFloat() / (depois - antes).toFloat()
+                lista[antes] + t * (lista[depois] - lista[antes])
+            }
+            antes != null  -> lista[antes]
+            depois != null -> lista[depois]
+            else           -> 0f
+        }
+    }
+    return resultado
 }
 
 data class DadosGrafico(
