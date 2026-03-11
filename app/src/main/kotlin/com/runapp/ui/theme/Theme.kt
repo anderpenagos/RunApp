@@ -17,14 +17,14 @@ val RunRed = Color(0xFFF44336)
 // Cores das zonas de pace (Z1-Z7) — padrão internacional de esforço
 fun corZona(zona: Int): Color {
     return when (zona) {
-        1    -> Color(0xFF9E9E9E) // Cinza    — Recuperação
-        2    -> Color(0xFF2196F3) // Azul     — Leve
-        3    -> Color(0xFF4CAF50) // Verde    — Aeróbico
-        4    -> Color(0xFFFFEB3B) // Amarelo  — Limiar
-        5    -> Color(0xFFFF9800) // Laranja  — Esforço Forte
-        6    -> Color(0xFFF44336) // Vermelho — VO2 Máximo
-        7    -> Color(0xFF9C27B0) // Roxo     — Anaeróbico / Sprint
-        else -> Color(0xFF4CAF50) // Padrão Verde
+        1    -> Color(0xFF90CAF9) // Azul claro       — Z1
+        2    -> Color(0xFF66BB6A) // Verde             — Z2
+        3    -> Color(0xFFFFEE58) // Amarelo           — Z3
+        4    -> Color(0xFFFFB74D) // Laranja claro     — Z4
+        5    -> Color(0xFFFF7043) // Laranja escuro    — Z5
+        6    -> Color(0xFFE53935) // Vermelho          — Z6
+        7    -> Color(0xFFB71C1C) // Vermelho escuro   — Z7
+        else -> Color(0xFF90CAF9)
     }
 }
 

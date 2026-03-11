@@ -204,13 +204,13 @@ class WorkoutRepository(private val api: IntervalsApi) {
         paceZones.forEachIndexed { index, limitePercent ->
             val nome = paceZoneNames?.getOrNull(index) ?: "Zone ${index + 1}"
 
-            // % maior = velocidade maior = pace mais RÁPIDO (menos s/m)
-            // limiteAnterior = piso de velocidade → pace MAIS LENTO (paceMax)
-            // limitePercent  = teto de velocidade → pace MAIS RÁPIDO (paceMin)
+            // Z1 não tem piso de velocidade — usa 160% do threshold pace como teto prático.
+            // Intervals.icu define Z1 como "< 62.5% da velocidade do threshold" (= 1/0.625 = 1.6x
+            // o threshold pace em s/m). Usar 2.0 dava ~9:20/km; 1.6 dá ~7:32/km — correto.
             val paceMaxSecsPerMeter = if (limiteAnterior > 0.0)
                 thresholdSecsPerMeter / (limiteAnterior / 100.0)
             else
-                thresholdSecsPerMeter * 2.0
+                thresholdSecsPerMeter * 1.6
 
             val paceMinSecsPerMeter = if (limitePercent < 900)
                 thresholdSecsPerMeter / (limitePercent / 100.0)

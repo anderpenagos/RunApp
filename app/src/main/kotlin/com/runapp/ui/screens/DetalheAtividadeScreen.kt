@@ -52,8 +52,14 @@ private val CorCadencia = Color(0xFFFF8A65)
 private val CorGAP      = Color(0xFF81C784)
 private val CorCursor   = Color(0xFFFFFFFF)
 private val CorGrid     = Color(0xFFFFFFFF).copy(alpha = 0.05f)
-private val CoreZonas   = listOf(
-    Color(0xFF90CAF9), Color(0xFF66BB6A), Color(0xFFFFEE58), Color(0xFFFFA726), Color(0xFFEF5350)
+private val CoreZonas = listOf(
+    Color(0xFF90CAF9), // Z1 — azul claro
+    Color(0xFF66BB6A), // Z2 — verde
+    Color(0xFFFFEE58), // Z3 — amarelo
+    Color(0xFFFFB74D), // Z4 — laranja claro
+    Color(0xFFFF7043), // Z5 — laranja escuro
+    Color(0xFFE53935), // Z6 — vermelho
+    Color(0xFFB71C1C)  // Z7 — vermelho escuro
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -606,7 +612,7 @@ private fun CartaoZonas(zonas: List<InfoZona>) {
                     .getOrElse { CoreZonas.getOrElse(idx) { CoreZonas.last() } }
                 Row(modifier = Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(modifier = Modifier.size(10.dp).background(cor, CircleShape))
-                    Text(" Z${idx + 1} ${z.nome}", modifier = Modifier.weight(1f).padding(start = 8.dp), fontSize = 12.sp, color = Color.White)
+                    Text(" Z${idx + 1}", modifier = Modifier.weight(1f).padding(start = 8.dp), fontSize = 12.sp, color = Color.White)
                     if (z.tempo.isNotEmpty()) Text("${z.tempo}  ", fontSize = 12.sp, color = Color.White.copy(alpha = 0.5f))
                     Text("${z.percentagem.roundToInt()}%", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = cor)
                 }
