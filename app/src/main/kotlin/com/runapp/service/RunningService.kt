@@ -1034,7 +1034,13 @@ class RunningService : Service(), SensorEventListener {
         _gradienteAtual.value      = 0.0
 
         registrarSensores()
-        
+
+        // Trata o início da corrida como se fosse um SCREEN_ON:
+        // os primeiros 20s usam alpha=0.02 (EMA quase imóvel) e os primeiros 10s
+        // ficam em quarentena (não gravam paceNoPonto). Isso evita que o GPS
+        // demorando para calibrar no cold start gere paces ruins no gráfico.
+        screenOnTimestampMs = SystemClock.elapsedRealtime()
+
         iniciarAtualizacoesGPS()
         iniciarTimer()
     }
@@ -2070,12 +2076,10 @@ class RunningService : Service(), SensorEventListener {
             }
         }
 
-        // Alpha reduzido nos primeiros 20s após SCREEN_ON — GPS ainda estabilizando.
-        // alpha=0.02 (2% novo dado, 98% memória) torna a EMA praticamente imóvel:
-        // um paceBruto de 361 s/km com EMA=881 resulta em EMA≈871 — spike invisível.
-        // O A54 leva até 20s para estabilizar o Doppler completamente.
+        // Alpha reduzido nos primeiros 20s após SCREEN_ON/início — GPS ainda estabilizando.
+        // alpha=0.05 (tau≈20s): protege contra spikes mas responde em ~20s a um pace real.
         val alpha = when {
-            msDesdeScreenOn < 20_000L -> 0.02
+            msDesdeScreenOn < 20_000L -> 0.05
             janelaAtualSegundos <= 5  -> 0.4
             else                      -> 0.25
         }
@@ -2112,6 +2116,11 @@ class RunningService : Service(), SensorEventListener {
             return
         }
 
+        // Usa _distanciaMetros (acumulado em tempo real via Doppler/Haversine 3D).
+        // Nota: ao salvar, paceMediaOficial e recalculado sobre distancia 2D suavizada
+        // (GpxGenerator.calcularDistanciaSmoothed), o que pode divergir ligeiramente.
+        // A divergencia e aceitavel e esperada: durante a corrida priorizamos responsividade;
+        // apos salvar priorizamos coerencia com o que Intervals.icu e Strava mostram.
         val paceSegundos = (_tempoTotalSegundos.value.toDouble() / _distanciaMetros.value) * 1000.0
         _paceMedia.value = formatarPace(paceSegundos)
     }
