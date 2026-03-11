@@ -58,13 +58,19 @@ object IntervalsClient {
     private val sportSettingDeserializer = object : JsonDeserializer<SportSetting> {
         override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): SportSetting {
             val o = json.asJsonObject
+            // IMPORTANTE: usar get() + takeIf { isJsonArray } em vez de getAsJsonArray().
+            // getAsJsonArray() lança ClassCastException quando o campo existe mas é null
+            // no JSON (JsonNull). get() + isJsonArray trata isso com segurança.
             return SportSetting(
                 id            = o.get("id")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
-                types         = o.getAsJsonArray("types")?.mapNotNull { it.takeIf { !it.isJsonNull }?.asString } ?: emptyList(),
+                types         = o.get("types")?.takeIf { it.isJsonArray }?.asJsonArray
+                                    ?.mapNotNull { it.takeIf { !it.isJsonNull }?.asString } ?: emptyList(),
                 thresholdPace = o.get("threshold_pace")?.takeIf { !it.isJsonNull }?.asDouble,
                 paceUnits     = o.get("pace_units")?.takeIf { !it.isJsonNull }?.asString,
-                paceZones     = o.getAsJsonArray("pace_zones")?.mapNotNull { it.takeIf { !it.isJsonNull }?.asDouble },
-                paceZoneNames = o.getAsJsonArray("pace_zone_names")?.mapNotNull { it.takeIf { !it.isJsonNull }?.asString }
+                paceZones     = o.get("pace_zones")?.takeIf { it.isJsonArray }?.asJsonArray
+                                    ?.mapNotNull { it.takeIf { !it.isJsonNull }?.asDouble },
+                paceZoneNames = o.get("pace_zone_names")?.takeIf { it.isJsonArray }?.asJsonArray
+                                    ?.mapNotNull { it.takeIf { !it.isJsonNull }?.asString }
             )
         }
     }
