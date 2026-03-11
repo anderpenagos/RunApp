@@ -211,8 +211,8 @@ class AudioCoach(private val context: Context) {
         val km        = distanciaKm.toInt().toString()
         val paceTexto = formatarPaceParaFala(paceMedia)
 
-        val ehSubida         = gradienteMedio >   0.02   // > 2% líquido = subida real
-        val ehDescidaTecnica = gradienteMedio <  -0.15   // < -15% = paradoxo de Minetti
+        val ehSubida         = gradienteMedio >   0.02   // > 2% liquido = subida real
+        val ehDescidaTecnica = gradienteMedio <  -0.20   // < -20% (alinhado com LIMIAR_DESCIDA_TECNICA)
         val diferencaGap     = gapMedioSegKm - paceRealSegKm  // positivo = GAP mais lento = subida
 
         // Eficiência: o corredor manteve a intensidade se o esforço ajustado (GAP)

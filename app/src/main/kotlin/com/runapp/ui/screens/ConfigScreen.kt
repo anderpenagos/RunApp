@@ -350,6 +350,77 @@ fun ConfigScreen(
             }
         }
 
+        // ── Diagnóstico de Zonas ──────────────────────────────────────────────
+        if (state.isConfigured) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = androidx.compose.ui.graphics.Color(0xFF1A1A2E)
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "🔬 Diagnóstico de Zonas",
+                        fontWeight = FontWeight.Bold,
+                        color = androidx.compose.ui.graphics.Color.White,
+                        fontSize = 14.sp
+                    )
+
+                    val corStatus = when {
+                        state.zonasCarregadas < 0  -> androidx.compose.ui.graphics.Color(0xFFAAAAAA)
+                        state.zonasCarregadas == 0 -> androidx.compose.ui.graphics.Color(0xFFFF6B6B)
+                        else                       -> androidx.compose.ui.graphics.Color(0xFF4ECDC4)
+                    }
+                    val textoStatus = when {
+                        state.zonasCarregadas < 0  -> "⏳ Verificando cache..."
+                        state.zonasCarregadas == 0 -> "❌ Nenhuma zona em cache"
+                        else                       -> "✅ ${state.zonasCarregadas} zonas em cache"
+                    }
+                    Text(text = textoStatus, color = corStatus, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+
+                    if (state.zonasDiagTexto.isNotEmpty()) {
+                        Text(
+                            text = state.zonasDiagTexto,
+                            color = androidx.compose.ui.graphics.Color(0xFFCCCCCC),
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp
+                        )
+                    }
+
+                    // Resultado do teste ao vivo
+                    if (state.zonasTeste.isNotEmpty()) {
+                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = state.zonasTeste,
+                            color = if (state.zonasTeste.startsWith("✅"))
+                                androidx.compose.ui.graphics.Color(0xFF4ECDC4)
+                            else
+                                androidx.compose.ui.graphics.Color(0xFFFF6B6B),
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp
+                        )
+                    }
+
+                    Button(
+                        onClick = { viewModel.testarZonas() },
+                        enabled = !state.zonasTestandoApi,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = androidx.compose.ui.graphics.Color(0xFF2D2D44)
+                        )
+                    ) {
+                        if (state.zonasTestandoApi) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = androidx.compose.ui.graphics.Color.White)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Buscando zonas...", color = androidx.compose.ui.graphics.Color.White, fontSize = 13.sp)
+                        } else {
+                            Text("🔄 Testar e atualizar zonas da API", color = androidx.compose.ui.graphics.Color.White, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+        }
+
         // Botão salvar
         Button(
             onClick = { viewModel.salvarCredenciais(onConfigSalva) },

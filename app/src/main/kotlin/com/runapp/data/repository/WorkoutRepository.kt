@@ -157,8 +157,29 @@ class WorkoutRepository(private val api: IntervalsApi) {
     // ─────────────────────────────────────────────────────────────────────────
 
     fun processarZonas(zonesResponse: ZonesResponse): List<PaceZone> {
+        // Tenta obter o SportSetting de corrida do array sportSettings (formato legado).
+        // GET athlete/{id} nao retorna sportSettings — os campos vem direto na raiz.
+        // Nesse caso constroi um SportSetting sintetico a partir dos campos da raiz.
         val runningSetting = zonesResponse.sportSettings.firstOrNull { sport ->
             sport.types.any { it in listOf("Run", "VirtualRun", "TrailRun") }
+        } ?: run {
+            // Fallback: campos diretos na raiz (formato atual do GET athlete/{id})
+            val tp = zonesResponse.thresholdPace
+            val pz = zonesResponse.paceZones
+            if (tp != null && pz != null) {
+                Log.d(TAG, "processarZonas: usando campos da raiz (threshold_pace=$tp, ${pz.size} zonas)")
+                SportSetting(
+                    id            = 0,
+                    types         = listOf("Run"),
+                    thresholdPace = tp,
+                    paceUnits     = zonesResponse.paceUnits,
+                    paceZones     = pz,
+                    paceZoneNames = zonesResponse.paceZoneNames
+                )
+            } else {
+                Log.w(TAG, "processarZonas: nem sportSettings nem campos raiz disponiveis")
+                null
+            }
         }
         if (runningSetting == null) {
             Log.w(TAG, "Configuração de corrida não encontrada")
@@ -227,21 +248,26 @@ class WorkoutRepository(private val api: IntervalsApi) {
             )
         )
 
-        return expandirPassos(doc.steps, paceZones)
+        // threshold_pace vem no JSON do evento (m/s). Usado como fallback quando
+        // paceZones está vazio (zonas não carregadas da API) e o step usa %pace.
+        val thresholdDoEvento = doc.thresholdPace
+        Log.d(TAG, "  threshold do evento: $thresholdDoEvento m/s | zonas carregadas: ${paceZones.size}")
+
+        return expandirPassos(doc.steps, paceZones, thresholdDoEvento)
     }
 
-    private fun expandirPassos(steps: List<WorkoutStep>, paceZones: List<PaceZone>): List<PassoExecucao> {
+    private fun expandirPassos(steps: List<WorkoutStep>, paceZones: List<PaceZone>, thresholdMs: Double? = null): List<PassoExecucao> {
         val resultado = mutableListOf<PassoExecucao>()
         for (step in steps) {
             if (step.reps != null && step.reps > 1 && !step.steps.isNullOrEmpty()) {
                 Log.d(TAG, "🔁 Bloco de repetição: ${step.reps}x com ${step.steps.size} sub-passos")
                 repeat(step.reps) { i ->
                     step.steps.forEach { subPasso ->
-                        resultado.add(converterStep(subPasso, paceZones, i + 1, step.reps))
+                        resultado.add(converterStep(subPasso, paceZones, i + 1, step.reps, thresholdMs))
                     }
                 }
             } else {
-                resultado.add(converterStep(step, paceZones))
+                resultado.add(converterStep(step, paceZones, thresholdMs = thresholdMs))
             }
         }
         Log.d(TAG, "✅ Total de passos: ${resultado.size}")
@@ -252,7 +278,8 @@ class WorkoutRepository(private val api: IntervalsApi) {
         step: WorkoutStep,
         paceZones: List<PaceZone>,
         repAtual: Int? = null,
-        repsTotal: Int? = null
+        repsTotal: Int? = null,
+        thresholdMs: Double? = null   // threshold do evento (m/s) — fallback para %pace sem _pace
     ): PassoExecucao {
         val paceTarget = step.pace ?: step.target
         Log.d(TAG, "converterStep → type=${step.type} pace={value=${paceTarget?.value}, start=${paceTarget?.start}, end=${paceTarget?.end}, units=${paceTarget?.units}}")
@@ -286,14 +313,19 @@ class WorkoutRepository(private val api: IntervalsApi) {
                     zona = detectarZonaPorPace(paceRapidoSegM, paceZones)
                     Log.d(TAG, "  %%pace via _pace: $paceMinStr–$paceMaxStr/km")
                 } else {
-                    // Sem _pace — calcula via threshold derivado de Z4
-                    val thresholdMs = paceZones.getOrNull(3)?.min?.takeIf { it > 0.0 }?.let { 1.0 / it }
-                    if (thresholdMs != null) {
+                    // Sem _pace — tenta threshold nesta ordem:
+                    // 1. threshold direto do evento (workoutDoc.thresholdPace) — mais preciso
+                    // 2. derivado de paceZones[3].min (Z4) — quando zonas estao carregadas
+                    // 3. fallback hardcoded
+                    val thresholdParaCalculo = thresholdMs
+                        ?: paceZones.getOrNull(3)?.min?.takeIf { it > 0.0 }?.let { 1.0 / it }
+                    if (thresholdParaCalculo != null) {
                         val pctRapido = paceTarget.end ?: paceTarget.start!!
                         val pctLento  = paceTarget.start!!
-                        paceMinStr = formatarPace(1.0 / (thresholdMs * pctRapido / 100.0))
-                        paceMaxStr = formatarPace(1.0 / (thresholdMs * pctLento  / 100.0))
-                        zona = detectarZonaPorPace(1.0 / (thresholdMs * pctRapido / 100.0), paceZones)
+                        paceMinStr = formatarPace(1.0 / (thresholdParaCalculo * pctRapido / 100.0))
+                        paceMaxStr = formatarPace(1.0 / (thresholdParaCalculo * pctLento  / 100.0))
+                        zona = detectarZonaPorPace(1.0 / (thresholdParaCalculo * pctRapido / 100.0), paceZones)
+                        Log.d(TAG, "  %%pace via threshold=${thresholdParaCalculo} m/s: $paceMinStr-$paceMaxStr/km")
                     } else {
                         val (min, max) = getPaceFallback(4); paceMinStr = min; paceMaxStr = max; zona = 4
                     }
@@ -708,10 +740,16 @@ class WorkoutRepository(private val api: IntervalsApi) {
         if (rota.size < 60) return emptyList()
 
         // ── 1. SUAVIZAÇÃO: janela deslizante de 90 segundos ─────────────────────
-        // Calcula o pace real de cada janela por distância/tempo acumulados,
-        // ignorando pontos com pace inválido (paradas, GPS perdido).
+        // Pontos com paceNoPonto = 0.0 (GPS sem pace calculado: primeiros segundos
+        // ou quarentena pos-SCREEN_ON) sao excluidos. Sem esse filtro, coerceIn(60,1500)
+        // transformava 0.0 em 60 s/km (1:00/km, impossivel), contaminando P25/P75
+        // e podendo criar "tiros" falsos no inicio da corrida.
+        val PACE_INVALIDO = 0.0
+        val rollingPace = DoubleArray(rota.size) {
+            val p = rota[it].paceNoPonto
+            if (p <= PACE_INVALIDO) Double.NaN else p.coerceIn(60.0, 1500.0)
+        }
         val JANELA_MS = 90_000L
-        val rollingPace = DoubleArray(rota.size) { rota[it].paceNoPonto.coerceIn(60.0, 1500.0) }
         for (i in rota.indices) {
             val tInicio = rota[i].tempo - JANELA_MS
             val jInicio = (0..i).firstOrNull { rota[it].tempo >= tInicio } ?: 0
@@ -719,13 +757,16 @@ class WorkoutRepository(private val api: IntervalsApi) {
             if (seg.size < 5) continue
             val dist = seg.zipWithNext().sumOf { (a, b) -> haversine(a.lat, a.lng, b.lat, b.lng) }
             val time = (seg.last().tempo - seg.first().tempo) / 1000.0
+            // Recalcula pelo metodo distancia/tempo: mais preciso que paceNoPonto individual.
+            // Sobrescreve NaN (pontos iniciais sem pace) se a janela acumulada ja e valida.
             if (dist > 20 && time > 20) {
                 rollingPace[i] = (time / dist * 1000).coerceIn(60.0, 1500.0)
             }
         }
 
         // ── 2. DISPERSÃO: verifica se o treino é estruturado ────────────────────
-        val validos = rollingPace.filter { it in 60.0..1200.0 }.sorted()
+        // Filtra NaN (pontos iniciais sem pace) e valores fora do range fisiologico.
+        val validos = rollingPace.filter { !it.isNaN() && it in 60.0..1200.0 }.sorted()
         if (validos.size < 60) return emptyList()
         val p25 = validos[(validos.size * 0.25).toInt()]
         val p75 = validos[(validos.size * 0.75).toInt()]
@@ -733,19 +774,19 @@ class WorkoutRepository(private val api: IntervalsApi) {
         if (p25 < 1.0 || p75 / p25 < 1.20) return emptyList()
 
         // ── 3. CLASSIFICAÇÃO COM HISTERESE DUPLA ────────────────────────────────
-        // limiarBaixo = 30% do range → entra em "esforço" apenas se pace < limiarBaixo
-        // limiarAlto  = 70% do range → entra em "descanso" apenas se pace > limiarAlto
-        // Zona cinzenta [limiarBaixo, limiarAlto]: mantém estado anterior (histerese)
-        val limiarBaixo = p25 + (p75 - p25) * 0.35   // 35% do range = zona de esforço
-        val limiarAlto  = p25 + (p75 - p25) * 0.65   // 65% do range = zona de descanso
-        // isFast[i]: true = esforço, false = descanso/recuperação
-        val isFast = BooleanArray(rota.size) { rollingPace[it] < limiarBaixo }
-        // Aplicar histerese: zona cinzenta herda estado anterior
+        val limiarBaixo = p25 + (p75 - p25) * 0.35
+        val limiarAlto  = p25 + (p75 - p25) * 0.65
+        // Pontos NaN (pace invalido): herdam o estado anterior — nao quebram a sequencia
+        val isFast = BooleanArray(rota.size) { i ->
+            val p = rollingPace[i]
+            if (p.isNaN()) false else p < limiarBaixo
+        }
         for (i in 1 until isFast.size) {
             val p = rollingPace[i]
             isFast[i] = when {
-                p < limiarBaixo -> true   // claramente esforço
-                p > limiarAlto  -> false  // claramente descanso
+                p.isNaN()       -> isFast[i - 1]  // invalido → herda estado
+                p < limiarBaixo -> true
+                p > limiarAlto  -> false
                 else            -> isFast[i - 1]  // zona cinzenta → herda
             }
         }

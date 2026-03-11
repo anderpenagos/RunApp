@@ -722,21 +722,23 @@ class RunningService : Service(), SensorEventListener {
     private val _gapAtualSegKm = MutableStateFlow(0.0)
     val gapAtualSegKm: StateFlow<Double> = _gapAtualSegKm.asStateFlow()
 
-    // Modo Montanha — subida > 4% sustentada por ≥ 100m
-    // Histerese: ativa com 100m, desativa apenas ao sair da subida (< 2%)
+    // Modo Montanha — subida > 6% sustentada por >= 100m
+    // Aumentado de 4% -> 6%: rampas urbanas de acessibilidade (~4%) disparavam falso positivo.
+    // 6% corresponde a uma ladeira claramente ingreme (~1 andar a cada 17m horizontais).
+    // Histerese: ativa com 100m, desativa apenas ao sair da subida (< 3%)
     private var distSubidaAcum = 0.0
-    private val DISTANCIA_ATIVA_MONTANHA = 100.0  // metros subindo > 4%
-    private val LIMIAR_GRADE_MONTANHA    = 0.04   // 4%
-    private val LIMIAR_SAIDA_MONTANHA    = 0.02   // 2% — histerese de saída
+    private val DISTANCIA_ATIVA_MONTANHA = 100.0  // metros subindo > 6%
+    private val LIMIAR_GRADE_MONTANHA    = 0.06   // 6% (era 4%)
+    private val LIMIAR_SAIDA_MONTANHA    = 0.03   // 3% -- histerese de saida (era 2%)
     private var emModoMontanha           = false
     private val _modoMontanha = MutableStateFlow(false)
     val modoMontanha: StateFlow<Boolean> = _modoMontanha.asStateFlow()
 
-    // Descida técnica — grade < -15% (Minetti: custo metabólico volta a subir)
-    // A curva de Minetti tem um mínimo em ~-10%. Abaixo de -15% o custo sobe novamente
-    // por frenagem excêntrica. O GAP nessa zona fica > pace real, o que é contraintuitivo
-    // ("você vai rápido mas está sofrendo"). Tratamos isso com mensagem específica.
-    private val LIMIAR_DESCIDA_TECNICA = -0.15
+    // Descida tecnica -- grade < -20% (aumentado de -15% -> -20%)
+    // GPS vertical tem ruido de +-3-5m. Em janela de regressao de 10 pontos (~10m),
+    // isso pode gerar gradientes ficticios de -15% a -18% em terreno plano.
+    // -20% corresponde a descida onde a frenagem excentrica e claramente sentida.
+    private val LIMIAR_DESCIDA_TECNICA = -0.20
 
     /**
      * Carrega o resultado do km que acabou de fechar e zera os acumuladores.
@@ -1508,16 +1510,22 @@ class RunningService : Service(), SensorEventListener {
 
             if (velocidadeMs > MAX_VELOCIDADE_HUMANA_MS) {
                 // ── CLEAN SLATE: salto GPS impossível detectado ──────────
-                // Limpa AMBAS as janelas de pace para que o valor inválido
-                // não contamine nem o GPX (bufferPace30s → paceNoPonto) nem
-                // o display em tempo real (ultimasLocalizacoes → _paceAtual).
+                // Limpa as janelas de pace para que o valor inválido não
+                // contamine o GPX (bufferPace30s → paceNoPonto) nem o display
+                // em tempo real (ultimasLocalizacoes → _paceAtual).
+                //
+                // ⚠️ NÃO zeramos ultimoPaceEmaInterno aqui.
+                // A EMA representa o histórico real de movimento (ex: 645 s/km).
+                // Zerá-la foi o BUG ORIGINAL: o próximo ponto ficava sem âncora
+                // e paceEma = paceBruto diretamente → spike imediato no display.
+                // Com a EMA preservada + alpha=0.02 dos primeiros 20s, qualquer
+                // paceBruto errado move a EMA < 1 s/km — invisível ao usuário.
                 //
                 // ultimaLocalizacaoSignificativa = local do salto ("Marco Zero"):
                 // sem isso o PRÓXIMO ponto seria comparado com a posição
                 // pré-salto → novo spike em cascata (efeito dominó evitado).
                 bufferPace30s.clear()
                 ultimasLocalizacoes.clear()
-                ultimoPaceEmaInterno = null
                 ultimaLocalizacaoSignificativa = location
                 _paceAtual.value = "--:--"
 
@@ -1525,7 +1533,7 @@ class RunningService : Service(), SensorEventListener {
                 Log.w(TAG, "🚫 GPS clean-slate: salto impossível " +
                     "${distJump.toInt()}m/${deltaTempoS.toInt()}s " +
                     "(${String.format("%.1f", velocidadeMs)} m/s). " +
-                    "EMA + buffers limpos. Marco Zero atualizado.")
+                    "Buffers limpos, EMA PRESERVADA=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}. Marco Zero atualizado.")
                 return
             } else {
                 modoRecuperacaoGps = false
@@ -1823,7 +1831,26 @@ class RunningService : Service(), SensorEventListener {
 
         if (_rotaAtual.subscriptionCount.value > 0) {
             if (rotaTotalPontos == 1 || rotaTotalPontos % 5 == 0) {
-                _rotaAtual.value = rota.toList()
+                // Enquanto o buffer ainda não encheu: emite só o buffer (rápido, sem IO)
+                // Quando o buffer já está cheio e descartando pontos antigos: a cada 50
+                // novos pontos busca Room + buffer para que o mapa mostre a rota completa.
+                if (rotaTotalPontos > BUFFER_MAX_PONTOS && rotaTotalPontos % 50 == 0) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        try {
+                            val pontosRoom   = database.routePointDao().getSessionPoints(sessionId).map { it.toLatLngPonto() }
+                            val ultimoTempo  = pontosRoom.lastOrNull()?.tempo ?: 0L
+                            val pontosBuffer = rota.toList().filter { it.tempo > ultimoTempo }
+                            val rotaCompleta = (pontosRoom + pontosBuffer).sortedBy { it.tempo }
+                            _rotaAtual.value = rotaCompleta
+                            Log.d(TAG, "🗺️ Mapa ao vivo: rota completa emitida (${rotaCompleta.size} pontos, Room=${pontosRoom.size} + buffer=${pontosBuffer.size})")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "⚠️ Falha ao emitir rota completa para o mapa", e)
+                            _rotaAtual.value = rota.toList()
+                        }
+                    }
+                } else {
+                    _rotaAtual.value = rota.toList()
+                }
             }
         }
 
@@ -2318,6 +2345,6 @@ class RunningService : Service(), SensorEventListener {
         const val EXTRA_EVENT_ID = "EVENT_ID"
         
         const val MAX_ACCURACY_METERS = 35f       // descarta da UI (aumentado de 25→35 para reduzir gaps em GPS urbano)
-        const val ROOM_ACCURACY_METERS = 15f      // descarta da persistência
+        const val ROOM_ACCURACY_METERS = 20f      // descarta da persistência (aumentado de 15→20 para GPS urbano)
     }
 }

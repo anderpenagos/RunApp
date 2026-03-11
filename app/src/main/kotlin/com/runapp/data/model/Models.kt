@@ -75,7 +75,13 @@ data class StepTarget(
 // ---- Zonas (FORMATO CORRETO DA API) ----
 
 data class ZonesResponse(
-    @SerializedName("sportSettings") val sportSettings: List<SportSetting> = emptyList()
+    // Formato legado esperado: array sportSettings (nao existe em GET athlete/{id})
+    @SerializedName("sportSettings") val sportSettings: List<SportSetting> = emptyList(),
+    // Formato real de GET athlete/{id}: campos diretos na raiz do JSON
+    @SerializedName("threshold_pace") val thresholdPace: Double? = null,
+    @SerializedName("pace_units")     val paceUnits: String? = null,
+    @SerializedName("pace_zones")     val paceZones: List<Double>? = null,
+    @SerializedName("pace_zone_names") val paceZoneNames: List<String>? = null
 )
 
 data class SportSetting(

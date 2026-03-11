@@ -537,27 +537,41 @@ class CorridaViewModel(
             }
         }
 
-        // ── Descida Técnica — grade < -15% (paradoxo de Minetti) ─────────────
-        // Filtro de persistência: exige 3 pontos GPS CONSECUTIVOS abaixo de -15%
-        // antes de disparar o aviso. Um único ponto ruidoso de altitude (ex: GPS urbano
-        // sob viaduto) pode gerar gradiente de -18% por 1s e voltar a -12% imediatamente.
-        // Sem esse filtro, o corredor ouviria alertas falsos em trechos planos.
-        // O debounce de 24s no AudioCoach garante que ladeiras longas não repitam o aviso.
+        // Descida Tecnica -- grade < -20% (paradoxo de Minetti)
+        //
+        // Duplo filtro para eliminar falsos positivos do GPS vertical:
+        //
+        // FILTRO 1 -- Persistencia: exige 3 pontos GPS CONSECUTIVOS abaixo de -20%.
+        // Um pico isolado de altitude (ex: GPS sob viaduto) gera gradiente de -22%
+        // por 1s e volta imediatamente. Sem isso o corredor ouvia alertas em plano.
+        //
+        // FILTRO 2 -- Media movel: a media dos ultimos 5 gradientes tambem precisa
+        // ser < -0.15. Isso elimina o cenario onde a regressao GPS oscila entre
+        // -21% e -8% alternadamente (GPS ruidoso) -- a media fica em ~-12%, abaixo
+        // do limiar, e o alerta nao dispara. Numa descida real de -20%, todos os
+        // pontos ficam consistentemente abaixo, e a media confirma.
+        //
+        // O debounce de 24s no AudioCoach garante que ladeiras longas nao repitam.
         var pontosDescidaTecnicaConsecutivos = 0
-        val PERSISTENCIA_DESCIDA_TECNICA = 3  // pontos GPS ~ 3 segundos em movimento
+        val PERSISTENCIA_DESCIDA_TECNICA = 3
+        val janelaGradientes = ArrayDeque<Double>(5)
 
         viewModelScope.launch {
             service.gradienteAtual.collect { gradiente ->
-                if (gradiente < -0.15) {
+                // Mantem janela dos ultimos 5 gradientes
+                janelaGradientes.addLast(gradiente)
+                if (janelaGradientes.size > 5) janelaGradientes.removeFirst()
+
+                val mediaGradientes = if (janelaGradientes.size >= 3)
+                    janelaGradientes.average() else 0.0
+
+                if (gradiente < -0.20 && mediaGradientes < -0.15) {
                     pontosDescidaTecnicaConsecutivos++
                     if (pontosDescidaTecnicaConsecutivos >= PERSISTENCIA_DESCIDA_TECNICA) {
                         audioCoach.anunciarDescidaTecnica()
-                        // Após disparar, não zera — o throttle do AudioCoach (24s) evita spam.
-                        // Manter o contador alto evita re-contar 3 pontos a cada janela de 24s.
+                        // Nao zera -- throttle de 24s no AudioCoach evita spam em ladeiras longas
                     }
                 } else {
-                    // Qualquer ponto fora do limiar quebra a sequência — garante que
-                    // a ladeira é contínua, não uma série de picos isolados.
                     pontosDescidaTecnicaConsecutivos = 0
                 }
             }
@@ -903,63 +917,67 @@ class CorridaViewModel(
     fun finalizarCorrida() {
         android.util.Log.d("CorridaVM", "⏹️ Finalizando corrida")
 
-        // ⚠️ CRÍTICO: capturar os dados ANTES de parar o service
-        // Quando o service para, os StateFlows são destruídos e os dados somem
+        // ⚠️ CRÍTICO: capturar dados síncronos ANTES de parar o service.
+        // Os StateFlows são destruídos quando o service para.
         val service = runningService
-        val distanciaFinal   = service?.distanciaMetros?.value  ?: _uiState.value.distanciaMetros
-        val tempoFinal       = service?.tempoTotalSegundos?.value ?: _uiState.value.tempoTotalSegundos
-        val paceAtualFinal   = service?.paceAtual?.value         ?: _uiState.value.paceAtual
-        val paceMediaFinal   = service?.paceMedia?.value         ?: _uiState.value.paceMedia
-        val rotaCompletaFinal = service?.getRotaCompleta()         ?: _uiState.value.rota
-        val rotaFinal         = simplificarParaDisplay(rotaCompletaFinal)
-        // Guarda rota completa para GPX export — o mapa usa a simplificada
-        rotaCompleataParaExport = rotaCompletaFinal
+        val distanciaFinal = service?.distanciaMetros?.value  ?: _uiState.value.distanciaMetros
+        val tempoFinal     = service?.tempoTotalSegundos?.value ?: _uiState.value.tempoTotalSegundos
+        val paceAtualFinal = service?.paceAtual?.value         ?: _uiState.value.paceAtual
+        val paceMediaFinal = service?.paceMedia?.value         ?: _uiState.value.paceMedia
+        val sid            = service?.getSessionId() ?: ""
 
-        // FIX: Salvar backup de emergência IMEDIATAMENTE, antes de qualquer outra operação.
-        // Isso garante que, mesmo que o app trave durante o salvamento normal, os dados
-        // da corrida estão persistidos em disco e serão recuperados na próxima abertura.
-        if (distanciaFinal >= 50 && tempoFinal >= 30) {
-            // Passa sessionId para que o backup use Room (v2) em vez de JSON com rota
-            val sid = service?.getSessionId() ?: ""
-            salvarBackupEmergencia(distanciaFinal, tempoFinal, paceMediaFinal, rotaCompletaFinal, sid)
-        }
-
-        // Gravar snapshot no uiState ANTES de parar tudo
+        // Marca como FINALIZADO imediatamente para a UI reagir (esconde botões, etc.)
         _uiState.value = _uiState.value.copy(
-            distanciaMetros   = distanciaFinal,
+            distanciaMetros    = distanciaFinal,
             tempoTotalSegundos = tempoFinal,
-            tempoFormatado    = formatarTempo(tempoFinal),
-            paceAtual         = paceAtualFinal,
-            paceMedia         = paceMediaFinal,
-            rota              = rotaFinal,
-            fase              = FaseCorrida.FINALIZADO
+            tempoFormatado     = formatarTempo(tempoFinal),
+            paceAtual          = paceAtualFinal,
+            paceMedia          = paceMediaFinal,
+            fase               = FaseCorrida.FINALIZADO
         )
 
-        // Antes de parar o service, forçar emissão da rota completa final
-        // (pode haver até 4 pontos que não foram emitidos pela otimização de 5-em-5)
-        service?.let { s ->
-            val rotaCompleta = s.rotaAtual.value
-            if (rotaCompleta.size != rotaFinal.size) {
-                _uiState.value = _uiState.value.copy(rota = rotaCompleta)
-            }
-        }
+        // FIX CRÍTICO: buscar rota completa (Room + buffer) em coroutine ANTES de
+        // parar o service. getRotaCompleta() (síncrona) só retornava os últimos 300
+        // pontos do buffer RAM (~5min), descartando toda a rota anterior já persistida
+        // no Room. Resultado: GPX com 686m em vez de 3,54km.
+        viewModelScope.launch {
+            // 1. Busca rota completa enquanto o service ainda está vivo
+            val rotaCompletaFinal = service?.getRotaCompletaComRoom() ?: _uiState.value.rota
+            android.util.Log.d("CorridaVM", "📦 Rota final: ${rotaCompletaFinal.size} pontos (Room + buffer)")
 
-        // Agora sim pode parar o service
-        val intent = Intent(context, RunningService::class.java).apply {
-            action = RunningService.ACTION_STOP
-        }
-        context.startService(intent)
-
-        // Desvincular do service
-        if (serviceBound) {
-            try {
-                context.unbindService(serviceConnection)
-                serviceBound = false
-            } catch (e: Exception) {
-                android.util.Log.e("CorridaVM", "Erro ao unbind service", e)
+            // 2. Simplifica para o mapa de display (D-P) — o export usa a versão completa
+            val rotaFinal = withContext(kotlinx.coroutines.Dispatchers.Default) {
+                simplificarParaDisplay(rotaCompletaFinal)
             }
+
+            // 3. Guarda rota completa para GPX export — o mapa usa a simplificada
+            rotaCompleataParaExport = rotaCompletaFinal
+
+            // 4. Backup de emergência com rota completa
+            if (distanciaFinal >= 50 && tempoFinal >= 30) {
+                salvarBackupEmergencia(distanciaFinal, tempoFinal, paceMediaFinal, rotaCompletaFinal, sid)
+            }
+
+            // 5. Atualiza mapa com rota completa simplificada
+            _uiState.value = _uiState.value.copy(rota = rotaFinal)
+
+            // 6. Só agora para o service — Room já foi lido
+            val intent = Intent(context, RunningService::class.java).apply {
+                action = RunningService.ACTION_STOP
+            }
+            context.startService(intent)
+
+            // 7. Desvincular do service
+            if (serviceBound) {
+                try {
+                    context.unbindService(serviceConnection)
+                    serviceBound = false
+                } catch (e: Exception) {
+                    android.util.Log.e("CorridaVM", "Erro ao unbind service", e)
+                }
+            }
+            runningService = null
         }
-        runningService = null
     }
 
     // Aliases para compatibilidade com CorridaScreen e ResumoScreen

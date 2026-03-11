@@ -26,7 +26,12 @@ data class ConfigUiState(
     val splitIntervaloMetros: Int = 1000,
     val splitDadosFlags: Set<String> = setOf("distancia", "pace_medio"),
     // true enquanto o Room ainda não respondeu — impede decisões de navegação precipitadas
-    val isLoading: Boolean = true
+    val isLoading: Boolean = true,
+    // Diagnóstico de zonas — visível no app (sem logcat)
+    val zonasCarregadas: Int = -1,           // -1 = ainda não verificado
+    val zonasDiagTexto: String = "",          // descrição das zonas carregadas
+    val zonasTestandoApi: Boolean = false,    // true enquanto testa a API
+    val zonasTeste: String = ""              // resultado do teste ao vivo
 )
 
 class ConfigViewModel(application: Application) : AndroidViewModel(application) {
@@ -47,6 +52,19 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
             val audioSplits         = prefs.audioSplitsKm.first()
             val splitIntervalo      = prefs.splitIntervaloMetros.first()
             val splitFlags          = prefs.splitDadosFlags.first()
+
+            // Lê zonas do cache para mostrar diagnóstico imediato
+            val zonasCached = prefs.getZonasFronteiraCached()
+            val diagTexto = if (zonasCached.isEmpty()) {
+                "Nenhuma zona em cache — será buscada ao salvar/correr"
+            } else {
+                zonasCached.joinToString("\n") { z ->
+                    val min = z.paceMinSegKm.toLong().let { "%d:%02d".format(it / 60, it % 60) }
+                    val max = z.paceMaxSegKm?.toLong()?.let { "%d:%02d".format(it / 60, it % 60) } ?: "∞"
+                    "• ${z.nome}: $min – $max /km"
+                }
+            }
+
             _uiState.value = ConfigUiState(
                 apiKey                = apiKey ?: "",
                 athleteId             = athleteId ?: "",
@@ -58,8 +76,78 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                 audioSplitsKm         = audioSplits,
                 splitIntervaloMetros  = splitIntervalo,
                 splitDadosFlags       = splitFlags,
-                isLoading             = false
+                isLoading             = false,
+                zonasCarregadas       = zonasCached.size,
+                zonasDiagTexto        = diagTexto
             )
+        }
+    }
+
+    /** Testa busca de zonas ao vivo na API e mostra o resultado no card de diagnóstico. */
+    fun testarZonas() {
+        val state = _uiState.value
+        if (state.apiKey.isBlank() || state.athleteId.isBlank()) {
+            _uiState.value = state.copy(zonasTeste = "⚠️ Configure API Key e Athlete ID primeiro")
+            return
+        }
+        _uiState.value = state.copy(zonasTestandoApi = true, zonasTeste = "")
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val app = getApplication<com.runapp.RunApp>()
+                val repo = app.container.createWorkoutRepository(state.apiKey.trim())
+                val resultado = repo.getZonas(state.athleteId.trim())
+                resultado.fold(
+                    onSuccess = { zonesResponse ->
+                        val zonas = repo.processarZonas(zonesResponse)
+                        val texto = if (zonas.isEmpty()) {
+                            "❌ API respondeu mas não encontrou zonas de corrida.\n" +
+                            "Verifique se há zonas de pace configuradas no Intervals.icu.\n" +
+                            "sportSettings recebidos: ${zonesResponse.sportSettings.size}\n" +
+                            "threshold_pace raiz: ${zonesResponse.thresholdPace}\n" +
+                            "pace_zones raiz: ${zonesResponse.paceZones?.size ?: 0} zonas"
+                        } else {
+                            "✅ ${zonas.size} zonas recebidas:\n" +
+                            zonas.joinToString("\n") { z ->
+                                val min = z.min?.let { (it * 1000).toLong() }?.let { "%d:%02d".format(it / 60, it % 60) } ?: "--"
+                                val max = z.max?.let { (it * 1000).toLong() }?.let { "%d:%02d".format(it / 60, it % 60) } ?: "∞"
+                                "  ${z.name}: $min – $max /km"
+                            }
+                        }
+                        // Atualiza cache se veio com dados
+                        if (zonas.isNotEmpty()) {
+                            val fronteiras = zonas.map { z ->
+                                com.runapp.data.model.ZonaFronteira(
+                                    nome = z.name, cor = z.color ?: "",
+                                    paceMinSegKm = (z.min ?: 0.0) * 1000.0,
+                                    paceMaxSegKm = z.max?.let { it * 1000.0 }
+                                )
+                            }
+                            prefs.salvarZonasFronteira(fronteiras)
+                        }
+                        _uiState.value = _uiState.value.copy(
+                            zonasTestandoApi = false,
+                            zonasTeste = texto,
+                            zonasCarregadas = zonas.size,
+                            zonasDiagTexto = if (zonas.isNotEmpty()) zonas.joinToString("\n") { z ->
+                                val min = z.min?.let { (it * 1000).toLong() }?.let { "%d:%02d".format(it / 60, it % 60) } ?: "--"
+                                val max = z.max?.let { (it * 1000).toLong() }?.let { "%d:%02d".format(it / 60, it % 60) } ?: "∞"
+                                "• ${z.name}: $min – $max /km"
+                            } else _uiState.value.zonasDiagTexto
+                        )
+                    },
+                    onFailure = { erro ->
+                        _uiState.value = _uiState.value.copy(
+                            zonasTestandoApi = false,
+                            zonasTeste = "❌ Erro na API: ${erro.message}"
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    zonasTestandoApi = false,
+                    zonasTeste = "❌ Exceção: ${e.message}"
+                )
+            }
         }
     }
 

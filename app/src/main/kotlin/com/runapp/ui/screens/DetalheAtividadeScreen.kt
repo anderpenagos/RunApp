@@ -1023,7 +1023,10 @@ private fun calcularZonasPorTempo(
             MS_POR_PONTO
         }
 
-        var zonaIdx = zonasFronteira.lastIndex
+        // Zonas ordenadas lenta→rapida (index 0 = mais lenta, lastIndex = mais rapida).
+        // Default = 0 (zona mais lenta): paces fora do range (muito lento ou GPS sem valor)
+        // caem na zona de recuperacao, nao na mais rapida.
+        var zonaIdx = 0
         for (z in zonasFronteira.indices) {
             val zf = zonasFronteira[z]
             val dentroDoTeto = zf.paceMaxSegKm == null || pace <= zf.paceMaxSegKm
