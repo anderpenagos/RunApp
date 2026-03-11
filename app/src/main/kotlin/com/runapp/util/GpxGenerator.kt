@@ -140,10 +140,86 @@ object GpxGenerator {
 
     // ── FIX D: Suavização por segmento ────────────────────────────────────────
     //
-    // 1. Divide a lista em segmentos separados por fronteiras (pausa ou âncora).
-    // 2. Aplica média ponderada gaussiana em cada segmento independentemente.
-    // 3. Reconstrói a lista mantendo timestamps, cadência e pace originais —
+    // 1. Interpola gaps de velocidade implausível dentro do mesmo segmento.
+    // 2. Divide a lista em segmentos separados por fronteiras (pausa ou âncora).
+    // 3. Aplica média ponderada gaussiana em cada segmento independentemente.
+    // 4. Reconstrói a lista mantendo timestamps, cadência e pace originais —
     //    só lat, lng e alt são alterados.
+
+    // Velocidade máxima plausível para um corredor/caminhante.
+    // Acima disso, dois pontos consecutivos no mesmo segmento são um spike
+    // de GPS (ex: ponto-âncora → primeiro ponto pós-recovery) e serão interpolados.
+    // 8 m/s = ~29 km/h — nenhum corredor recreativo chega perto disso.
+    private const val MAX_VELOCIDADE_INTERPOLACAO_MS = 8.0
+
+    /**
+     * Detecta pares de pontos consecutivos dentro do mesmo segmento temporal
+     * (gap < GAP_FRONTEIRA_MS) onde a velocidade implícita é impossível
+     * (> MAX_VELOCIDADE_INTERPOLACAO_MS), e insere pontos intermediários
+     * interpolados linearmente entre eles.
+     *
+     * Isso resolve o spike de velocidade gerado pelo par âncora-GPS:
+     *   âncora: lat=A, lng=A, tempo=T-1ms  (coords do último ponto válido)
+     *   novo ponto GPS: lat=B, lng=B, tempo=T  (coords após recovery, potencialmente longe)
+     * → Intervals.icu vê: distância(A,B) / 0.001s = velocidade absurda.
+     *
+     * Após interpolação: N pontos intermediários com coords e timestamps espaçados
+     * uniformemente → velocidade plausível em cada segmento.
+     *
+     * Altitude, cadência e pace são também interpolados/propagados para que
+     * os gráficos do Intervals.icu não mostrem spikes nesses canais.
+     */
+    private fun interpolarGaps(pontos: List<LatLngPonto>): List<LatLngPonto> {
+        if (pontos.size < 2) return pontos
+        val resultado = mutableListOf<LatLngPonto>()
+
+        for (i in pontos.indices) {
+            resultado.add(pontos[i])
+            if (i == pontos.lastIndex) break
+
+            val a = pontos[i]
+            val b = pontos[i + 1]
+            val dtMs = b.tempo - a.tempo
+
+            // Só age dentro do mesmo segmento temporal (< 3s entre pontos)
+            if (dtMs <= 0 || dtMs >= GAP_FRONTEIRA_MS) continue
+
+            val distM = haversine(a.lat, a.lng, b.lat, b.lng)
+            val velMs = distM / (dtMs / 1000.0)
+
+            // Velocidade plausível — nenhuma interpolação necessária
+            if (velMs <= MAX_VELOCIDADE_INTERPOLACAO_MS) continue
+
+            // Quantos pontos intermediários? Um por segundo, mínimo 1
+            val nPontos = (dtMs / 1000.0).toInt().coerceAtLeast(1)
+            Log.d(TAG, "🔀 Interpolando gap: ${distM.toInt()}m em ${dtMs}ms " +
+                "(${String.format("%.1f", velMs)}m/s) → $nPontos pontos intermediários")
+
+            for (k in 1..nPontos) {
+                val t = k.toDouble() / (nPontos + 1)
+                resultado.add(
+                    a.copy(
+                        lat  = a.lat + t * (b.lat - a.lat),
+                        lng  = a.lng + t * (b.lng - a.lng),
+                        alt  = if (a.alt != 0.0 && b.alt != 0.0)
+                                   a.alt + t * (b.alt - a.alt)
+                               else if (a.alt != 0.0) a.alt else b.alt,
+                        tempo           = a.tempo + (t * dtMs).toLong(),
+                        // Cadência: propaga a do ponto anterior (mais estável que b,
+                        // que pode ser o primeiro ponto após recovery ainda instável)
+                        cadenciaNoPonto = if (a.cadenciaNoPonto > 0) a.cadenciaNoPonto
+                                          else b.cadenciaNoPonto,
+                        // Pace: interpola entre os dois vizinhos válidos
+                        paceNoPonto     = if (a.paceNoPonto > 0 && b.paceNoPonto > 0)
+                                              a.paceNoPonto + t * (b.paceNoPonto - a.paceNoPonto)
+                                          else if (a.paceNoPonto > 0) a.paceNoPonto
+                                          else b.paceNoPonto
+                    )
+                )
+            }
+        }
+        return resultado
+    }
 
     /**
      * Retorna a distancia total em metros calculada sobre os pontos SUAVIZADOS.
@@ -182,12 +258,17 @@ object GpxGenerator {
     private fun suavizarPontos(pontos: List<LatLngPonto>): List<LatLngPonto> {
         if (pontos.size < 3) return pontos
 
+        // Passo 0: interpolar gaps de velocidade impossível antes de qualquer suavização.
+        // Garante que spikes de coordenada (âncora → primeiro ponto pós-recovery) sejam
+        // preenchidos com pontos coerentes antes de chegar ao Intervals.icu / Strava.
+        val base = interpolarGaps(pontos)
+
         // Identificar fronteiras entre pontos consecutivos
-        val ehFronteira = BooleanArray(pontos.size) { false }
-        for (i in 0 until pontos.size - 1) {
-            val gapMs = pontos[i + 1].tempo - pontos[i].tempo
-            val mesmaPos = pontos[i].lat == pontos[i + 1].lat &&
-                           pontos[i].lng == pontos[i + 1].lng
+        val ehFronteira = BooleanArray(base.size) { false }
+        for (i in 0 until base.size - 1) {
+            val gapMs = base[i + 1].tempo - base[i].tempo
+            val mesmaPos = base[i].lat == base[i + 1].lat &&
+                           base[i].lng == base[i + 1].lng
             if (gapMs > GAP_FRONTEIRA_MS || mesmaPos) {
                 ehFronteira[i] = true
             }
@@ -196,23 +277,23 @@ object GpxGenerator {
         // Dividir em segmentos contíguos
         val segmentos = mutableListOf<IntRange>()
         var inicio = 0
-        for (i in pontos.indices) {
-            if (ehFronteira[i] || i == pontos.lastIndex) {
+        for (i in base.indices) {
+            if (ehFronteira[i] || i == base.lastIndex) {
                 segmentos.add(inicio..i)
                 inicio = i + 1
             }
         }
 
         // Passe 1: filtro de mediana — elimina spikes isolados (ex: multipath GPS)
-        val aposMediana = pontos.toMutableList()
+        val aposMediana = base.toMutableList()
         for (seg in segmentos) {
             if (seg.last - seg.first < 2) continue
             for (i in seg) {
-                aposMediana[i] = pontos[i].copy(
-                    lat = mediana(pontos, i, seg, RAIO_MEDIANA) { it.lat },
-                    lng = mediana(pontos, i, seg, RAIO_MEDIANA) { it.lng },
-                    alt = if (pontos[i].alt != 0.0)
-                              mediana(pontos, i, seg, RAIO_MEDIANA) { it.alt }
+                aposMediana[i] = base[i].copy(
+                    lat = mediana(base, i, seg, RAIO_MEDIANA) { it.lat },
+                    lng = mediana(base, i, seg, RAIO_MEDIANA) { it.lng },
+                    alt = if (base[i].alt != 0.0)
+                              mediana(base, i, seg, RAIO_MEDIANA) { it.alt }
                           else 0.0
                 )
             }

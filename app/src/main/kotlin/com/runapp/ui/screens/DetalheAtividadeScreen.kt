@@ -879,11 +879,25 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
         emptyList(), emptyList(), emptyList(), false, false, 300.0, 600.0, 300.0, 600.0)
     if (rota.size < 2) return vazio
 
-    // Suavização de altitude (média móvel)
-    val altsSuav = rota.mapIndexed { i, _ ->
-        val a = (i - 5).coerceAtLeast(0); val b = (i + 5).coerceAtMost(rota.lastIndex)
-        rota.subList(a, b + 1).map { it.alt }.average()
+    // Detecção prévia de spikes para excluir da SMA de altitude
+    val isAltSpike = BooleanArray(rota.size) { false }
+    for (i in 1 until rota.size) {
+        val dtS = ((rota[i].tempo - rota[i-1].tempo) / 1000.0).coerceAtLeast(0.1)
+        val distM = haversineM(rota[i-1].lat, rota[i-1].lng, rota[i].lat, rota[i].lng)
+        if (distM / dtS > 12.0) { isAltSpike[i] = true; isAltSpike[i-1] = true }
     }
+
+    // Suavização de altitude (média móvel ±5) excluindo pontos de spike GPS.
+    // Pontos spike ficam como -1f e são interpolados logo após para linha contínua.
+    val altsRawF = rota.mapIndexed { i, pt ->
+        if (isAltSpike[i]) -1f
+        else {
+            val a = (i - 5).coerceAtLeast(0); val b = (i + 5).coerceAtMost(rota.lastIndex)
+            val vizinhos = (a..b).mapNotNull { j -> if (!isAltSpike[j]) rota[j].alt else null }
+            (if (vizinhos.isEmpty()) pt.alt else vizinhos.average()).toFloat()
+        }
+    }
+    val altsSuav = interpolarInvalidos(altsRawF).map { it.toDouble() }
     
     // ── Detecção de saltos GPS ─────────────────────────────────────────────────
     // Quando o GPS perde sinal e volta numa posição diferente, haversine/Δt
@@ -1010,7 +1024,12 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
         paceFormatado = idxs.map { formatarPaceSegKm(pacesSuav[it].coerceAtLeast(0.0).let { v -> if (v < 60.0) paces[it] else v }) },
         gapFormatado  = idxs.map { formatarPaceSegKm(gaps[it]) },
         altitudes     = idxs.map { altsSuav[it] },
-        cadencias     = idxs.map { rota[it].cadenciaNoPonto },
+        cadencias     = run {
+            // Interpola zeros entre leituras válidas de cadência (igual ao pace).
+            // Zeros ocorrem em pontos-âncora e nos primeiros pontos de cada segmento.
+            val raw = idxs.map { rota[it].cadenciaNoPonto.toFloat().let { v -> if (v <= 0f) -1f else v } }
+            interpolarInvalidos(raw).map { it.toInt().coerceAtLeast(0) }
+        },
         indicesOriginais = idxs,
         temCadencia   = rota.any { it.cadenciaNoPonto > 0 },
         temGAP        = (altMax - altMin) > 5.0,
