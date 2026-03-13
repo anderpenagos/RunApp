@@ -1675,7 +1675,7 @@ class RunningService : Service(), SensorEventListener {
             location.speed > 0.1f &&
             deltaTSegundos in 0.5..3.0 &&
             (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O ||
-             location.speedAccuracyMetersPerSecond < 0.5f)
+             location.speedAccuracyMetersPerSecond < 1.0f)  // relaxado de 0.5f: Doppler mais confiável que Haversine+Kalman em curvas
 
         val distancia2D = if (usarDoppler) {
             val speedAnterior = ultimasLocalizacoes.lastOrNull()?.speed?.toDouble() ?: location.speed.toDouble()
@@ -1705,10 +1705,21 @@ class RunningService : Service(), SensorEventListener {
 
         adicionarPontoRota(pontoNovo)
 
-        if (primeiropontoAposGap) {
-            primeiropontoAposGap = false
-            Log.d(TAG, "📍 Ponto de relocalização pós-gap — distância não somada (Fix A)")
-            // Continua: persiste no Room, emite StateFlow, mas NÃO soma distância
+        // Pós-gap: só descarta distância se a velocidade implícita for impossível (> 11 m/s).
+        // Antes descartávamos sempre — isso sub-contava distância real em recoveries curtos
+        // onde o GPS voltou numa posição próxima e a distância é legítima.
+        val ehSaltoImpossivelPosGap = primeiropontoAposGap && run {
+            val ultimoValido = if (rota.size >= 2) rota[rota.size - 2] else null
+            if (ultimoValido != null) {
+                val dtS = ((pontoNovo.tempo - ultimoValido.tempo) / 1000.0).coerceAtLeast(0.1)
+                val distM = calcularDistancia(ultimoValido.lat, ultimoValido.lng, pontoNovo.lat, pontoNovo.lng)
+                distM / dtS > MAX_VELOCIDADE_HUMANA_MS
+            } else false
+        }
+        if (primeiropontoAposGap) primeiropontoAposGap = false
+
+        if (ehSaltoImpossivelPosGap) {
+            Log.d(TAG, "📍 Pós-gap com salto impossível — distância descartada")
         } else {
             // Auto-Learner: calibra step_length quando GPS está excelente
             if (location.accuracy < 8f && _cadencia.value >= 60) {
