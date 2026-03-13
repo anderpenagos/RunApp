@@ -194,7 +194,7 @@ private fun CartaoMapa(rota: List<LatLngPonto>, pontoSelecionado: LatLngPonto?) 
     LaunchedEffect(rota) {
         val resultado = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
             // A — Simplifica rota: 5000 → ~150 pontos para o mapa
-            val rotaSimples = com.runapp.util.DouglasPeucker.simplify(rota, toleranceMeters = 8.0)
+            val rotaSimples = com.runapp.util.DouglasPeucker.simplify(rota, toleranceMeters = 4.0)
 
             // B — Heatmap com buckets quantizados → mínimo de Polylines
             val segmentos = calcularSegmentosHeatmapDetalhe(rotaSimples)

@@ -240,7 +240,9 @@ object GpxGenerator {
             val gapMs = b.tempo - a.tempo
             val mesmaPos = a.lat == b.lat && a.lng == b.lng
             if (gapMs > GAP_FRONTEIRA_MS || mesmaPos) continue
-            total += haversine(a.lat, a.lng, b.lat, b.lng)
+            val dist2D = haversine(a.lat, a.lng, b.lat, b.lng)
+            val dAlt = if (a.alt != 0.0 && b.alt != 0.0) b.alt - a.alt else 0.0
+            total += Math.sqrt(dist2D * dist2D + dAlt * dAlt)
         }
         return total
     }

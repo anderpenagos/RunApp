@@ -1670,12 +1670,24 @@ class RunningService : Service(), SensorEventListener {
         val ultimoPonto = rota.last()
 
         // DISTÂNCIA VIA VELOCIDADE DOPPLER vs HAVERSINE (2D)
+        //
+        // Estratégia: haversine quando GPS é bom (accuracy < 15m), Doppler quando GPS é ruim.
+        // Motivação: em GPS limpo (céu aberto, corrida normal), haversine sobre coordenadas
+        // precisas é mais fiel à distância real que Doppler, que subestima em acelerações
+        // e curvas. Em GPS degradado (perto de lagos, prédios), coordenadas saltam e o
+        // Doppler (baseado no sinal do satélite, não na posição) é mais estável.
+        //
+        // Transição segura: o deltaTSegundos in 0.5..3.0 garante que qualquer salto de
+        // método acontece com intervalo de tempo razoável. A velocidade anterior em
+        // ultimasLocalizacoes é sempre de um ponto real — sem descontinuidade na transição.
         val deltaTSegundos = deltaMs / 1000.0
-        val usarDoppler = location.hasSpeed() &&
+        val gpsRuim = location.accuracy >= 15f
+        val usarDoppler = gpsRuim &&
+            location.hasSpeed() &&
             location.speed > 0.1f &&
             deltaTSegundos in 0.5..3.0 &&
             (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O ||
-             location.speedAccuracyMetersPerSecond < 1.0f)  // relaxado de 0.5f: Doppler mais confiável que Haversine+Kalman em curvas
+             location.speedAccuracyMetersPerSecond < 1.5f)
 
         val distancia2D = if (usarDoppler) {
             val speedAnterior = ultimasLocalizacoes.lastOrNull()?.speed?.toDouble() ?: location.speed.toDouble()

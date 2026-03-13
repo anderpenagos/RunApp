@@ -417,7 +417,7 @@ class CorridaViewModel(
                 // Com 2400 pontos (40min), reduz para ~200-400 pts em ~5-15ms.
                 val rotaParaDisplay = if (rotaRecuperada.size > 500) {
                     withContext(kotlinx.coroutines.Dispatchers.Default) {
-                        DouglasPeucker.simplify(rotaRecuperada, toleranceMeters = 5.0)
+                        DouglasPeucker.simplify(rotaRecuperada, toleranceMeters = 4.0)
                             .also { android.util.Log.d("CorridaVM", "📐 D-P: ${rotaRecuperada.size} → ${it.size} pontos") }
                     }
                 } else {
@@ -1319,7 +1319,7 @@ class CorridaViewModel(
      */
     private fun simplificarParaDisplay(rota: List<LatLngPonto>): List<LatLngPonto> {
         return if (rota.size > 500) {
-            DouglasPeucker.simplify(rota, toleranceMeters = 5.0)
+            DouglasPeucker.simplify(rota, toleranceMeters = 4.0)
                 .also { android.util.Log.d("CorridaVM", "📐 D-P mapa: ${rota.size} → ${it.size} pontos") }
         } else {
             rota
