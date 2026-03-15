@@ -1196,6 +1196,32 @@ private fun MetricasFullscreen(
                     }
                 }
             }
+
+            // GRADIENTE (indicador diagnóstico — sempre visível durante corrida)
+            if (state.fase == FaseCorrida.CORRENDO) {
+                val gradPct = state.gradienteAtual * 100
+                val gradStr = "%+.1f%%".format(gradPct)
+                val gradColor = when {
+                    gradPct > 6.0  -> Color(0xFFFF7043)  // laranja — subida íngreme
+                    gradPct > 2.0  -> Color(0xFFFFEE58)  // amarelo — subida leve
+                    gradPct < -20.0 -> Color(0xFFE53935) // vermelho — descida técnica
+                    gradPct < -2.0  -> Color(0xFF90CAF9) // azul — descida
+                    else            -> Color.White        // plano
+                }
+                Row(
+                    modifier = androidx.compose.ui.Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "▲ GRADIENTE $gradStr",
+                        color = gradColor,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
         }
 
         // ── Botão mapa (canto inferior direito, acima dos controles) ───────

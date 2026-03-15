@@ -122,7 +122,10 @@ data class CorridaUiState(
     // Distancia oficial pos-treino (suavizada, coincide com o GPX exportado).
     // Populada no momento do save — usada pela ResumoScreen para evitar que
     // o usuario veja um valor diferente do que estava no contador em tempo real.
-    val distanciaFinalMetros: Double = 0.0
+    val distanciaFinalMetros: Double = 0.0,
+
+    // Gradiente ao vivo (para diagnóstico de subida/descida)
+    val gradienteAtual: Double = 0.0
 )
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -560,6 +563,7 @@ class CorridaViewModel(
 
         viewModelScope.launch {
             service.gradienteAtual.collect { gradiente ->
+                _uiState.value = _uiState.value.copy(gradienteAtual = gradiente)
                 // Mantem janela dos ultimos 5 gradientes
                 janelaGradientes.addLast(gradiente)
                 if (janelaGradientes.size > 5) janelaGradientes.removeFirst()
