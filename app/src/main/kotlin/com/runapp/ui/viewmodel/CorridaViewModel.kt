@@ -170,6 +170,7 @@ class CorridaViewModel(
     private var ultimoKmAnunciado = 0
     private var ultimoPaceFeedback = 0L
     private val INTERVALO_PACE_FEEDBACK_MS = 20_000L
+    private var foraDoAlvoDesdeMs = 0L  // timestamp de quando saiu do alvo (0 = dentro do alvo)
     private var tempoInicioPassoAtual = 0L   // tempo (segundos) em que o passo atual começou
 
     // Preferências lidas uma vez ao iniciar a corrida e mantidas durante a sessão.
@@ -184,6 +185,7 @@ class CorridaViewModel(
     // para suportar intervalos configuráveis (500m, 1km, 2km).
     private var ultimaSplitMetros      = 0.0
     private var indexPassoAnunciado = -1     // evita reanunciar o mesmo passo
+    private var treinoConcluidoAnunciado = false  // evita repetir "treino concluído"
     
     // Service
     private var runningService: RunningService? = null
@@ -641,15 +643,31 @@ class CorridaViewModel(
         // o tiro já passou da metade. O alerta só gera ruído e distração.
         if (passo.duracao < 45) return
 
-        // Respeita intervalo mínimo entre avisos consecutivos
         val agora = System.currentTimeMillis()
+
+        // Verifica se está fora do alvo agora
+        val estaFora = audioCoach.estaForaDoAlvo(paceAtual, passo.paceAlvoMin, passo.paceAlvoMax)
+
+        if (!estaFora) {
+            // Dentro do alvo — reseta rastreamento
+            foraDoAlvoDesdeMs = 0L
+            return
+        }
+
+        // Saiu do alvo — registra quando foi a primeira vez
+        if (foraDoAlvoDesdeMs == 0L) {
+            foraDoAlvoDesdeMs = agora
+        }
+
+        // Confirmação de 3s: só avisa se estiver fora do alvo por pelo menos 3s consecutivos
+        if (agora - foraDoAlvoDesdeMs < 3_000L) return
+
+        // Respeita intervalo mínimo de 25s entre avisos consecutivos
         if (agora - ultimoPaceFeedback < INTERVALO_PACE_FEEDBACK_MS) return
 
-        // Avisa se fora do alvo — enquanto continuar fora, avisa a cada 20s
+        // Avisa — enquanto continuar fora, repete a cada 25s
         val avisouFora = audioCoach.anunciarPaceFeedback(paceAtual, passo.paceAlvoMin, passo.paceAlvoMax)
         if (avisouFora) ultimoPaceFeedback = agora
-        // Se está dentro do alvo, ultimoPaceFeedback não é atualizado,
-        // então na próxima verificação entra aqui sem esperar os 20s
     }
 
     private fun atualizarProgressoPasso(tempoTotal: Long) {
@@ -684,10 +702,45 @@ class CorridaViewModel(
         if (indexAtivo != indexPassoAnunciado) {
             indexPassoAnunciado = indexAtivo
             ultimoPaceFeedback = 0L  // reseta aviso de pace ao mudar de passo
+            foraDoAlvoDesdeMs = 0L
+
+            // ── Avisos especiais de fim de treino ─────────────────────────
+            val ultimoIndex = passos.lastIndex
+            val indexUltimoTiro = passos.indexOfLast { !it.isDescanso && it.zona >= 2 }
+
+            when {
+                // Último tiro coincide com último passo (sem desaquecimento) → só "Último tiro!"
+                indexAtivo == indexUltimoTiro && indexAtivo == ultimoIndex -> {
+                    audioCoach.anunciarUltimoTiro()
+                }
+                // Último tiro mas ainda há passos depois (ex: desaquecimento) → "Último tiro!"
+                indexAtivo == indexUltimoTiro && indexUltimoTiro >= 0 -> {
+                    audioCoach.anunciarUltimoTiro()
+                }
+                // Último passo do plano e não é tiro (ex: desaquecimento) → "Último passo do treino"
+                indexAtivo == ultimoIndex && indexAtivo != indexUltimoTiro -> {
+                    audioCoach.anunciarUltimoPasso()
+                }
+            }
+
             audioCoach.anunciarPasso(passo.nome, passo.paceAlvoMax, passo.duracao)
-            // Informar o service da duração e do index atual (persistência de estado)
             runningService?.setDuracaoPassoAtual(passo.duracao)
             runningService?.setIndexPassoAtivo(indexAtivo)
+        }
+
+        // Treino concluído: tempo total passou a soma de todos os passos
+        val tempoTotalPascos = passos.sumOf { it.duracao.toLong() }
+        if (tempoTotal >= tempoTotalPascos && !treinoConcluidoAnunciado && passos.isNotEmpty()) {
+            treinoConcluidoAnunciado = true
+            audioCoach.anunciarTreinoConcluido()
+            // Remove pace alvo — coach não avisa mais sobre ritmo
+            _uiState.value = state.copy(
+                passoAtualIndex = indexAtivo,
+                passoAtual = null,
+                progressoPasso = 1f,
+                tempoPassoRestante = 0
+            )
+            return
         }
 
         // Countdown adaptativo: hierarquia de alertas baseada na duração do passo
@@ -1018,6 +1071,7 @@ class CorridaViewModel(
         ultimoKmAnunciado = 0
         ultimoPaceFeedback = 0L
         indexPassoAnunciado = -1
+        treinoConcluidoAnunciado = false
 
         // Deleta backup de emergência E dados do Room ao descartar intencionalmente.
         // Sem isso, na próxima abertura o app tentaria "restaurar" uma corrida descartada.

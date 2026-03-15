@@ -404,6 +404,8 @@ class WorkoutRepository(private val api: IntervalsApi) {
             step.type == "Warmup"   -> "Aquecimento"
             step.type == "Cooldown" -> "Desaceleração"
             isDescanso              -> if (repAtual != null) "Recuperação $repAtual/$repsTotal" else "Descanso"
+            // Z1 dentro de repeat = recuperação ativa, não esforço
+            repAtual != null && zona <= 1 -> "Recuperação $repAtual/$repsTotal"
             repAtual != null        -> "Esforço $repAtual/$repsTotal"
             step.type == "Ramp"     -> "RAMP (progressivo)"
             else                    -> step.text ?: "Ritmo Constante"
@@ -749,7 +751,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             val p = rota[it].paceNoPonto
             if (p <= PACE_INVALIDO) Double.NaN else p.coerceIn(60.0, 1500.0)
         }
-        val JANELA_MS = 90_000L
+        val JANELA_MS = 45_000L
         for (i in rota.indices) {
             val tInicio = rota[i].tempo - JANELA_MS
             val jInicio = (0..i).firstOrNull { rota[it].tempo >= tInicio } ?: 0
@@ -771,7 +773,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
         val p25 = validos[(validos.size * 0.25).toInt()]
         val p75 = validos[(validos.size * 0.75).toInt()]
         // Exige variação de pelo menos 20% entre quartis para ser "estruturado"
-        if (p25 < 1.0 || p75 / p25 < 1.20) return emptyList()
+        if (p25 < 1.0 || p75 / p25 < 1.15) return emptyList()
 
         // ── 3. CLASSIFICAÇÃO COM HISTERESE DUPLA ────────────────────────────────
         val limiarBaixo = p25 + (p75 - p25) * 0.35

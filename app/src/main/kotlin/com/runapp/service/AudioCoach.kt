@@ -283,6 +283,21 @@ class AudioCoach(private val context: Context) {
      * Minetti demonstra que o custo metabólico volta a subir nessa faixa (frenagem ativa).
      * NÃO compara GAP aqui — seria contraintuitivo. Foco no aviso de proteção articular.
      */
+    fun anunciarUltimoTiro() {
+        if (!isReady) return
+        falar("Último tiro!", respeitarIntervalo = false)
+    }
+
+    fun anunciarUltimoPasso() {
+        if (!isReady) return
+        falar("Último passo do treino.", respeitarIntervalo = false)
+    }
+
+    fun anunciarTreinoConcluido() {
+        if (!isReady) return
+        falar("Treino concluído! Excelente trabalho!", respeitarIntervalo = false)
+    }
+
     fun anunciarDescidaTecnica() {
         if (!isReady) return
         val agora = System.currentTimeMillis()
@@ -292,6 +307,19 @@ class AudioCoach(private val context: Context) {
             "Descida íngreme. Reduza a passada e proteja os joelhos.",
             respeitarIntervalo = false
         )
+    }
+
+    /**
+     * Verifica se o pace atual está fora do alvo sem anunciar nada.
+     * Usado pelo ViewModel para o período de confirmação de 3s antes de avisar.
+     */
+    fun estaForaDoAlvo(paceAtual: String, paceAlvoMin: String, paceAlvoMax: String): Boolean {
+        if (paceAtual == "--:--" || paceAlvoMin == "--:--") return false
+        val atualSecs = paceParaSegundos(paceAtual)
+        val minSecs = paceParaSegundos(paceAlvoMin)
+        val maxSecs = paceParaSegundos(paceAlvoMax)
+        if (minSecs <= 0 || atualSecs <= 0) return false
+        return atualSecs < minSecs - 10 || atualSecs > maxSecs + 10
     }
 
     fun anunciarPaceFeedback(paceAtual: String, paceAlvoMin: String, paceAlvoMax: String): Boolean {
