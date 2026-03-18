@@ -421,6 +421,87 @@ fun ConfigScreen(
             }
         }
 
+        // ── Card de seleção de voz do coach ─────────────────────────────────────
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            viewModel.carregarVozesDisponiveis()
+        }
+
+        if (state.vozesDisponiveis.isNotEmpty()) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "🎙️ Voz do Coach",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Selecione e ouça antes de escolher",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Opção "Padrão do sistema"
+                    androidx.compose.foundation.layout.Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .androidx.compose.foundation.clickable { viewModel.selecionarVoz(null) }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween
+                    ) {
+                        androidx.compose.foundation.layout.Row(
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                        ) {
+                            androidx.compose.material3.RadioButton(
+                                selected = state.vozSelecionadaNome == null,
+                                onClick = { viewModel.selecionarVoz(null) }
+                            )
+                            Text("Padrão do sistema", fontSize = 13.sp)
+                        }
+                    }
+
+                    state.vozesDisponiveis.forEach { voz ->
+                        val nomeAmigavel = voz.name
+                            .removePrefix("pt-br-x-")
+                            .removePrefix("pt-BR-")
+                            .replace("-local", " (local)")
+                            .replace("-network", " (rede)")
+                            .uppercase()
+
+                        androidx.compose.foundation.layout.Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween
+                        ) {
+                            androidx.compose.foundation.layout.Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                            ) {
+                                androidx.compose.material3.RadioButton(
+                                    selected = state.vozSelecionadaNome == voz.name,
+                                    onClick = { viewModel.selecionarVoz(voz.name) }
+                                )
+                                Text(nomeAmigavel, fontSize = 13.sp)
+                            }
+                            androidx.compose.material3.TextButton(
+                                onClick = { viewModel.ouvirPreviewVoz(voz.name) }
+                            ) {
+                                Text("▶ Ouvir", fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Botão salvar
         Button(
             onClick = { viewModel.salvarCredenciais(onConfigSalva) },

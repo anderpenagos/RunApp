@@ -48,6 +48,10 @@ class PreferencesRepository(private val context: Context) {
         // a process death. Atualizado toda vez que zonas são buscadas com sucesso.
         // Formato: JSON de List<ZonaFronteira> (s/km), pronto para uso no dashboard.
         val ZONAS_FRONTEIRA_JSON      = stringPreferencesKey("zonas_fronteira_json")
+
+        // Voz do coach TTS: nome da voz selecionada (ex: "pt-br-x-ptd-local")
+        // null = voz padrão do sistema
+        val COACH_VOZ_NOME = stringPreferencesKey("coach_voz_nome")
     }
 
     private val gson = Gson()
@@ -125,6 +129,17 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setSplitDadosFlags(flags: Set<String>) {
         context.dataStore.edit { prefs -> prefs[SPLIT_DADOS_FLAGS] = flags }
+    }
+
+    val coachVozNome: Flow<String?> = context.dataStore.data.map { prefs ->
+        prefs[COACH_VOZ_NOME]
+    }
+
+    suspend fun setCoachVozNome(nome: String?) {
+        context.dataStore.edit { prefs ->
+            if (nome != null) prefs[COACH_VOZ_NOME] = nome
+            else prefs.remove(COACH_VOZ_NOME)
+        }
     }
 
     suspend fun saveCredentials(apiKey: String, athleteId: String) {

@@ -3,6 +3,7 @@ package com.runapp.service
 import android.content.Context
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import kotlinx.coroutines.flow.first
 import java.util.Locale
 
 /**
@@ -14,6 +15,7 @@ class AudioCoach(private val context: Context) {
     private var tts: TextToSpeech? = null
     private var isReady = false
     private var lastAnnouncementTime = 0L
+    private var vozNomeSalvo: String? = null  // nome da voz selecionada nas preferências
     private val MIN_INTERVAL_MS = 8000L // mínimo 8s entre anúncios
 
     // Setado pelo CorridaViewModel uma única vez ao iniciar a sessão (read-once philosophy).
@@ -26,6 +28,16 @@ class AudioCoach(private val context: Context) {
                 val result = tts?.setLanguage(Locale("pt", "BR"))
                 isReady = result != TextToSpeech.LANG_MISSING_DATA &&
                         result != TextToSpeech.LANG_NOT_SUPPORTED
+                tts?.setSpeechRate(1.25f)
+                // Lê voz salva nas preferências e aplica
+                kotlinx.coroutines.GlobalScope.launch {
+                    val nome = com.runapp.data.datastore.PreferencesRepository(context)
+                        .coachVozNome.first()
+                    if (nome != null) {
+                        vozNomeSalvo = nome
+                        aplicarVozPorNome(nome)
+                    }
+                }
             }
         }
     }
@@ -433,6 +445,57 @@ class AudioCoach(private val context: Context) {
         val partes = pace.split(":")
         if (partes.size != 2) return 0
         return (partes[0].toIntOrNull() ?: 0) * 60 + (partes[1].toIntOrNull() ?: 0)
+    }
+
+    /**
+     * Aplica uma voz específica pelo nome.
+     */
+    fun aplicarVozPorNome(nome: String) {
+        vozNomeSalvo = nome
+        val voz = tts?.voices?.firstOrNull { it.name == nome } ?: return
+        tts?.voice = voz
+    }
+
+    /**
+     * Remove seleção personalizada, volta para voz padrão pt-BR.
+     */
+    fun resetarVoz() {
+        vozNomeSalvo = null
+        tts?.setLanguage(Locale("pt", "BR"))
+    }
+
+    /**
+     * Lista vozes pt-BR locais disponíveis no dispositivo.
+     */
+    fun getVozesDisponiveis(): List<android.speech.tts.Voice> {
+        return tts?.voices
+            ?.filter { v ->
+                (v.locale.language == "pt") &&
+                !v.isNetworkConnectionRequired &&
+                v.features?.contains(android.speech.tts.TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) != true
+            }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+    }
+
+    /**
+     * Preview de uma voz sem alterar a seleção permanente.
+     * Restaura a voz atual após ~3s.
+     */
+    fun ouvirPreviewVoz(nomeVoz: String) {
+        val vozAtual = tts?.voice
+        val vozPreview = tts?.voices?.firstOrNull { it.name == nomeVoz } ?: return
+        tts?.voice = vozPreview
+        tts?.speak(
+            "Ritmo atual cinco minutos por quilômetro",
+            android.speech.tts.TextToSpeech.QUEUE_FLUSH,
+            null,
+            "preview_$nomeVoz"
+        )
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (vozAtual != null) tts?.voice = vozAtual
+            else tts?.setLanguage(Locale("pt", "BR"))
+        }, 3_500)
     }
 
     fun shutdown() {

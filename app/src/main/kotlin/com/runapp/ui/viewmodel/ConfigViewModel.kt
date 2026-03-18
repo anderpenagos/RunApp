@@ -1,6 +1,9 @@
 package com.runapp.ui.viewmodel
 
 import android.app.Application
+import android.speech.tts.TextToSpeech
+import android.speech.tts.Voice
+import java.util.Locale
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -27,6 +30,9 @@ data class ConfigUiState(
     val splitDadosFlags: Set<String> = setOf("distancia", "pace_medio"),
     // true enquanto o Room ainda não respondeu — impede decisões de navegação precipitadas
     val isLoading: Boolean = true,
+    // Seleção de voz do coach
+    val vozSelecionadaNome: String? = null,
+    val vozesDisponiveis: List<android.speech.tts.Voice> = emptyList(),
     // Diagnóstico de zonas — visível no app (sem logcat)
     val zonasCarregadas: Int = -1,           // -1 = ainda não verificado
     val zonasDiagTexto: String = "",          // descrição das zonas carregadas
@@ -52,6 +58,7 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
             val audioSplits         = prefs.audioSplitsKm.first()
             val splitIntervalo      = prefs.splitIntervaloMetros.first()
             val splitFlags          = prefs.splitDadosFlags.first()
+            val vozNome             = prefs.coachVozNome.first()
 
             // Lê zonas do cache para mostrar diagnóstico imediato
             val zonasCached = prefs.getZonasFronteiraCached()
@@ -76,6 +83,7 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                 audioSplitsKm         = audioSplits,
                 splitIntervaloMetros  = splitIntervalo,
                 splitDadosFlags       = splitFlags,
+                vozSelecionadaNome    = vozNome,
                 isLoading             = false,
                 zonasCarregadas       = zonasCached.size,
                 zonasDiagTexto        = diagTexto
@@ -223,6 +231,51 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.value = state.copy(isSaving = false, error = "Erro ao salvar: ${e.message}")
             }
         }
+    }
+
+    private var ttsConfig: TextToSpeech? = null
+
+    fun carregarVozesDisponiveis() {
+        if (ttsConfig != null) return
+        ttsConfig = TextToSpeech(getApplication()) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                ttsConfig?.setLanguage(Locale("pt", "BR"))
+                val vozes = ttsConfig?.voices
+                    ?.filter { v ->
+                        v.locale.language == "pt" &&
+                        !v.isNetworkConnectionRequired &&
+                        v.features?.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) != true
+                    }
+                    ?.sortedBy { it.name }
+                    ?: emptyList()
+                _uiState.value = _uiState.value.copy(vozesDisponiveis = vozes)
+            }
+        }
+    }
+
+    fun ouvirPreviewVoz(nomeVoz: String) {
+        val voz = _uiState.value.vozesDisponiveis.firstOrNull { it.name == nomeVoz } ?: return
+        ttsConfig?.voice = voz
+        ttsConfig?.setSpeechRate(1.25f)
+        ttsConfig?.speak(
+            "Ritmo atual cinco minutos por quilômetro",
+            TextToSpeech.QUEUE_FLUSH, null, "preview"
+        )
+    }
+
+    fun selecionarVoz(nomeVoz: String?) {
+        viewModelScope.launch {
+            prefs.setCoachVozNome(nomeVoz)
+            _uiState.value = _uiState.value.copy(vozSelecionadaNome = nomeVoz)
+            // A nova voz será aplicada na próxima corrida quando o AudioCoach inicializar.
+            // Aplicação em tempo real durante corrida ativa não é suportada.
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        ttsConfig?.shutdown()
+        ttsConfig = null
     }
 
     companion object {

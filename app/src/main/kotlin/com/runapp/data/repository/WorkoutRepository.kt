@@ -561,7 +561,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             val ganhoElevacao = calcularGanhoElevacao(rota)
             val cadenciaMedia = calcularCadenciaMedia(rota)
             val splits = calcularSplits(rota)
-            val voltas = calcularVoltasAnalise(rota)
+            val voltas = calcularVoltasAnalise(rota, treinoPassosJson)
 
             // Converte PaceZone (seg/metro) → ZonaFronteira (seg/km) para persistir
             // os limites reais do perfil do atleta junto com a corrida.
@@ -736,12 +736,88 @@ class WorkoutRepository(private val api: IntervalsApi) {
      *
      * @return lista de VoltaAnalise; vazia se a corrida for uniforme.
      */
+    /**
+     * Calcula voltas usando os passos do plano como molde temporal.
+     *
+     * Para cada PassoResumo, encontra os pontos GPS cujo timestamp cai dentro
+     * do intervalo [tempoInicio, tempoFim] do passo e calcula métricas reais.
+     * Cobre 100% do treino sem detecção automática — sem falsos positivos.
+     *
+     * Passos não executados (treino abandonado antes do fim) são omitidos.
+     */
+    private fun calcularVoltasPorMolde(
+        rota: List<com.runapp.data.model.LatLngPonto>,
+        treinoPassosJson: String
+    ): List<com.runapp.data.model.VoltaAnalise> {
+        val passos = runCatching {
+            com.google.gson.Gson().fromJson(treinoPassosJson, Array<com.runapp.data.model.PassoResumo>::class.java).toList()
+        }.getOrNull() ?: return emptyList()
+
+        if (passos.isEmpty() || rota.isEmpty()) return emptyList()
+
+        val tempoInicioRota = rota.first().tempo  // timestamp absoluto do início da corrida
+        val voltas = mutableListOf<com.runapp.data.model.VoltaAnalise>()
+        var tempoAcumMs = 0L
+
+        for ((index, passo) in passos.withIndex()) {
+            val inicioMs = tempoAcumMs
+            val fimMs    = tempoAcumMs + passo.duracaoSegundos * 1000L
+            tempoAcumMs  = fimMs
+
+            // Pontos GPS dentro do intervalo deste passo
+            val seg = rota.filter { pt ->
+                val t = pt.tempo - tempoInicioRota
+                t >= inicioMs && t < fimMs
+            }
+
+            // Passo não foi executado (corrida abandonada antes)
+            if (seg.size < 2) continue
+
+            val dist  = seg.zipWithNext().sumOf { (a, b) -> haversine(a.lat, a.lng, b.lat, b.lng) }
+            val tempo = (seg.last().tempo - seg.first().tempo) / 1000L
+            if (dist < 10 || tempo < 5) continue
+
+            val pace = (tempo.toDouble() / dist * 1000).coerceIn(60.0, 1500.0)
+            val cadencia = seg.map { it.cadenciaNoPonto }.filter { it > 0 }
+                .let { if (it.isEmpty()) 0 else it.average().toInt() }
+
+            // Classifica como descanso se nome contém "Recuperação", "Descanso" ou "Desaquecimento",
+            // ou se a zona for 0 (0% pace = parado/caminhando)
+            val isDescanso = passo.nome.contains("Recuper", ignoreCase = true) ||
+                             passo.nome.contains("Descanso", ignoreCase = true) ||
+                             passo.nome.contains("Desaquec", ignoreCase = true) ||
+                             passo.paceAlvoMin == "--:--"
+
+            voltas.add(com.runapp.data.model.VoltaAnalise(
+                numero        = voltas.size + 1,
+                distanciaKm   = dist / 1000.0,
+                tempoSegundos = tempo,
+                paceSegKm     = pace,
+                paceFormatado = "%d:%02d".format((pace / 60).toInt(), (pace % 60).toInt()),
+                isDescanso    = isDescanso,
+                cadenciaMedia = cadencia
+            ))
+        }
+
+        return voltas
+    }
+
     private fun calcularVoltasAnalise(
-        rota: List<com.runapp.data.model.LatLngPonto>
+        rota: List<com.runapp.data.model.LatLngPonto>,
+        treinoPassosJson: String? = null
     ): List<com.runapp.data.model.VoltaAnalise> {
         if (rota.size < 60) return emptyList()
 
-        // ── 1. SUAVIZAÇÃO: janela deslizante de 90 segundos ─────────────────────
+        // ── TREINO ESTRUTURADO: usa molde temporal dos passos do plano ───────────
+        // Em vez de detectar intervalos pelo pace, encaixa os pontos GPS nos blocos
+        // planejados usando o tempo acumulado. Resultado: cobertura de 100% do treino,
+        // sem falsos positivos por variação de GPS ou aquecimento.
+        if (treinoPassosJson != null) {
+            return calcularVoltasPorMolde(rota, treinoPassosJson)
+        }
+
+        // ── CORRIDA LIVRE: detecção automática por P25/P75 ───────────────────────
+        // 1. SUAVIZAÇÃO: janela deslizante de 90 segundos
         // Pontos com paceNoPonto = 0.0 (GPS sem pace calculado: primeiros segundos
         // ou quarentena pos-SCREEN_ON) sao excluidos. Sem esse filtro, coerceIn(60,1500)
         // transformava 0.0 em 60 s/km (1:00/km, impossivel), contaminando P25/P75
@@ -796,7 +872,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
         // ── 4. DEBOUNCE TEMPORAL: 45 segundos mínimos por bloco ─────────────────
         // Usa timestamps reais para o debounce, não contagem de pontos.
         // Evita que variações de frequência GPS (1Hz vs 2Hz) afetem o resultado.
-        val DEBOUNCE_MS = 25_000L
+        val DEBOUNCE_MS = 60_000L  // corrida livre: debounce maior evita falsos positivos por variação de GPS
         val transicoes = mutableListOf(0)  // índices de início de cada bloco
         var estadoAtual = isFast[0]
         var candidatoInicio = -1
