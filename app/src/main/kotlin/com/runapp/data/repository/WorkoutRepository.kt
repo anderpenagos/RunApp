@@ -796,7 +796,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
         // ── 4. DEBOUNCE TEMPORAL: 45 segundos mínimos por bloco ─────────────────
         // Usa timestamps reais para o debounce, não contagem de pontos.
         // Evita que variações de frequência GPS (1Hz vs 2Hz) afetem o resultado.
-        val DEBOUNCE_MS = 45_000L
+        val DEBOUNCE_MS = 25_000L
         val transicoes = mutableListOf(0)  // índices de início de cada bloco
         var estadoAtual = isFast[0]
         var candidatoInicio = -1
@@ -874,6 +874,8 @@ class WorkoutRepository(private val api: IntervalsApi) {
             if (dist < 80 || tempo < 30) continue
 
             val pace = if (dist > 0) (tempo.toDouble() / dist * 1000).coerceIn(60.0, 1200.0) else 600.0
+            val cadenciaBloco = seg.map { it.cadenciaNoPonto }.filter { it > 0 }
+                .let { if (it.isEmpty()) 0 else it.average().toInt() }
 
             voltas.add(
                 com.runapp.data.model.VoltaAnalise(
@@ -882,7 +884,8 @@ class WorkoutRepository(private val api: IntervalsApi) {
                     tempoSegundos = tempo,
                     paceSegKm     = pace,
                     paceFormatado = "%d:%02d".format((pace / 60).toInt(), (pace % 60).toInt()),
-                    isDescanso    = !bloco.fast
+                    isDescanso    = !bloco.fast,
+                    cadenciaMedia = cadenciaBloco
                 )
             )
         }

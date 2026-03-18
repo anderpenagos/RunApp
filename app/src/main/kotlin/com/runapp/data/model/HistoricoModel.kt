@@ -96,7 +96,8 @@ data class VoltaAnalise(
     val tempoSegundos: Long,
     val paceSegKm: Double,
     val paceFormatado: String,
-    val isDescanso: Boolean = false
+    val isDescanso: Boolean = false,
+    val cadenciaMedia: Int = 0   // SPM médio do bloco (0 = não disponível)
 )
 
 /**

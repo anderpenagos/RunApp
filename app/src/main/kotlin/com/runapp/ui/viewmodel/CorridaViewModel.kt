@@ -558,20 +558,20 @@ class CorridaViewModel(
         //
         // O debounce de 24s no AudioCoach garante que ladeiras longas nao repitam.
         var pontosDescidaTecnicaConsecutivos = 0
-        val PERSISTENCIA_DESCIDA_TECNICA = 3
-        val janelaGradientes = ArrayDeque<Double>(5)
+        val PERSISTENCIA_DESCIDA_TECNICA = 6   // 6 pontos consecutivos (~6s)
+        val janelaGradientes = ArrayDeque<Double>(10)
 
         viewModelScope.launch {
             service.gradienteAtual.collect { gradiente ->
                 _uiState.value = _uiState.value.copy(gradienteAtual = gradiente)
-                // Mantem janela dos ultimos 5 gradientes
+                // Mantém janela dos últimos 10 gradientes
                 janelaGradientes.addLast(gradiente)
-                if (janelaGradientes.size > 5) janelaGradientes.removeFirst()
+                if (janelaGradientes.size > 10) janelaGradientes.removeFirst()
 
-                val mediaGradientes = if (janelaGradientes.size >= 3)
+                val mediaGradientes = if (janelaGradientes.size >= 6)
                     janelaGradientes.average() else 0.0
 
-                if (gradiente < -0.20 && mediaGradientes < -0.15) {
+                if (gradiente < -0.06 && mediaGradientes < -0.05) {
                     pontosDescidaTecnicaConsecutivos++
                     if (pontosDescidaTecnicaConsecutivos >= PERSISTENCIA_DESCIDA_TECNICA) {
                         audioCoach.anunciarDescidaTecnica()
@@ -679,6 +679,9 @@ class CorridaViewModel(
         val passos = state.passos
         if (passos.isEmpty()) return
 
+        // Treino já concluído — não restaura passoAtual nem dispara mais nada
+        if (treinoConcluidoAnunciado) return
+
         // Descobrir qual passo está ativo com base no tempo acumulado
         var tempoAcumulado = 0L
         var indexAtivo = passos.lastIndex
@@ -708,26 +711,23 @@ class CorridaViewModel(
             ultimoPaceFeedback = 0L  // reseta aviso de pace ao mudar de passo
             foraDoAlvoDesdeMs = 0L
 
-            // ── Avisos especiais de fim de treino ─────────────────────────
+            audioCoach.anunciarPasso(passo.nome, passo.paceAlvoMax, passo.duracao)
+
+            // ── Avisos especiais de fim de treino — após anunciarPasso para não ser cortado
             val ultimoIndex = passos.lastIndex
             val indexUltimoTiro = passos.indexOfLast { !it.isDescanso && it.zona >= 2 }
 
-            when {
-                // Último tiro coincide com último passo (sem desaquecimento) → só "Último tiro!"
-                indexAtivo == indexUltimoTiro && indexAtivo == ultimoIndex -> {
-                    audioCoach.anunciarUltimoTiro()
-                }
-                // Último tiro mas ainda há passos depois (ex: desaquecimento) → "Último tiro!"
-                indexAtivo == indexUltimoTiro && indexUltimoTiro >= 0 -> {
-                    audioCoach.anunciarUltimoTiro()
-                }
-                // Último passo do plano e não é tiro (ex: desaquecimento) → "Último passo do treino"
-                indexAtivo == ultimoIndex && indexAtivo != indexUltimoTiro -> {
-                    audioCoach.anunciarUltimoPasso()
+            val avisoEspecial: (() -> Unit)? = when {
+                indexAtivo == indexUltimoTiro && indexUltimoTiro >= 0 -> {{ audioCoach.anunciarUltimoTiro() }}
+                indexAtivo == ultimoIndex && indexAtivo != indexUltimoTiro -> {{ audioCoach.anunciarUltimoPasso() }}
+                else -> null
+            }
+            if (avisoEspecial != null) {
+                viewModelScope.launch {
+                    kotlinx.coroutines.delay(3_000) // aguarda anunciarPasso terminar
+                    avisoEspecial()
                 }
             }
-
-            audioCoach.anunciarPasso(passo.nome, passo.paceAlvoMax, passo.duracao)
             runningService?.setDuracaoPassoAtual(passo.duracao)
             runningService?.setIndexPassoAtivo(indexAtivo)
         }

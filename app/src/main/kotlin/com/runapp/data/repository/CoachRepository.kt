@@ -237,7 +237,8 @@ class CoachRepository {
             appendLine("  Detalhes por volta:")
             c.voltasAnalise.forEach { v ->
                 val tipo = if (v.isDescanso) "DESCANSO" else "ESFORÇO "
-                appendLine("    Volta ${v.numero.toString().padStart(2)} [$tipo] — ${"%.2f".format(v.distanciaKm)}km | ${v.tempoSegundos/60}m${(v.tempoSegundos%60).toString().padStart(2,'0')}s | ${v.paceFormatado}/km")
+                val cadStr = if (v.cadenciaMedia > 0) " | ${v.cadenciaMedia} spm" else ""
+                appendLine("    Volta ${v.numero.toString().padStart(2)} [$tipo] — ${"%.2f".format(v.distanciaKm)}km | ${v.tempoSegundos/60}m${(v.tempoSegundos%60).toString().padStart(2,'0')}s | ${v.paceFormatado}/km$cadStr")
             }
         }
 

@@ -728,17 +728,15 @@ class RunningService : Service(), SensorEventListener {
     // Histerese: ativa com 100m, desativa apenas ao sair da subida (< 3%)
     private var distSubidaAcum = 0.0
     private val DISTANCIA_ATIVA_MONTANHA = 100.0  // metros subindo > 6%
-    private val LIMIAR_GRADE_MONTANHA    = 0.06   // 6% (era 4%)
-    private val LIMIAR_SAIDA_MONTANHA    = 0.03   // 3% -- histerese de saida (era 2%)
+    private val LIMIAR_GRADE_MONTANHA    = 0.06   // 6%
+    private val LIMIAR_SAIDA_MONTANHA    = 0.06   // 6% -- sem histerese
     private var emModoMontanha           = false
     private val _modoMontanha = MutableStateFlow(false)
     val modoMontanha: StateFlow<Boolean> = _modoMontanha.asStateFlow()
 
-    // Descida tecnica -- grade < -20% (aumentado de -15% -> -20%)
-    // GPS vertical tem ruido de +-3-5m. Em janela de regressao de 10 pontos (~10m),
-    // isso pode gerar gradientes ficticios de -15% a -18% em terreno plano.
-    // -20% corresponde a descida onde a frenagem excentrica e claramente sentida.
-    private val LIMIAR_DESCIDA_TECNICA = -0.20
+    // Descida tecnica -- grade < -8%
+    // Filtros robustos (6 pontos consecutivos + média 10 gradientes) evitam falsos positivos.
+    private val LIMIAR_DESCIDA_TECNICA = -0.06
 
     /**
      * Carrega o resultado do km que acabou de fechar e zera os acumuladores.

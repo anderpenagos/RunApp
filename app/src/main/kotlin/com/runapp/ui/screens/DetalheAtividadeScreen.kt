@@ -645,47 +645,70 @@ private fun CartaoVoltas(voltas: List<com.runapp.data.model.VoltaAnalise>) {
                 .map { it.paceSegKm }.filter { it in 60.0..1200.0 }
                 .let { if (it.isEmpty()) null else it.average() }
 
-            Canvas(modifier = Modifier
-                .fillMaxWidth()
-                .height(120.dp)
-                .clip(RoundedCornerShape(4.dp))
-                .background(Color.White.copy(alpha = 0.03f))
-            ) {
-                val w = size.width; val h = size.height
-                val n = voltas.size
-                if (n == 0) return@Canvas
-
-                val barW  = w / n
-                val padH  = 4f
-
-                // Grid lines
-                for (i in 1..3) drawLine(CorGrid, Offset(0f, h * i / 4), Offset(w, h * i / 4))
-
-                // Linha de referência (pace médio dos tiros)
-                paceMediaTiros?.let { refPace ->
-                    val refNorm = ((refPace - paceMin) / paceRange).toFloat().coerceIn(0f, 1f)
-                    val refY = padH + (h - padH * 2) * refNorm
-                    drawLine(
-                        color = corTiro.copy(alpha = 0.35f),
-                        start = Offset(0f, refY), end = Offset(w, refY),
-                        strokeWidth = 1.5f,
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f)
+            // Labels eixo Y (pace mais rápido no topo, mais lento na base)
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.width(40.dp).height(120.dp),
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = formatarPaceSegKm(paceMin),
+                        fontSize = 8.sp,
+                        color = Color.White.copy(alpha = 0.4f)
+                    )
+                    Text(
+                        text = formatarPaceSegKm((paceMin + paceMax) / 2),
+                        fontSize = 8.sp,
+                        color = Color.White.copy(alpha = 0.4f)
+                    )
+                    Text(
+                        text = formatarPaceSegKm(paceMax),
+                        fontSize = 8.sp,
+                        color = Color.White.copy(alpha = 0.4f)
                     )
                 }
+                Canvas(modifier = Modifier
+                    .weight(1f)
+                    .height(120.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color.White.copy(alpha = 0.03f))
+                ) {
+                    val w = size.width; val h = size.height
+                    val n = voltas.size
+                    if (n == 0) return@Canvas
 
-                // Barras
-                voltas.forEachIndexed { i, volta ->
-                    val norm = ((volta.paceSegKm - paceMin) / paceRange).toFloat().coerceIn(0.05f, 1f)
-                    val barH  = (h - padH) * norm
-                    val barX  = i * barW
-                    val cor   = if (volta.isDescanso) corDescanso.copy(alpha = 0.65f)
-                                else corTiro.copy(alpha = 0.85f)
-                    val shape = RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)
-                    drawRect(
-                        color   = cor,
-                        topLeft = Offset(barX + 2f, h - barH),
-                        size    = Size(barW - 4f, barH)
-                    )
+                    val barW = w / n
+                    val padH = 4f
+
+                    // Grid lines
+                    for (i in 1..3) drawLine(CorGrid, Offset(0f, h * i / 4), Offset(w, h * i / 4))
+
+                    // Linha de referência (pace médio dos tiros)
+                    // Invertido: pace rápido (baixo s/km) = topo do gráfico
+                    paceMediaTiros?.let { refPace ->
+                        val refNorm = ((paceMax - refPace) / paceRange).toFloat().coerceIn(0f, 1f)
+                        val refY = padH + (h - padH * 2) * refNorm
+                        drawLine(
+                            color = corTiro.copy(alpha = 0.35f),
+                            start = Offset(0f, refY), end = Offset(w, refY),
+                            strokeWidth = 1.5f,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f)
+                        )
+                    }
+
+                    // Barras — invertidas: pace rápido = barra alta (esforço visualmente maior)
+                    voltas.forEachIndexed { i, volta ->
+                        val norm = ((paceMax - volta.paceSegKm) / paceRange).toFloat().coerceIn(0.05f, 1f)
+                        val barH = (h - padH) * norm
+                        val barX = i * barW
+                        val cor  = if (volta.isDescanso) corDescanso.copy(alpha = 0.65f)
+                                   else corTiro.copy(alpha = 0.85f)
+                        drawRect(
+                            color   = cor,
+                            topLeft = Offset(barX + 2f, h - barH),
+                            size    = Size(barW - 4f, barH)
+                        )
+                    }
                 }
             }
 
@@ -1009,10 +1032,15 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
         }
     }
 
+    // Min/max reais dos pontos subamostrados — alinha normalização com labels do eixo Y
+    val pMinReal = idxs.mapNotNull { i -> pacesSuav[i].takeIf { it in 60.0..1200.0 } }.minOrNull() ?: pMinSuav
+    val pMaxReal = idxs.mapNotNull { i -> pacesSuav[i].takeIf { it in 60.0..1200.0 } }.maxOrNull() ?: pMaxSuav
+    val pRangeReal = (pMaxReal - pMinReal).coerceAtLeast(1.0)
+
     return DadosGrafico(
         paceNorm = idxs.map { i ->
             val p = pacesSuav[i]; if (p < 0.0) -1f
-            else ((p - pMinSuav) / paceRangeSuav).toFloat().coerceIn(0f, 1f)
+            else ((p - pMinReal) / pRangeReal).toFloat().coerceIn(0f, 1f)
         },
         altNorm = idxs.map { i ->
             ((altsSuav[i] - altMin) / altRange).toFloat().coerceIn(0f, 1f)
@@ -1033,7 +1061,7 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
         indicesOriginais = idxs,
         temCadencia   = rota.any { it.cadenciaNoPonto > 0 },
         temGAP        = (altMax - altMin) > 5.0,
-        paceMin = pMin, paceMax = pMax, gapMin = gMin, gapMax = gMax,
+        paceMin = pMinReal, paceMax = pMaxReal, gapMin = gMin, gapMax = gMax,
         kmMarcadores  = kmMarcadores,
         kmLabels      = kmLabels,
         distanciasKm  = idxs.map { (distAcumM[it] / 1000.0).toFloat() }
