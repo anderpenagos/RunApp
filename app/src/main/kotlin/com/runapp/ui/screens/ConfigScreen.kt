@@ -3,6 +3,9 @@ package com.runapp.ui.screens
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Key
@@ -422,7 +425,7 @@ fun ConfigScreen(
         }
 
         // ── Card de seleção de voz do coach ─────────────────────────────────────
-        androidx.compose.runtime.LaunchedEffect(Unit) {
+        LaunchedEffect(Unit) {
             viewModel.carregarVozesDisponiveis()
         }
 
@@ -447,18 +450,18 @@ fun ConfigScreen(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     // Opção "Padrão do sistema"
-                    androidx.compose.foundation.layout.Row(
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .androidx.compose.foundation.clickable { viewModel.selecionarVoz(null) }
+                            .clickable { viewModel.selecionarVoz(null) }
                             .padding(vertical = 6.dp),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        androidx.compose.foundation.layout.Row(
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            androidx.compose.material3.RadioButton(
+                            RadioButton(
                                 selected = state.vozSelecionadaNome == null,
                                 onClick = { viewModel.selecionarVoz(null) }
                             )
@@ -474,24 +477,24 @@ fun ConfigScreen(
                             .replace("-network", " (rede)")
                             .uppercase()
 
-                        androidx.compose.foundation.layout.Row(
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 4.dp),
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            androidx.compose.foundation.layout.Row(
+                            Row(
                                 modifier = Modifier.weight(1f),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                androidx.compose.material3.RadioButton(
+                                RadioButton(
                                     selected = state.vozSelecionadaNome == voz.name,
                                     onClick = { viewModel.selecionarVoz(voz.name) }
                                 )
                                 Text(nomeAmigavel, fontSize = 13.sp)
                             }
-                            androidx.compose.material3.TextButton(
+                            TextButton(
                                 onClick = { viewModel.ouvirPreviewVoz(voz.name) }
                             ) {
                                 Text("▶ Ouvir", fontSize = 11.sp)
