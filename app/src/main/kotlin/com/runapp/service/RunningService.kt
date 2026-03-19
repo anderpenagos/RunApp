@@ -52,7 +52,6 @@ import android.os.SystemClock
 import com.google.gson.Gson
 import com.runapp.data.db.RoutePointEntity
 import com.runapp.data.db.RunDatabase
-import com.runapp.util.GpsDebugLogger
 import java.io.File
 import java.util.UUID
 
@@ -394,7 +393,7 @@ class RunningService : Service(), SensorEventListener {
                 Intent.ACTION_SCREEN_OFF -> {
                     // Registra quando a tela apagou para calcular quanto tempo ficou bloqueada
                     screenOffTimestampMs = SystemClock.elapsedRealtime()
-                    GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_OFF — última EMA=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}s/km  pace=${_paceAtual.value}  ultimasLocs=${ultimasLocalizacoes.size}")
+ } ?: "null"}s/km  pace=${_paceAtual.value}  ultimasLocs=${ultimasLocalizacoes.size}")
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     if (!estaCorrendo || estaPausado) return
@@ -447,7 +446,7 @@ class RunningService : Service(), SensorEventListener {
                     ultimasLocalizacoes.clear()
                     bufferPace30s.clear()
                     bufferStride5s.clear()
-                    GpsDebugLogger.log(applicationContext, "SCREEN", "SCREEN_ON apos ${tempoTelaApagadaMs / 1000}s - modoRecuperacaoGps=true buffers limpos EMA PRESERVADA=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}")
+ } ?: "null"}")
                     Log.d(TAG, "Tela ligada apos ${tempoTelaApagadaMs / 1000}s - buffers limpos, EMA preservada para evitar spike de pace")
                 }
             }
@@ -1491,13 +1490,11 @@ class RunningService : Service(), SensorEventListener {
             SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos
         )
         if (idadeMs > 10_000L) {
-            GpsDebugLogger.log(applicationContext, "GPS", "ZUMBI descartado idade=${idadeMs}ms  speed=${location.speed}  accuracy=${location.accuracy}m")
             Log.d(TAG, "👻 Ponto GPS 'zumbi' descartado: ${idadeMs}ms de atraso (elapsedRealtimeNanos)")
             return
         }
 
         if (location.accuracy > MAX_ACCURACY_METERS) {
-            GpsDebugLogger.log(applicationContext, "GPS", "ACCURACY descartado accuracy=${location.accuracy}m  speed=${location.speed}  modoRecovery=$modoRecuperacaoGps")
             Log.d(TAG, "⚠️ Localização descartada: accuracy=${location.accuracy}m")
             return
         }
@@ -2016,8 +2013,7 @@ class RunningService : Service(), SensorEventListener {
             if (velocidadeSegMs > 6.5 || d < 0.5) {
                 val msDesdeOn = if (screenOnTimestampMs > 0) SystemClock.elapsedRealtime() - screenOnTimestampMs else Long.MAX_VALUE
                 if (msDesdeOn < 30_000L) {
-                    GpsDebugLogger.log(applicationContext, "PACE",
-                        "+${"%.1f".format(msDesdeOn/1000.0)}s  SEG_DESCARTADO d=${"%.1f".format(d)}m  dt=${"%.1f".format(dtS)}s  vel=${"%.1f".format(velocidadeSegMs)}m/s")
+}s  SEG_DESCARTADO d=${"%.1f".format(d)}m  dt=${"%.1f".format(dtS)}s  vel=${"%.1f".format(velocidadeSegMs)}m/s")
                 }
                 continue
             }
@@ -2064,16 +2060,14 @@ class RunningService : Service(), SensorEventListener {
                 val stride = distJanela5s / passosJanela5s
                 if (janelaQuente && stride > 1.9) {
                     // REGRA A — passada impossível, GPS exagerando
-                    GpsDebugLogger.log(applicationContext, "STRIDE",
-                        "+${"%.1f".format(msDesdeScreenOn / 1000.0)}s  REGRA_A  " +
+}s  REGRA_A  " +
                         "stride=${"%.2f".format(stride)}m  dist5s=${"%.1f".format(distJanela5s)}m  " +
                         "passos5s=$passosJanela5s  janela=${"%.1f".format(janelaSeg)}s  BLOQUEADO")
                     _paceAtual.value = "--:--"
                     return
                 }
                 if (msDesdeScreenOn < 30_000L) {
-                    GpsDebugLogger.log(applicationContext, "STRIDE",
-                        "+${"%.1f".format(msDesdeScreenOn / 1000.0)}s  REGRA_A  " +
+}s  REGRA_A  " +
                         "stride=${"%.2f".format(stride)}m  janela=${"%.1f".format(janelaSeg)}s  " +
                         if (!janelaQuente) "COLD_START_SKIP" else "ACEITO")
                 }
@@ -2082,16 +2076,14 @@ class RunningService : Service(), SensorEventListener {
                 // Folga maior durante recuperação para absorver lag de batching do sensor
                 val limiteAccuracy = if (modoRecuperacaoGps) 25f else 15f
                 if (location.accuracy > limiteAccuracy || velocidadeGps > 10.0f) {
-                    GpsDebugLogger.log(applicationContext, "STRIDE",
-                        "+${"%.1f".format(msDesdeScreenOn / 1000.0)}s  REGRA_B  passos=0  " +
+}s  REGRA_B  passos=0  " +
                         "acc=${"%.1f".format(location.accuracy)}m  vel=${"%.1f".format(velocidadeGps)}m/s  " +
                         "limiteAcc=${limiteAccuracy}m  BLOQUEADO")
                     _paceAtual.value = "--:--"
                     return
                 }
                 if (msDesdeScreenOn < 30_000L) {
-                    GpsDebugLogger.log(applicationContext, "STRIDE",
-                        "+${"%.1f".format(msDesdeScreenOn / 1000.0)}s  REGRA_B  passos=0  " +
+}s  REGRA_B  passos=0  " +
                         "acc=${"%.1f".format(location.accuracy)}m  ACEITO (sinal limpo)")
                 }
             }
@@ -2111,8 +2103,7 @@ class RunningService : Service(), SensorEventListener {
         // Log para diagnóstico de spike de pace pós-desbloqueio.
         if (msDesdeScreenOn < 30_000L) {
             val accuracies = pontosJanela.joinToString(",") { "%.0f".format(it.accuracy) }
-            GpsDebugLogger.log(applicationContext, "PACE",
-                "+${"%.1f".format(msDesdeScreenOn / 1000.0)}s  distJanela=${"%.1f".format(distanciaJanela)}m  tempoJanela=${"%.1f".format(tempoJanelaSegundos)}s  " +
+}s  distJanela=${"%.1f".format(distanciaJanela)}m  tempoJanela=${"%.1f".format(tempoJanelaSegundos)}s  " +
                 "paceBruto=${"%.0f".format(paceBruto)}  EMA_antes=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}  " +
                 "EMA_depois=${"%.0f".format(paceEma)}  pts=${pontosJanela.size}  acc=[$accuracies]  alpha=${"%.2f".format(alpha)}")
         }

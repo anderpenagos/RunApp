@@ -6,6 +6,7 @@ import android.util.Log
 import com.google.gson.Gson
 import com.runapp.data.model.CorridaHistorico
 import com.runapp.data.model.LatLngPonto
+import com.runapp.data.model.PaceZone
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 import java.io.File

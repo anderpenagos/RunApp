@@ -15,7 +15,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import com.runapp.util.GpsDebugLogger
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.time.LocalDate
@@ -34,7 +33,6 @@ fun HomeScreen(
     onVoltarParaCorrida: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val temLog = remember { GpsDebugLogger.existe(context) }
     val hoje = LocalDate.now()
     val formatter = DateTimeFormatter.ofPattern("EEEE, d 'de' MMMM", Locale("pt", "BR"))
     val dataFormatada = hoje.format(formatter).replaceFirstChar { it.uppercase() }
