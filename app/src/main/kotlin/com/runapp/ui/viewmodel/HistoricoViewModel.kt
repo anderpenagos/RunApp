@@ -24,7 +24,9 @@ data class HistoricoUiState(
     /** Índice da corrida sendo carregada para upload, ou null */
     val uploadEmAndamento: String? = null,
     /** Mensagem de feedback (sucesso/erro) para snackbar */
-    val mensagem: String? = null
+    val mensagem: String? = null,
+    /** true enquanto exporta ou importa */
+    val backupEmAndamento: Boolean = false
 )
 
 class HistoricoViewModel(application: Application) : AndroidViewModel(application) {
@@ -152,6 +154,46 @@ class HistoricoViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun limparMensagem() {
         _uiState.value = _uiState.value.copy(mensagem = null)
+    }
+
+    fun exportarBackup() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(backupEmAndamento = true)
+            val apiKey = withContext(Dispatchers.IO) {
+                container.preferencesRepository.apiKey.first() ?: ""
+            }
+            val resultado = withContext(Dispatchers.IO) {
+                container.createBackupRepository(apiKey).exportarTudo()
+            }
+            val msg = resultado.fold(
+                onSuccess = { n -> "✅ $n corridas exportadas para Downloads/RunApp/backup/" },
+                onFailure = { e -> "❌ Erro ao exportar: ${e.message}" }
+            )
+            _uiState.value = _uiState.value.copy(backupEmAndamento = false, mensagem = msg)
+        }
+    }
+
+    fun importarBackup() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(backupEmAndamento = true)
+            val apiKey = withContext(Dispatchers.IO) {
+                container.preferencesRepository.apiKey.first() ?: ""
+            }
+            val resultado = withContext(Dispatchers.IO) {
+                container.createBackupRepository(apiKey).importarTudo(
+                    athleteId = container.preferencesRepository.athleteId.first() ?: ""
+                )
+            }
+            val msg = resultado.fold(
+                onSuccess = { (ok, err) ->
+                    if (err == 0) "✅ $ok corridas importadas com sucesso!"
+                    else "⚠️ $ok importadas, $err com erro"
+                },
+                onFailure = { e -> "❌ Erro ao importar: ${e.message}" }
+            )
+            _uiState.value = _uiState.value.copy(backupEmAndamento = false, mensagem = msg)
+            carregarHistorico()
+        }
     }
 
     companion object {

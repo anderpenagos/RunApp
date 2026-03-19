@@ -44,11 +44,6 @@ fun HomeScreen(
             TopAppBar(
                 title = { Text("RunApp 🏃", fontWeight = FontWeight.Bold) },
                 actions = {
-                    if (temLog) {
-                        IconButton(onClick = onDebugLog) {
-                            Icon(Icons.Default.BugReport, contentDescription = "Debug GPS", tint = Color(0xFFEF5350))
-                        }
-                    }
                     IconButton(onClick = onConfigurar) {
                         Icon(Icons.Default.Settings, contentDescription = "Configurações")
                     }

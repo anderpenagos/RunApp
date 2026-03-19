@@ -243,6 +243,7 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                 val vozes = ttsConfig?.voices
                     ?.filter { v ->
                         v.locale.language == "pt" &&
+                        v.locale.country == "BR" &&
                         !v.isNetworkConnectionRequired &&
                         v.features?.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) != true
                     }

@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -59,6 +60,8 @@ fun HistoricoScreen(
         }
     }
 
+    var mostrarMenuBackup by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -66,6 +69,57 @@ fun HistoricoScreen(
                 navigationIcon = {
                     IconButton(onClick = onVoltar) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Voltar")
+                    }
+                },
+                actions = {
+                    if (state.backupEmAndamento) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp).padding(end = 4.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Box {
+                            IconButton(onClick = { mostrarMenuBackup = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "Backup")
+                            }
+                            DropdownMenu(
+                                expanded = mostrarMenuBackup,
+                                onDismissRequest = { mostrarMenuBackup = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text("📤 Exportar backup")
+                                            Text(
+                                                "Salva em Downloads/RunApp/backup/",
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        mostrarMenuBackup = false
+                                        viewModel.exportarBackup()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text("📥 Importar backup")
+                                            Text(
+                                                "Recalcula tudo com código atual",
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        mostrarMenuBackup = false
+                                        viewModel.importarBackup()
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             )

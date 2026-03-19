@@ -56,4 +56,13 @@ class AppContainer(private val application: Application) {
         val api = IntervalsClient.create(apiKey)
         return WorkoutRepository(api)
     }
+
+    /**
+     * Repositório de backup/restore local.
+     * Exporta para Downloads/RunApp/backup/ e reimporta recalculando tudo.
+     */
+    fun createBackupRepository(apiKey: String): com.runapp.data.repository.BackupRepository {
+        val workout = createWorkoutRepository(apiKey)
+        return com.runapp.data.repository.BackupRepository(application, workout)
+    }
 }

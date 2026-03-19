@@ -472,7 +472,8 @@ class AudioCoach(private val context: Context) {
     fun getVozesDisponiveis(): List<android.speech.tts.Voice> {
         return tts?.voices
             ?.filter { v ->
-                (v.locale.language == "pt") &&
+                v.locale.language == "pt" &&
+                v.locale.country == "BR" &&
                 !v.isNetworkConnectionRequired &&
                 v.features?.contains(android.speech.tts.TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) != true
             }
