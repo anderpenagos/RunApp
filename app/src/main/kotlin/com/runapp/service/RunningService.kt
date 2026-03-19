@@ -393,7 +393,6 @@ class RunningService : Service(), SensorEventListener {
                 Intent.ACTION_SCREEN_OFF -> {
                     // Registra quando a tela apagou para calcular quanto tempo ficou bloqueada
                     screenOffTimestampMs = SystemClock.elapsedRealtime()
- } ?: "null"}s/km  pace=${_paceAtual.value}  ultimasLocs=${ultimasLocalizacoes.size}")
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     if (!estaCorrendo || estaPausado) return
@@ -446,7 +445,6 @@ class RunningService : Service(), SensorEventListener {
                     ultimasLocalizacoes.clear()
                     bufferPace30s.clear()
                     bufferStride5s.clear()
- } ?: "null"}")
                     Log.d(TAG, "Tela ligada apos ${tempoTelaApagadaMs / 1000}s - buffers limpos, EMA preservada para evitar spike de pace")
                 }
             }
@@ -2011,10 +2009,6 @@ class RunningService : Service(), SensorEventListener {
             // correto (last.time - first.time) pois esses pontos ainda estao na janela.
             val velocidadeSegMs = d / dtS
             if (velocidadeSegMs > 6.5 || d < 0.5) {
-                val msDesdeOn = if (screenOnTimestampMs > 0) SystemClock.elapsedRealtime() - screenOnTimestampMs else Long.MAX_VALUE
-                if (msDesdeOn < 30_000L) {
-}s  SEG_DESCARTADO d=${"%.1f".format(d)}m  dt=${"%.1f".format(dtS)}s  vel=${"%.1f".format(velocidadeSegMs)}m/s")
-                }
                 continue
             }
             distanciaJanela += d
@@ -2060,32 +2054,19 @@ class RunningService : Service(), SensorEventListener {
                 val stride = distJanela5s / passosJanela5s
                 if (janelaQuente && stride > 1.9) {
                     // REGRA A — passada impossível, GPS exagerando
-}s  REGRA_A  " +
-                        "stride=${"%.2f".format(stride)}m  dist5s=${"%.1f".format(distJanela5s)}m  " +
-                        "passos5s=$passosJanela5s  janela=${"%.1f".format(janelaSeg)}s  BLOQUEADO")
                     _paceAtual.value = "--:--"
                     return
                 }
-                if (msDesdeScreenOn < 30_000L) {
-}s  REGRA_A  " +
-                        "stride=${"%.2f".format(stride)}m  janela=${"%.1f".format(janelaSeg)}s  " +
-                        if (!janelaQuente) "COLD_START_SKIP" else "ACEITO")
-                }
+
             } else if (velocidadeGps > 0.5f) {
                 // REGRA B — sem passos mas GPS em movimento
                 // Folga maior durante recuperação para absorver lag de batching do sensor
                 val limiteAccuracy = if (modoRecuperacaoGps) 25f else 15f
                 if (location.accuracy > limiteAccuracy || velocidadeGps > 10.0f) {
-}s  REGRA_B  passos=0  " +
-                        "acc=${"%.1f".format(location.accuracy)}m  vel=${"%.1f".format(velocidadeGps)}m/s  " +
-                        "limiteAcc=${limiteAccuracy}m  BLOQUEADO")
                     _paceAtual.value = "--:--"
                     return
                 }
-                if (msDesdeScreenOn < 30_000L) {
-}s  REGRA_B  passos=0  " +
-                        "acc=${"%.1f".format(location.accuracy)}m  ACEITO (sinal limpo)")
-                }
+
             }
         }
 
@@ -2101,12 +2082,7 @@ class RunningService : Service(), SensorEventListener {
         } ?: paceBruto
 
         // Log para diagnóstico de spike de pace pós-desbloqueio.
-        if (msDesdeScreenOn < 30_000L) {
-            val accuracies = pontosJanela.joinToString(",") { "%.0f".format(it.accuracy) }
-}s  distJanela=${"%.1f".format(distanciaJanela)}m  tempoJanela=${"%.1f".format(tempoJanelaSegundos)}s  " +
-                "paceBruto=${"%.0f".format(paceBruto)}  EMA_antes=${ultimoPaceEmaInterno?.let { "%.0f".format(it) } ?: "null"}  " +
-                "EMA_depois=${"%.0f".format(paceEma)}  pts=${pontosJanela.size}  acc=[$accuracies]  alpha=${"%.2f".format(alpha)}")
-        }
+
 
         // Quarentena de 10s após SCREEN_ON: GPS ainda estabilizando.
         // Atualiza EMA internamente mas não grava no gráfico nem altera o display.
