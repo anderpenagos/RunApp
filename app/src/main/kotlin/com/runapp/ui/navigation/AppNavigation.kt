@@ -55,7 +55,6 @@ sealed class Screen(val route: String) {
         fun criarRota(eventId: Long) = "corrida/$eventId"
     }
     object Resumo : Screen("resumo")
-    object DebugLog : Screen("debug_log")
 }
 
 /**
@@ -198,16 +197,11 @@ fun AppNavigation(notificationIntent: Intent? = null) {
                 onCorridaLivre = { navController.navigate(Screen.Corrida.criarRota(0L)) },
                 onVerHistorico = { navController.navigate(Screen.Historico.route) },
                 onConfigurar   = { navController.navigate(Screen.Config.route) },
-                onDebugLog     = { navController.navigate(Screen.DebugLog.route) },
                 corridaAtiva   = corridaAtiva,
                 onVoltarParaCorrida = {
                     eventoId?.let { navController.navigate(Screen.Corrida.criarRota(it)) }
                 }
             )
-        }
-
-        composable(Screen.DebugLog.route) {
-            DebugLogScreen(onVoltar = { navController.popBackStack() })
         }
 
         composable(Screen.Treinos.route) {
