@@ -495,9 +495,18 @@ class RunningService : Service(), SensorEventListener {
     // a âncora absoluta. A fusão por offset entrega o melhor dos dois mundos:
     // baixo ruído do barômetro + estabilidade de longo prazo do GPS.
     private var barometro: Sensor? = null
+    // Buffer das últimas 10 leituras de altitude barométrica.
+    // Registrado em SENSOR_DELAY_GAME (~20ms) → janela de ~200ms.
+    // A média de 10 pontos reduz o ruído de medição em ~3x (√10) vs ponto único.
+    private val baroAltBuffer = ArrayDeque<Double>(10)
     private var altitudeBarometricaUltima: Double? = null
     private var baroOffset: Double = 0.0
     private var baroOffsetInicializado = false
+    // Pressão ao nível do mar para conversão barométrica precisa.
+    // Padrão: 1013.25 hPa (atmosfera padrão). Atualizado no início da corrida
+    // via Open-Meteo (lat/lng do primeiro ponto GPS). Um erro de 10 hPa na
+    // pressão de referência causa ~80m de erro na altitude absoluta.
+    private var pressaoNivelMarHpa: Float = android.hardware.SensorManager.PRESSURE_STANDARD_ATMOSPHERE
     // ALPHA ultra-lento: corrige drift climático sem injetar ruído do GPS.
     // Com erro inicial de 5m, o offset muda apenas 0.005m/ponto — invisível para a Regressão.
     private val ALPHA_CALIBRACAO_BARO = 0.001
@@ -625,7 +634,8 @@ class RunningService : Service(), SensorEventListener {
         baroOffsetInicializado = false
         bufferAltBruta.clear()
         bufferAltDist.clear()
-        Log.d(TAG, "🧹 Pipeline de elevação resetada (offset + buffers Mediana/Regressão)")
+        baroAltBuffer.clear()
+        Log.d(TAG, "🧹 Pipeline de elevação resetada (offset + buffers Mediana/Regressão/Baro)")
     }
 
     /**
@@ -645,12 +655,13 @@ class RunningService : Service(), SensorEventListener {
         // Unregister preventivo: garante estado limpo mesmo se chamado duas vezes
         sensorManager.unregisterListener(this)
 
-        // 1. Barômetro — MainThread via Handler para thread safety com GPS
+        // 1. Barômetro — SENSOR_DELAY_GAME (~20ms) para buffer de 10 leituras em ~200ms.
+        //    MainThread via Handler para thread safety com GPS (onLocationResult também é main).
         barometro?.let {
             sensorManager.registerListener(
-                this, it, SensorManager.SENSOR_DELAY_NORMAL, Handler(Looper.getMainLooper())
+                this, it, SensorManager.SENSOR_DELAY_GAME, Handler(Looper.getMainLooper())
             )
-            Log.d(TAG, "⛰️ Barômetro registrado (MainThread Handler)")
+            Log.d(TAG, "⛰️ Barômetro registrado (SENSOR_DELAY_GAME, MainThread Handler)")
         }
 
         // 2. Sensor de passos (hardware nativo) ou acelerômetro (fallback)
@@ -944,6 +955,45 @@ class RunningService : Service(), SensorEventListener {
         }
     }
 
+    /**
+     * Busca a pressão ao nível do mar via Open-Meteo para a posição atual.
+     * Gratuito, sem API key, precisão ~1 hPa → erro de altitude ~8m vs ~80m do padrão.
+     *
+     * Chamado no início da corrida em background. Se falhar (sem rede, timeout),
+     * mantém o valor padrão (1013.25 hPa) — degradação silenciosa sem impacto na corrida.
+     * Atualiza pressaoNivelMarHpa que é lida pelo onSensorChanged a cada tick do barômetro.
+     */
+    private fun buscarPressaoNivelMar(lat: Double, lng: Double) {
+        serviceScope.launch(Dispatchers.IO) {
+            runCatching {
+                val url = "https://api.open-meteo.com/v1/forecast" +
+                    "?latitude=${"%.4f".format(lat)}" +
+                    "&longitude=${"%.4f".format(lng)}" +
+                    "&current=surface_pressure" +
+                    "&forecast_days=1"
+                val client = okhttp3.OkHttpClient.Builder()
+                    .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+                val response = client.newCall(
+                    okhttp3.Request.Builder().url(url).build()
+                ).execute()
+                val body = response.body?.string() ?: return@runCatching
+                val json = com.google.gson.JsonParser.parseString(body).asJsonObject
+                val pressao = json.getAsJsonObject("current")
+                    ?.get("surface_pressure")?.asFloat ?: return@runCatching
+                if (pressao in 850f..1100f) {
+                    pressaoNivelMarHpa = pressao
+                    // Força recalibração do offset barométrico com nova referência
+                    baroOffsetInicializado = false
+                    Log.d(TAG, "🌡️ Pressão real: ${pressao}hPa (padrão era ${android.hardware.SensorManager.PRESSURE_STANDARD_ATMOSPHERE}hPa)")
+                }
+            }.onFailure {
+                Log.w(TAG, "⚠️ Pressão ao nível do mar indisponível, usando padrão 1013.25hPa: ${it.message}")
+            }
+        }
+    }
+
     private fun iniciarRastreamento() {
         Log.d(TAG, "▶️ Iniciando rastreamento")
         
@@ -982,6 +1032,10 @@ class RunningService : Service(), SensorEventListener {
         ultimasLocalizacoes.clear()
         ultimoPaceEmaInterno = null
         janelaAtualSegundos = 12
+
+        // Reset pressão de referência — será atualizada com dado real via Open-Meteo
+        // quando o primeiro ponto GPS chegar (lat/lng necessário para a requisição)
+        pressaoNivelMarHpa = android.hardware.SensorManager.PRESSURE_STANDARD_ATMOSPHERE
 
         // Reset filtros de altitude
         resetarPipelineElevacao()
@@ -1138,11 +1192,15 @@ class RunningService : Service(), SensorEventListener {
         // em que obterAltitudeFusion() calibra o novo offset após a retomada.
         // Sem isso, o offset seria calculado contra pressão de "antes da pausa".
         if (event.sensor.type == Sensor.TYPE_PRESSURE) {
-            altitudeBarometricaUltima = android.hardware.SensorManager.getAltitude(
-                android.hardware.SensorManager.PRESSURE_STANDARD_ATMOSPHERE,
+            val altLeitura = android.hardware.SensorManager.getAltitude(
+                pressaoNivelMarHpa,
                 event.values[0]
             ).toDouble()
-            return  // otimização: evita avaliar o when abaixo
+            baroAltBuffer.addLast(altLeitura)
+            if (baroAltBuffer.size > 10) baroAltBuffer.removeFirst()
+            // Média das últimas 10 leituras (~200ms) — reduz ruído em ~3x vs ponto único
+            altitudeBarometricaUltima = baroAltBuffer.average()
+            return
         }
 
         // Sensores de movimento: apenas durante corrida ativa (não pausada)
@@ -1649,6 +1707,8 @@ class RunningService : Service(), SensorEventListener {
             adicionarPontoRota(pontoNovo)
             _rotaAtual.value = rota.toList()
             ultimaLocalizacaoSignificativa = location
+            // Primeiro ponto GPS — busca pressão real para calibrar barômetro
+            buscarPressaoNivelMar(location.latitude, location.longitude)
             return
         }
 

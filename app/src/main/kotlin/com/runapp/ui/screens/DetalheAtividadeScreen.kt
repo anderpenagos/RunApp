@@ -119,8 +119,13 @@ fun DetalheAtividadeScreen(
             
             if (dados.temGAP) {
                 item {
-                    GraficoCard("Ritmo Ajustado (GAP)", "Verde = esforço equivalente em plano") {
+                    GraficoCard("GAP — Janela 20m", "Verde = esforço equivalente em plano (gradiente por janela de 20m)") {
                         GraficoGAP(dados, cursorFrac) { cursorFrac = it }
+                    }
+                }
+                item {
+                    GraficoCard("GAP — Regressão Linear", "Verde = esforço equivalente em plano (gradiente por regressão de 10 pontos)") {
+                        GraficoGAPRegressao(dados, cursorFrac) { cursorFrac = it }
                     }
                 }
             }
@@ -432,6 +437,66 @@ private fun GraficoGAP(dados: DadosGrafico, frac: Float, onFracChange: (Float) -
                         else pathLine.lineTo(x, 4f + drawH * v)
                     }
                     drawPath(pathLine, CorGAP, style = Stroke(width = 2f, cap = StrokeCap.Round))
+                }
+                if (idx >= 0) {
+                    val cx = frac.coerceIn(0f, 1f) * w
+                    drawLine(CorCursor.copy(alpha = 0.5f), Offset(cx, 0f), Offset(cx, h), strokeWidth = 1.5f)
+                }
+            }
+            Spacer(modifier = Modifier.width(35.dp))
+        }
+        EixoKm(dados.kmMarcadores, dados.kmLabels, larguraEixoY = 35.dp, larguraEixoYDir = 35.dp)
+    }
+}
+
+@Composable
+private fun GraficoGAPRegressao(dados: DadosGrafico, frac: Float, onFracChange: (Float) -> Unit) {
+    val idx = fracToIndex(frac, dados.gapRegNorm.size)
+    val CorGAPReg = Color(0xFF80CBC4)  // teal — diferencia visualmente da janela 20m
+    Column {
+        Row(modifier = Modifier.fillMaxWidth().height(22.dp),
+            horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            if (idx >= 0) {
+                val distLabel = dados.distanciasKm.getOrNull(idx)?.let { "%.2fkm".format(it) } ?: ""
+                Text("⚡ GAP: ${dados.gapRegFormatado[idx]}/km", color = CorGAPReg, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (distLabel.isNotEmpty()) Text(distLabel, color = Color.White.copy(alpha = 0.4f), fontSize = 10.sp)
+                    Text("Real: ${dados.paceFormatado[idx]}/km", color = Color.White.copy(alpha = 0.45f), fontSize = 11.sp)
+                }
+            } else {
+                Text("Ritmo ajustado pela inclinação do terreno", color = CorGAPReg.copy(alpha = 0.5f), fontSize = 10.sp)
+            }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(modifier = Modifier.fillMaxWidth().height(120.dp)) {
+            EixoYVertical(topLabel = formatarPaceSegKm(dados.gapRegMin), botLabel = formatarPaceSegKm(dados.gapRegMax), cor = CorGAPReg)
+            Canvas(modifier = Modifier.weight(1f).fillMaxHeight()
+                .clip(RoundedCornerShape(4.dp)).background(Color.White.copy(alpha = 0.03f))
+                .cursorInput(onFracChange)
+            ) {
+                val w = size.width; val h = size.height; val drawH = h - 12f
+                for (i in 1..3) drawLine(CorGrid, Offset(0f, h * i / 4), Offset(w, h * i / 4))
+                dados.kmMarcadores.forEach { frac ->
+                    drawLine(Color.White.copy(alpha = 0.08f), Offset(frac * w, 0f), Offset(frac * w, h),
+                        strokeWidth = 1f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f)))
+                }
+                if (dados.gapRegNorm.size >= 2) {
+                    val gapInterp = interpolarInvalidos(dados.gapRegNorm)
+                    val pathArea = Path().apply {
+                        moveTo(0f, h)
+                        gapInterp.forEachIndexed { i, v ->
+                            lineTo(i.toFloat() / (gapInterp.size - 1) * w, 4f + drawH * v)
+                        }
+                        lineTo(w, h); close()
+                    }
+                    drawPath(pathArea, Brush.verticalGradient(listOf(CorGAPReg.copy(alpha = 0.2f), Color.Transparent), 0f, h))
+                    val pathLine = Path()
+                    gapInterp.forEachIndexed { i, v ->
+                        val x = i.toFloat() / (gapInterp.size - 1) * w
+                        if (i == 0) pathLine.moveTo(x, 4f + drawH * v)
+                        else pathLine.lineTo(x, 4f + drawH * v)
+                    }
+                    drawPath(pathLine, CorGAPReg, style = Stroke(width = 2f, cap = StrokeCap.Round))
                 }
                 if (idx >= 0) {
                     val cx = frac.coerceIn(0f, 1f) * w
@@ -875,18 +940,22 @@ private fun interpolarInvalidos(lista: List<Float>): List<Float> {
 data class DadosGrafico(
     val paceNorm:      List<Float>,
     val altNorm:       List<Float>,
-    val gapNorm:       List<Float>,
+    val gapNorm:       List<Float>,         // GAP por janela de 20m
+    val gapRegNorm:    List<Float>,         // GAP por regressão linear (10 pontos)
     val paceFormatado: List<String>,
     val gapFormatado:  List<String>,
+    val gapRegFormatado: List<String>,
     val altitudes:     List<Double>,
     val cadencias:     List<Int>,
-    val indicesOriginais: List<Int>, // Mapeamento para cursor no mapa
+    val indicesOriginais: List<Int>,
     val temCadencia:   Boolean,
     val temGAP:        Boolean,
     val paceMin: Double,
     val paceMax: Double,
     val gapMin:  Double,
     val gapMax:  Double,
+    val gapRegMin: Double,
+    val gapRegMax: Double,
     // Fração 0..1 no eixo X onde cada marcador de distância ocorre (intervalo adaptativo)
     val kmMarcadores:  List<Float> = emptyList(),
     // Labels dos marcadores (ex: "1km", "2km" ou "100m", "200m" para corridas curtas)
@@ -899,7 +968,7 @@ data class InfoZona(val nome: String, val percentagem: Float, val tempo: String,
 
 private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
     val vazio = DadosGrafico(emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
-        emptyList(), emptyList(), emptyList(), false, false, 300.0, 600.0, 300.0, 600.0)
+        emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), false, false, 300.0, 600.0, 300.0, 600.0, 300.0, 600.0)
     if (rota.size < 2) return vazio
 
     // Detecção prévia de spikes para excluir da SMA de altitude
@@ -910,12 +979,14 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
         if (distM / dtS > 12.0) { isAltSpike[i] = true; isAltSpike[i-1] = true }
     }
 
-    // Suavização de altitude (média móvel ±5) excluindo pontos de spike GPS.
-    // Pontos spike ficam como -1f e são interpolados logo após para linha contínua.
+    // Suavização de altitude (média móvel ±20) excluindo pontos de spike GPS.
+    // pt.alt já foi filtrado no RunningService (fusão GPS+baro + mediana 5pts).
+    // Uma janela maior aqui suaviza os residuais que sobrevivem ao pipeline de coleta,
+    // reduzindo gradientes espúrios no cálculo do GAP sem distorcer subidas reais.
     val altsRawF = rota.mapIndexed { i, pt ->
         if (isAltSpike[i]) -1f
         else {
-            val a = (i - 5).coerceAtLeast(0); val b = (i + 5).coerceAtMost(rota.lastIndex)
+            val a = (i - 20).coerceAtLeast(0); val b = (i + 20).coerceAtMost(rota.lastIndex)
             val vizinhos = (a..b).mapNotNull { j -> if (!isAltSpike[j]) rota[j].alt else null }
             (if (vizinhos.isEmpty()) pt.alt else vizinhos.average()).toFloat()
         }
@@ -975,7 +1046,10 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
     //   C(g) = 155.4g⁵ - 30.4g⁴ - 43.3g³ + 46.3g² + 19.5g + 3.6
     //   fator = C(g) / C(0) = C(g) / 3.6
     //   GAP   = pace / fator  (subida → fator > 1 → GAP < pace = mais rápido no plano)
-    // g é fração adimensional (0.08 = 8%), não percentagem.
+    //
+    // Gradiente calculado sobre janela de 20m de distância horizontal (não ponto a ponto).
+    // Com altitude já suavizada (SMA ±5), o ruído residual é ~±3m. Sobre 20m:
+    // erro máximo de gradiente ~15% — controlado pelo coerceIn(-0.45, 0.45) do Minetti.
     fun fatorMinettiLocal(gradFrac: Double): Double {
         val g = gradFrac.coerceIn(-0.45, 0.45)
         val custo = 155.4 * Math.pow(g, 5.0) -
@@ -986,18 +1060,58 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
         return (custo / 3.6).coerceAtLeast(0.1)
     }
 
+    // Pré-calcula distância acumulada para usar na janela de 20m
+    val distAcumGap = DoubleArray(rota.size)
+    for (i in 1 until rota.size) {
+        distAcumGap[i] = distAcumGap[i - 1] +
+            haversineM(rota[i - 1].lat, rota[i - 1].lng, rota[i].lat, rota[i].lng)
+    }
+    val JANELA_GAP_M = 20.0
+
     val gaps = rota.mapIndexed { i, pt ->
         val p = pt.paceNoPonto
         if (p !in 60.0..1200.0) return@mapIndexed 0.0
-        val gradFrac = if (i > 0) {
-            val dAlt  = altsSuav[i] - altsSuav[i - 1]
-            val dDist = haversineM(rota[i - 1].lat, rota[i - 1].lng, pt.lat, pt.lng).coerceAtLeast(0.5)
-            (dAlt / dDist).coerceIn(-0.45, 0.45)
-        } else 0.0
+
+        // Busca o ponto mais recuado que ainda esteja dentro da janela de 20m
+        val distAtual = distAcumGap[i]
+        var j = i - 1
+        while (j > 0 && distAtual - distAcumGap[j] < JANELA_GAP_M) j--
+
+        val dDist = distAtual - distAcumGap[j]
+        val gradFrac = if (dDist >= JANELA_GAP_M * 0.5) {
+            // Janela suficiente — gradiente confiável
+            ((altsSuav[i] - altsSuav[j]) / dDist).coerceIn(-0.45, 0.45)
+        } else {
+            // Início da corrida: janela ainda pequena — sem correção
+            0.0
+        }
         (p / fatorMinettiLocal(gradFrac)).coerceIn(60.0, 1200.0)
     }
     val gMin = gaps.filter { it > 0 }.minOrNull() ?: pMin
     val gMax = gaps.filter { it > 0 }.maxOrNull() ?: pMax
+
+    // GAP por regressão linear (mínimos quadrados sobre os últimos 10 pontos).
+    // x = distância acumulada, y = altitude suavizada → slope = gradiente m/m.
+    // Mais robusto a outliers isolados mas suaviza mudanças bruscas de inclinação.
+    val N_REG = 10
+    val gapsReg = rota.mapIndexed { i, pt ->
+        val p = pt.paceNoPonto
+        if (p !in 60.0..1200.0) return@mapIndexed 0.0
+        val inicio = (i - N_REG + 1).coerceAtLeast(0)
+        val n = (i - inicio + 1).toDouble()
+        if (n < 3) return@mapIndexed (p / fatorMinettiLocal(0.0)).coerceIn(60.0, 1200.0)
+        var sumX = 0.0; var sumY = 0.0; var sumXY = 0.0; var sumX2 = 0.0
+        for (k in inicio..i) {
+            val x = distAcumGap[k]; val y = altsSuav[k]
+            sumX += x; sumY += y; sumXY += x * y; sumX2 += x * x
+        }
+        val denom = n * sumX2 - sumX * sumX
+        val gradFrac = if (denom == 0.0) 0.0
+            else ((n * sumXY - sumX * sumY) / denom).coerceIn(-0.45, 0.45)
+        (p / fatorMinettiLocal(gradFrac)).coerceIn(60.0, 1200.0)
+    }
+    val gRegMin = gapsReg.filter { it > 0 }.minOrNull() ?: pMin
+    val gRegMax = gapsReg.filter { it > 0 }.maxOrNull() ?: pMax
 
     // Downsampling para performance (max 300 pontos no gráfico)
     val step = maxOf(1, rota.size / 300)
@@ -1064,8 +1178,13 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
             val g = gaps[i]; if (g <= 0) -1f
             else ((g - gMin) / gapRange).toFloat().coerceIn(0f, 1f)
         },
-        paceFormatado = idxs.map { formatarPaceSegKm(pacesSuav[it].coerceAtLeast(0.0).let { v -> if (v < 60.0) paces[it] else v }) },
-        gapFormatado  = idxs.map { formatarPaceSegKm(gaps[it]) },
+        gapRegNorm = idxs.map { i ->
+            val g = gapsReg[i]; if (g <= 0) -1f
+            else ((g - gRegMin) / (gRegMax - gRegMin).coerceAtLeast(1.0)).toFloat().coerceIn(0f, 1f)
+        },
+        paceFormatado    = idxs.map { formatarPaceSegKm(pacesSuav[it].coerceAtLeast(0.0).let { v -> if (v < 60.0) paces[it] else v }) },
+        gapFormatado     = idxs.map { formatarPaceSegKm(gaps[it]) },
+        gapRegFormatado  = idxs.map { formatarPaceSegKm(gapsReg[it]) },
         altitudes     = idxs.map { altsSuav[it] },
         cadencias     = run {
             // Interpola zeros entre leituras válidas de cadência (igual ao pace).
@@ -1077,6 +1196,7 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
         temCadencia   = rota.any { it.cadenciaNoPonto > 0 },
         temGAP        = (altMax - altMin) > 5.0,
         paceMin = pMinReal, paceMax = pMaxReal, gapMin = gMin, gapMax = gMax,
+        gapRegMin = gRegMin, gapRegMax = gRegMax,
         kmMarcadores  = kmMarcadores,
         kmLabels      = kmLabels,
         distanciasKm  = idxs.map { (distAcumM[it] / 1000.0).toFloat() }
