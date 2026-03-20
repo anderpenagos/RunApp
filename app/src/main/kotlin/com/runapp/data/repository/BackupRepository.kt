@@ -317,7 +317,7 @@ class BackupRepository(
                 event = parser.next()
             }
         }.onFailure { e ->
-            Log.e(TAG, "❌ Erro ao parsear GPX ${file.name}: ${e.message}")
+            Log.e(TAG, "❌ Erro ao parsear GPX: ${e.message}")
         }
         return pontos
     }
