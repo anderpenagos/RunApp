@@ -711,7 +711,7 @@ class CorridaViewModel(
             ultimoPaceFeedback = 0L  // reseta aviso de pace ao mudar de passo
             foraDoAlvoDesdeMs = 0L
 
-            audioCoach.anunciarPasso(passo.nome, passo.paceAlvoMax, passo.duracao)
+            audioCoach.anunciarPasso(passo.nome, passo.paceAlvoMin, passo.paceAlvoMax, passo.duracao)
 
             // ── Avisos especiais de fim de treino — após anunciarPasso para não ser cortado
             val ultimoIndex = passos.lastIndex
@@ -940,7 +940,7 @@ class CorridaViewModel(
         if (primeiroPasso != null) {
             viewModelScope.launch {
                 kotlinx.coroutines.delay(2000) // espera o anúncio de início terminar
-                audioCoach.anunciarPasso(primeiroPasso.nome, primeiroPasso.paceAlvoMax, primeiroPasso.duracao)
+                audioCoach.anunciarPasso(primeiroPasso.nome, primeiroPasso.paceAlvoMin, primeiroPasso.paceAlvoMax, primeiroPasso.duracao)
                 // Configurar a janela de pace para o primeiro passo imediatamente
                 // (atualizarProgressoPasso só dispara na mudança de passo, não no início)
                 runningService?.setDuracaoPassoAtual(primeiroPasso.duracao)

@@ -171,15 +171,21 @@ class AudioCoach(private val context: Context) {
         falarUrgente("Corrida iniciada. Boa sorte!")
     }
 
-    fun anunciarPasso(nomePasso: String, paceAlvo: String, duracao: Int) {
-        val paceTexto = formatarPaceParaFala(paceAlvo)
+    fun anunciarPasso(nomePasso: String, paceAlvoMin: String, paceAlvoMax: String, duracao: Int) {
+        // Calcula o pace médio da faixa alvo para dar uma referência central ao corredor
+        val minSecs = paceParaSegundos(paceAlvoMin)
+        val maxSecs = paceParaSegundos(paceAlvoMax)
+        val paceTexto = if (minSecs > 0 && maxSecs > 0) {
+            val mediaSecs = (minSecs + maxSecs) / 2.0
+            formatarPaceParaFala(formatarPaceDeSegundos(mediaSecs))
+        } else {
+            formatarPaceParaFala(paceAlvoMax)
+        }
+
+        val duracaoTexto = if (duracao >= 60) "${duracao / 60} minutos" else "$duracao segundos"
         if (duracao < 45) {
-            // Tiro curto: frase seca e rápida — libera o canal de áudio antes do esforço começar
-            val duracaoTexto = if (duracao >= 60) "${duracao / 60} minutos" else "$duracao segundos"
             falarUrgente("$nomePasso, $duracaoTexto. Alvo: $paceTexto!")
         } else {
-            // Passo longo: anúncio completo com contexto
-            val duracaoTexto = if (duracao >= 60) "${duracao / 60} minutos" else "$duracao segundos"
             falarUrgente("$nomePasso por $duracaoTexto. Ritmo alvo: $paceTexto por quilômetro.")
         }
     }
@@ -226,8 +232,8 @@ class AudioCoach(private val context: Context) {
         val paceTexto = formatarPaceParaFala(paceMedia)
 
         val ehSubida         = gradienteMedio >   0.02   // > 2% liquido = subida real
-        val ehDescidaTecnica = gradienteMedio <  -0.20   // < -20% (alinhado com LIMIAR_DESCIDA_TECNICA)
-        val diferencaGap     = gapMedioSegKm - paceRealSegKm  // positivo = GAP mais lento = subida
+        val ehDescidaTecnica = gradienteMedio <  -0.15   // < -15%: Minetti mostra custo excêntrico relevante a partir daqui
+        val diferencaGap     = gapMedioSegKm - paceRealSegKm  // negativo = GAP mais rápido = subida (GAP < pace real)
 
         // Eficiência: o corredor manteve a intensidade se o esforço ajustado (GAP)
         // ficou abaixo do pace médio geral da corrida. Ou seja: subiu sem desacelerar
@@ -246,12 +252,12 @@ class AudioCoach(private val context: Context) {
             }
 
             // Subida eficiente: GAP ficou abaixo do pace médio geral → corredor manteve intensidade
-            subiuEficientemente && diferencaGap > 15.0 -> {
+            subiuEficientemente && diferencaGap < -15.0 -> {
                 "Quilômetro $km concluído. Ritmo real: $paceTexto. Esforço ajustado: $gapTexto. Excelente subida, você manteve a intensidade!"
             }
 
             // Subida regular com GAP relevante → tom motivacional
-            ehSubida && gapMedioSegKm > 0 && diferencaGap > 15.0 -> {
+            ehSubida && gapMedioSegKm > 0 && diferencaGap < -15.0 -> {
                 "Quilômetro $km concluído. Ritmo real: $paceTexto. Esforço equivale a $gapTexto no plano. Continue firme!"
             }
 
@@ -363,11 +369,11 @@ class AudioCoach(private val context: Context) {
             }
             atualSecs < minSecs - 10 -> {
                 android.util.Log.d("AudioCoach", "⚠️ MUITO RÁPIDO!")
-                "Ritmo acima do intervalo. Reduza para ${formatarPaceParaFala(paceAlvoMin)}."
+                "Ritmo atual ${formatarPaceParaFala(paceAtual)}. Reduza para ${formatarPaceParaFala(paceAlvoMin)}."
             }
             atualSecs > maxSecs + 10 -> {
                 android.util.Log.d("AudioCoach", "⚠️ MUITO DEVAGAR!")
-                "Ritmo abaixo do intervalo. Aumente para ${formatarPaceParaFala(paceAlvoMax)}."
+                "Ritmo atual ${formatarPaceParaFala(paceAtual)}. Aumente para ${formatarPaceParaFala(paceAlvoMax)}."
             }
             else -> {
                 android.util.Log.d("AudioCoach", "✅ Dentro do alvo")

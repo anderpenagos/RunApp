@@ -970,16 +970,31 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
     val pMaxSuav = pacesSuavValidos.maxOrNull() ?: pMax
     val paceRangeSuav = (pMaxSuav - pMinSuav).coerceAtLeast(1.0)
 
-    // GAP: usa paces ORIGINAIS (não suavizados) — cálculo biomecânico, não visual
+    // GAP: usa paces ORIGINAIS (não suavizados) — cálculo biomecânico, não visual.
+    // Fórmula de Minetti (2002) idêntica à do RunningService:
+    //   C(g) = 155.4g⁵ - 30.4g⁴ - 43.3g³ + 46.3g² + 19.5g + 3.6
+    //   fator = C(g) / C(0) = C(g) / 3.6
+    //   GAP   = pace / fator  (subida → fator > 1 → GAP < pace = mais rápido no plano)
+    // g é fração adimensional (0.08 = 8%), não percentagem.
+    fun fatorMinettiLocal(gradFrac: Double): Double {
+        val g = gradFrac.coerceIn(-0.45, 0.45)
+        val custo = 155.4 * Math.pow(g, 5.0) -
+                     30.4 * Math.pow(g, 4.0) -
+                     43.3 * Math.pow(g, 3.0) +
+                     46.3 * Math.pow(g, 2.0) +
+                     19.5 * g + 3.6
+        return (custo / 3.6).coerceAtLeast(0.1)
+    }
+
     val gaps = rota.mapIndexed { i, pt ->
         val p = pt.paceNoPonto
         if (p !in 60.0..1200.0) return@mapIndexed 0.0
-        val grad = if (i > 0) {
-            val dAlt = altsSuav[i] - altsSuav[i - 1]
+        val gradFrac = if (i > 0) {
+            val dAlt  = altsSuav[i] - altsSuav[i - 1]
             val dDist = haversineM(rota[i - 1].lat, rota[i - 1].lng, pt.lat, pt.lng).coerceAtLeast(0.5)
-            (dAlt / dDist * 100).coerceIn(-30.0, 30.0)
+            (dAlt / dDist).coerceIn(-0.45, 0.45)
         } else 0.0
-        (p * (1.0 + 0.033 * grad + 0.00012 * grad.pow(2))).coerceIn(60.0, 1200.0)
+        (p / fatorMinettiLocal(gradFrac)).coerceIn(60.0, 1200.0)
     }
     val gMin = gaps.filter { it > 0 }.minOrNull() ?: pMin
     val gMax = gaps.filter { it > 0 }.maxOrNull() ?: pMax

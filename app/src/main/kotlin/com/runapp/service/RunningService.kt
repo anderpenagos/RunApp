@@ -741,7 +741,7 @@ class RunningService : Service(), SensorEventListener {
      * Retorna null se não houver distância acumulada suficiente (GPS ausente o km todo).
      * O gradiente médio é essencial para o AudioCoach distinguir:
      *   gradiente > 0  → subida → "Ótima subida, esforço equivale a X"
-     *   gradiente < -0.15 → descida técnica → "Controle o impacto"
+     *   gradiente < -0.15 → descida técnica no resumo de km (Minetti: custo excêntrico relevante)
      *   demais → terreno ondulado → anúncio neutro
      */
     data class GapKmResult(
