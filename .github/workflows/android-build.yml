@@ -1,0 +1,134 @@
+name: Build e Enviar para Telegram (Sem Artifacts)
+
+on:
+  push:
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      send_to_telegram:
+        description: 'Enviar para Telegram?'
+        required: false
+        default: 'true'
+        type: boolean
+
+jobs:
+  build:
+    name: Build e Enviar APK
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Baixar gradle-wrapper.jar
+        run: |
+          mkdir -p gradle/wrapper
+          curl -L \
+            "https://github.com/gradle/gradle/raw/v8.7.0/gradle/wrapper/gradle-wrapper.jar" \
+            -o gradle/wrapper/gradle-wrapper.jar
+      
+      - name: Create local.properties
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+      
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+        env:
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      
+      - name: Get version info
+        id: version
+        run: |
+          VERSION_NAME=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          VERSION_CODE=$(grep -oP 'versionCode = \K[0-9]+' app/build.gradle.kts)
+          echo "name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          
+          # Pega informação do commit
+          COMMIT_MSG=$(git log -1 --pretty=%B | head -1)
+          echo "commit_msg=$COMMIT_MSG" >> $GITHUB_OUTPUT
+          
+          COMMIT_AUTHOR=$(git log -1 --pretty=format:'%an')
+          echo "commit_author=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
+          
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+      
+      - name: Rename APK
+        run: |
+          mkdir -p output
+          cp app/build/outputs/apk/debug/app-debug.apk output/RunApp-v${{ steps.version.outputs.name }}-build${{ steps.version.outputs.code }}.apk
+      
+      - name: Enviar APK para Telegram
+        if: success() && (github.event.inputs.send_to_telegram != 'false')
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # Nome do arquivo
+          APK_FILE="output/RunApp-v${{ steps.version.outputs.name }}-build${{ steps.version.outputs.code }}.apk"
+          
+          # Mensagem formatada
+          MESSAGE="🚀 *RunApp - Nova Build*%0A%0A"
+          MESSAGE="${MESSAGE}📱 *Versão:* ${{ steps.version.outputs.name }} (Build ${{ steps.version.outputs.code }})%0A"
+          MESSAGE="${MESSAGE}🌿 *Branch:* \`${{ steps.version.outputs.branch }}\`%0A"
+          MESSAGE="${MESSAGE}👤 *Autor:* ${{ steps.version.outputs.commit_author }}%0A"
+          MESSAGE="${MESSAGE}💬 *Commit:* ${{ steps.version.outputs.commit_msg }}%0A"
+          MESSAGE="${MESSAGE}📅 *Data:* $(date '+%d/%m/%Y %H:%M')%0A"
+          MESSAGE="${MESSAGE}🔗 *SHA:* \`$(echo ${{ github.sha }} | cut -c1-7)\`%0A%0A"
+          MESSAGE="${MESSAGE}✅ Build compilado com sucesso!%0A%0A"
+          MESSAGE="${MESSAGE}⚠️ _Este APK não ficará disponível no GitHub Actions_"
+          
+          # Envia o arquivo para o Telegram
+          curl -F "chat_id=$TELEGRAM_CHAT_ID" \
+               -F "document=@$APK_FILE" \
+               -F "caption=$MESSAGE" \
+               -F "parse_mode=Markdown" \
+               "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument"
+      
+      - name: Notificar erro no Telegram
+        if: failure() && (github.event.inputs.send_to_telegram != 'false')
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MESSAGE="❌ *RunApp - Build Falhou*%0A%0A"
+          MESSAGE="${MESSAGE}🌿 *Branch:* \`${{ steps.version.outputs.branch }}\`%0A"
+          MESSAGE="${MESSAGE}👤 *Autor:* ${{ steps.version.outputs.commit_author }}%0A"
+          MESSAGE="${MESSAGE}💬 *Commit:* ${{ steps.version.outputs.commit_msg }}%0A"
+          MESSAGE="${MESSAGE}📅 *Data:* $(date '+%d/%m/%Y %H:%M')%0A%0A"
+          MESSAGE="${MESSAGE}🔍 Verifique os logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          
+          curl -X POST \
+               -H "Content-Type: application/json" \
+               -d "{\"chat_id\": \"$TELEGRAM_CHAT_ID\", \"text\": \"$MESSAGE\", \"parse_mode\": \"Markdown\"}" \
+               "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage"
+      
+      # ARTIFACTS REMOVIDO - APK só vai para Telegram!
+      
+      - name: Create Build Summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "## ✅ Build Completo!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Build Falhou!" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "###  Informações do Build" >> $GITHUB_STEP_SUMMARY
+          echo "- **Versão:** ${{ steps.version.outputs.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version Code:** ${{ steps.version.outputs.code }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ steps.version.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ steps.version.outputs.commit_msg }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Autor:** ${{ steps.version.outputs.commit_author }}" >> $GITHUB_STEP_SUMMARY

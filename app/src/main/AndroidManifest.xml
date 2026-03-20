@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Notificações (obrigatório Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Internet -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- GPS -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!-- Foreground Service -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Android 14+: exigido para foregroundServiceType="health" (acelerômetro/cadência) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+
+    <!-- Android 10+ (API 29+): exigido para usar TYPE_STEP_DETECTOR/TYPE_STEP_COUNTER
+         quando o foregroundServiceType inclui "health". Sem essa permissão concedida
+         em runtime, startForeground() lança SecurityException no Android 14+ e o app fecha. -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+
+    <!-- Manter CPU ativa durante a corrida -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Solicitar exclusão de otimização de bateria para manter o GPS ativo em corridas longas.
+         Sem isso, fabricantes como Xiaomi, Samsung e Huawei matam o foreground service
+         mesmo com WakeLock ativo. O REQUEST_IGNORE_BATTERY_OPTIMIZATIONS permite pedir
+         ao usuário diretamente via Intent sem abrir as configurações manualmente. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Áudio -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <application
+        android:name=".RunApp"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.RunApp">
+
+        <!-- ⚠️ IMPORTANTE: Substitua YOUR_GOOGLE_MAPS_API_KEY pela sua chave -->
+        <!-- Obtenha em: console.cloud.google.com → Maps SDK for Android -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.RunApp">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Foreground Service de GPS + sensores de saúde (acelerômetro para cadência).
+             Android 14+ exige foregroundServiceType="location|health" para que o service
+             possa acessar sensores de movimento (TYPE_LINEAR_ACCELERATION, TYPE_STEP_DETECTOR)
+             em background. Sem "health" o sistema pode bloquear o acelerômetro silenciosamente
+             após alguns minutos, zerando a leitura de cadência sem nenhum erro visível. -->
+        <service
+            android:name=".service.RunningService"
+            android:exported="false"
+            android:foregroundServiceType="location|health" />
+
+        <!--
+            FileProvider — necessário para compartilhar arquivos GPX com outros apps
+            (Strava, WhatsApp, email, etc.) sem expor o caminho real do arquivo.
+
+            A authority deve ser única por app. Aqui usamos "com.runapp.fileprovider".
+            O arquivo @xml/file_paths define quais pastas podem ser compartilhadas.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.runapp.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+    </application>
+
+</manifest>
