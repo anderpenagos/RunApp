@@ -52,6 +52,13 @@ fun HistoricoScreen(
         ActivityResultContracts.StartActivityForResult()
     ) { /* resultado ignorado — não precisamos fazer nada após compartilhar */ }
 
+    // Launcher para selecionar a pasta de backup (SAF — sem permissão de armazenamento)
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) viewModel.importarBackup(uri)
+    }
+
     // Exibe snackbar quando há mensagem de feedback
     LaunchedEffect(state.mensagem) {
         state.mensagem?.let {
@@ -115,7 +122,7 @@ fun HistoricoScreen(
                                     },
                                     onClick = {
                                         mostrarMenuBackup = false
-                                        viewModel.importarBackup()
+                                        importLauncher.launch(null)
                                     }
                                 )
                             }

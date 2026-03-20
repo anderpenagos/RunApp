@@ -100,19 +100,21 @@ class CoachRepository {
             - Use números reais do treino em TODA afirmação técnica. Afirmação sem número = afirmação inválida.
             - Cada ponto deve ter no máximo 2 linhas. Se precisar de mais, você está narrando — corte.
             - Tom: seco, honesto, encorajador apenas quando os dados justificam.
+            - Para treinos estruturados: o mapeamento passo→volta já está calculado. Use-o para diagnosticar desvios, não para descrever o que o atleta pode ver na tabela.
+            - Para corridas livres: foque em progressão de ritmo, consistência e o que o GAP revela sobre o esforço real.
         """.trimIndent()
 
         val prompt = """
             Responda com EXATAMENTE esta estrutura (use os títulos em negrito, sem alterar):
 
             **EXECUÇÃO**
-            [1-2 linhas: adesão ao plano ou objetivo do treino. Só números e desvios. Ex: "Pace alvo 5:00/km, executado 5:12/km (+4%). Dentro do aceitável para Z2."]
+            [1-2 linhas: para treino estruturado — adesão geral ao plano com os desvios mais relevantes. Para corrida livre — ritmo executado vs objetivo esperado para o tipo de treino.]
 
             **ESFORÇO REAL**
             [1-2 linhas: GAP vs pace, D+, o que a inclinação explica. Se D+=0, diga em 1 linha.]
 
             **ESTRUTURA / INTERVALOS**
-            [1-2 linhas: se houver tiros — consistência e recuperação com números. Se corrida contínua — variação de pace e o que ela indica.]
+            [Para treino estruturado: consistência entre repetições e qualidade das recuperações com números. Para corrida livre: variação de pace ao longo da corrida e o que ela indica — não descreva os splits, interprete-os.]
 
             **BIOMECÂNICA**
             [1-2 linhas: cadência, passada vs baseline. Queda >5% = alerta de fadiga mecânica. Se sem baseline, diga só o número e se é adequado para o pace.]
@@ -177,101 +179,163 @@ class CoachRepository {
             appendLine()
         }
 
-        // Treino planeado
-        if (c.treinoNome != null) {
-            appendLine("TREINO PLANEJADO: ${c.treinoNome}")
-            c.treinoPassosJson?.let {
-                runCatching {
-                    gson.fromJson(it, Array<PassoResumo>::class.java).forEachIndexed { i, p ->
-                        appendLine("  Passo ${i+1} — ${p.nome}: ${p.duracaoSegundos/60}min | pace alvo ${p.paceAlvoMin}–${p.paceAlvoMax}/km")
-                    }
-                }.onFailure { Log.w(TAG, "Falha ao parsear treinoPassosJson", it) }
-            }
-        } else {
-            appendLine("TREINO PLANEJADO: Corrida livre")
-        }
-        appendLine()
+        // ── Métricas globais (comuns a todos os tipos de treino) ──────────────
+        appendLine("MÉTRICAS GERAIS:")
+        appendLine("  Distância: ${"%.2f".format(c.distanciaKm)} km  |  Tempo: ${c.tempoFormatado}  |  Pace médio: ${c.paceMedia}/km")
+        appendLine("  Cadência média: ${if (c.cadenciaMedia > 0) "${c.cadenciaMedia} SPM" else "não disponível"}  |  D+: ${c.ganhoElevacaoM}m")
 
-        // Métricas globais
-        appendLine("EXECUÇÃO REAL:")
-        appendLine("  Distância: ${"%.2f".format(c.distanciaKm)} km")
-        appendLine("  Tempo: ${c.tempoFormatado}")
-        appendLine("  Pace médio: ${c.paceMedia}/km")
-        appendLine("  Cadência média: ${if (c.cadenciaMedia > 0) "${c.cadenciaMedia} SPM" else "não disponível"}")
-        appendLine("  Desnível positivo: ${c.ganhoElevacaoM}m")
+        // GAP médio geral (quando há splits com GAP)
+        val gapSplits = c.splitsParciais.filter { it.gapSegKm != null && it.gapSegKm > 0 }
+        if (gapSplits.isNotEmpty()) {
+            val gapMedioSeg = gapSplits.map { it.gapSegKm!! }.average()
+            appendLine("  GAP médio: ${fmt(gapMedioSeg)}/km  (ritmo equivalente em terreno plano)")
+        }
 
         // Biomecânica
         if (c.stepLengthBaseline > 0.0) {
             val diff = (c.stepLengthTreino - c.stepLengthBaseline) / c.stepLengthBaseline * 100.0
             appendLine()
             appendLine("BIOMECÂNICA:")
-            appendLine("  Passada baseline histórico: ${"%.2f".format(c.stepLengthBaseline)}m/passo")
-            appendLine("  Passada neste treino: ${"%.2f".format(c.stepLengthTreino)}m/passo")
-            appendLine("  Variação: ${if (diff >= 0) "+" else ""}${"%.1f".format(diff)}%  ${if (diff < -5) "⚠ Possível fadiga mecânica" else if (diff > 5) "↑ Melhora técnica" else "✓ Normal"}")
+            appendLine("  Passada baseline: ${"%.2f".format(c.stepLengthBaseline)}m  |  Neste treino: ${"%.2f".format(c.stepLengthTreino)}m  |  Variação: ${if (diff >= 0) "+" else ""}${"%.1f".format(diff)}%  ${if (diff < -5) "⚠ Possível fadiga mecânica" else if (diff > 5) "↑ Melhora técnica" else "✓ Normal"}")
+        }
+        appendLine()
+
+        // ── Fluxo TREINO ESTRUTURADO ──────────────────────────────────────────
+        val passos = c.treinoPassosJson?.let {
+            runCatching { gson.fromJson(it, Array<PassoResumo>::class.java).toList() }
+                .onFailure { Log.w(TAG, "Falha ao parsear treinoPassosJson", it) }
+                .getOrNull()
         }
 
-        // Intervalos / voltas detectados automaticamente
-        if (c.voltasAnalise.isNotEmpty()) {
-            val tiros     = c.voltasAnalise.filter { !it.isDescanso }
-            val descansos = c.voltasAnalise.filter {  it.isDescanso }
+        if (passos != null && c.voltasAnalise.isNotEmpty()) {
+            appendLine("TREINO PLANEJADO: ${c.treinoNome ?: "Treino estruturado"}")
+            passos.forEachIndexed { i, p ->
+                appendLine("  Passo ${i+1} — ${p.nome}: ${p.duracaoSegundos/60}min | alvo ${p.paceAlvoMin}–${p.paceAlvoMax}/km")
+            }
             appendLine()
-            appendLine("ANÁLISE DE INTERVALOS (${c.voltasAnalise.size} blocos detectados):")
 
-            if (tiros.isNotEmpty()) {
-                val paces   = tiros.map { it.paceSegKm }
-                val paceMin = paces.minOrNull() ?: 0.0
-                val paceMax = paces.maxOrNull() ?: 0.0
-                val paceMed = paces.average()
-                val desvio  = kotlin.math.sqrt(paces.map { (it - paceMed).let { d -> d * d } }.average())
-                appendLine("  Tiros de esforço: ${tiros.size}")
-                appendLine("  Pace tiros — mín: ${fmt(paceMin)} | máx: ${fmt(paceMax)} | média: ${fmt(paceMed)}/km")
-                appendLine("  Desvio de consistência: ±${fmt(desvio)}/km ${if (desvio > 30) "(inconsistente)" else "(consistente)"}")
-            }
-            if (descansos.isNotEmpty()) {
-                val paceMedDesc  = descansos.map { it.paceSegKm }.average()
-                val tempoMedDesc = descansos.map { it.tempoSegundos }.average().toLong()
-                appendLine("  Recuperações: ${descansos.size} | pace médio: ${fmt(paceMedDesc)}/km | tempo médio: ${tempoMedDesc/60}m${tempoMedDesc%60}s")
-            }
+            // Mapeia cada passo planejado à volta executada correspondente por índice
+            appendLine("PLANO vs EXECUÇÃO (passo a passo):")
+            val voltas = c.voltasAnalise
+            passos.forEachIndexed { i, passo ->
+                val volta = voltas.getOrNull(i)
+                if (volta == null) {
+                    appendLine("  Passo ${i+1} [${passo.nome}] → não executado")
+                    return@forEachIndexed
+                }
 
-            appendLine()
-            appendLine("  Detalhes por volta:")
-            c.voltasAnalise.forEach { v ->
-                val tipo = if (v.isDescanso) "DESCANSO" else "ESFORÇO "
-                val cadStr = if (v.cadenciaMedia > 0) " | ${v.cadenciaMedia} spm" else ""
-                appendLine("    Volta ${v.numero.toString().padStart(2)} [$tipo] — ${"%.2f".format(v.distanciaKm)}km | ${v.tempoSegundos/60}m${(v.tempoSegundos%60).toString().padStart(2,'0')}s | ${v.paceFormatado}/km$cadStr")
-            }
-        }
+                val alvoMinSeg = paceParaSegundos(passo.paceAlvoMin).toDouble()
+                val alvoMaxSeg = paceParaSegundos(passo.paceAlvoMax).toDouble()
+                val executadoSeg = volta.paceSegKm
 
-        // Distribuição de zonas
-        if (c.zonasFronteira.isNotEmpty() && c.splitsParciais.isNotEmpty()) {
-            val total = c.splitsParciais.size.toDouble()
-            val contagem = mutableMapOf<String, Int>()
-            c.splitsParciais.forEach { split ->
-                val nome = c.zonasFronteira.firstOrNull { z ->
-                    split.paceSegKm >= z.paceMinSegKm &&
-                    (z.paceMaxSegKm == null || split.paceSegKm < z.paceMaxSegKm)
-                }?.nome ?: "Fora de zona"
-                contagem[nome] = (contagem[nome] ?: 0) + 1
+                val status = when {
+                    alvoMinSeg <= 0 -> "sem alvo definido"
+                    executadoSeg < alvoMinSeg - 10 -> "ACIMA DO ALVO (+${fmt(alvoMinSeg - executadoSeg)} mais rápido)"
+                    executadoSeg > alvoMaxSeg + 10 -> "ABAIXO DO ALVO (+${fmt(executadoSeg - alvoMaxSeg)} mais lento)"
+                    else -> "dentro do alvo ✓"
+                }
+
+                val cadStr = if (volta.cadenciaMedia > 0) " | ${volta.cadenciaMedia} spm" else ""
+                appendLine("  Passo ${i+1} [${passo.nome}] → Volta ${volta.numero}: ${volta.paceFormatado}/km | ${"%.2f".format(volta.distanciaKm)}km | ${volta.tempoSegundos/60}m${(volta.tempoSegundos%60).toString().padStart(2,'0')}s$cadStr")
+                appendLine("    Alvo: ${passo.paceAlvoMin}–${passo.paceAlvoMax}/km → $status")
             }
-            if (contagem.isNotEmpty()) {
+            // Voltas extras que não têm passo correspondente (corrida continuou além do plano)
+            if (voltas.size > passos.size) {
                 appendLine()
+                appendLine("  Voltas além do plano (${voltas.size - passos.size} extra):")
+                voltas.drop(passos.size).forEach { v ->
+                    val tipo = if (v.isDescanso) "DESCANSO" else "ESFORÇO"
+                    appendLine("    Volta ${v.numero} [$tipo] → ${v.paceFormatado}/km | ${"%.2f".format(v.distanciaKm)}km")
+                }
+            }
+
+            // Consistência entre repetições do mesmo tipo de passo (ex: todos os tiros Z2)
+            val tiros = voltas.filterIndexed { i, v -> !v.isDescanso && passos.getOrNull(i)?.let { !it.nome.contains("aquec", ignoreCase = true) && !it.nome.contains("desaq", ignoreCase = true) } == true }
+            if (tiros.size >= 2) {
+                appendLine()
+                val pacesTiros = tiros.map { it.paceSegKm }
+                val media = pacesTiros.average()
+                val desvio = kotlin.math.sqrt(pacesTiros.map { (it - media).let { d -> d * d } }.average())
+                val primeiro = pacesTiros.first()
+                val ultimo   = pacesTiros.last()
+                val deriva   = ultimo - primeiro  // positivo = afundou, negativo = acelerou
+                appendLine("CONSISTÊNCIA DOS TIROS (${tiros.size} esforços):")
+                appendLine("  Pace médio: ${fmt(media)}/km  |  Desvio: ±${fmt(desvio)}/km  |  ${if (desvio > 30) "inconsistente" else "consistente"}")
+                appendLine("  Deriva: 1º tiro ${fmt(primeiro)}/km → último ${fmt(ultimo)}/km  |  ${if (deriva > 20) "⚠ afundou ${fmt(deriva)}" else if (deriva < -20) "↑ acelerou ${fmt(-deriva)}" else "estável ✓"}")
+            }
+
+            // Qualidade das recuperações
+            val recuperacoes = voltas.filterIndexed { i, v -> v.isDescanso || (passos.getOrNull(i)?.nome?.contains("Z1", ignoreCase = true) == true && i > 0) }
+            if (recuperacoes.isNotEmpty() && c.zonasFronteira.isNotEmpty()) {
+                appendLine()
+                appendLine("QUALIDADE DAS RECUPERAÇÕES (${recuperacoes.size} blocos):")
+                recuperacoes.forEach { r ->
+                    val zonaReal = c.zonasFronteira.firstOrNull { z ->
+                        r.paceSegKm >= z.paceMinSegKm && (z.paceMaxSegKm == null || r.paceSegKm < z.paceMaxSegKm)
+                    }?.nome ?: "fora de zona"
+                    appendLine("  Volta ${r.numero}: ${r.paceFormatado}/km → $zonaReal")
+                }
+            }
+
+        } else {
+            // ── Fluxo CORRIDA LIVRE ───────────────────────────────────────────
+            appendLine("TIPO: Corrida livre${if (c.treinoNome != null) " (${c.treinoNome})" else ""}")
+            appendLine()
+
+            // Distribuição de zonas
+            if (c.zonasFronteira.isNotEmpty() && c.splitsParciais.isNotEmpty()) {
+                val total = c.splitsParciais.size.toDouble()
+                val contagem = mutableMapOf<String, Int>()
+                c.splitsParciais.forEach { split ->
+                    val nome = c.zonasFronteira.firstOrNull { z ->
+                        split.paceSegKm >= z.paceMinSegKm &&
+                        (z.paceMaxSegKm == null || split.paceSegKm < z.paceMaxSegKm)
+                    }?.nome ?: "Fora de zona"
+                    contagem[nome] = (contagem[nome] ?: 0) + 1
+                }
                 appendLine("DISTRIBUIÇÃO DE ZONAS:")
                 contagem.toSortedMap().forEach { (nome, n) ->
                     appendLine("  $nome: ${"%.0f".format(n / total * 100)}%")
                 }
+                appendLine()
             }
-        }
 
-        // Splits por km (max 20 para não explodir tokens)
-        if (c.splitsParciais.isNotEmpty()) {
-            appendLine()
-            appendLine("SPLITS POR KM:")
-            c.splitsParciais.take(20).forEach { s ->
-                val gap = if (s.gapFormatado != null) {
-                    val grade = s.gradienteMedio?.let { " (${"%.1f".format(it)}%)" } ?: ""
-                    " | GAP: ${s.gapFormatado}/km$grade"
-                } else ""
-                appendLine("  Km ${s.km}: ${s.paceFormatado}/km$gap")
+            // Progressão do pace: terço inicial vs terço final
+            val splits = c.splitsParciais.filter { it.paceSegKm in 60.0..1200.0 }
+            if (splits.size >= 3) {
+                val terco = (splits.size / 3).coerceAtLeast(1)
+                val paceInicio = splits.take(terco).map { it.paceSegKm }.average()
+                val paceFim    = splits.takeLast(terco).map { it.paceSegKm }.average()
+                val deriva     = paceFim - paceInicio
+                val tendencia  = when {
+                    deriva >  30 -> "⚠ afundou ${fmt(deriva)}/km no final — possível fade de ritmo ou desidratação"
+                    deriva < -30 -> "↑ negativo split — acelerou ${fmt(-deriva)}/km no final"
+                    else         -> "ritmo estável ✓ (variação ${fmt(kotlin.math.abs(deriva))})"
+                }
+                appendLine("PROGRESSÃO DE PACE:")
+                appendLine("  1º terço: ${fmt(paceInicio)}/km  |  Último terço: ${fmt(paceFim)}/km  |  $tendencia")
+                appendLine()
+            }
+
+            // Consistência dos splits (desvio padrão)
+            if (splits.size >= 2) {
+                val media  = splits.map { it.paceSegKm }.average()
+                val desvio = kotlin.math.sqrt(splits.map { (it.paceSegKm - media).let { d -> d * d } }.average())
+                appendLine("CONSISTÊNCIA DE RITMO:")
+                appendLine("  Desvio padrão dos splits: ±${fmt(desvio)}/km  |  ${if (desvio > 45) "ritmo muito irregular" else if (desvio > 20) "alguma variação — verificar terreno ou esforço" else "consistente ✓"}")
+                appendLine()
+            }
+
+            // Splits por km com GAP (max 20)
+            if (c.splitsParciais.isNotEmpty()) {
+                appendLine("SPLITS POR KM:")
+                c.splitsParciais.take(20).forEach { s ->
+                    val gap = if (s.gapFormatado != null) {
+                        val grade = s.gradienteMedio?.let { " (${if (it >= 0) "+" else ""}${"%.1f".format(it)}%)" } ?: ""
+                        " | GAP ${s.gapFormatado}/km$grade"
+                    } else ""
+                    appendLine("  Km ${s.km}: ${s.paceFormatado}/km$gap")
+                }
             }
         }
     }
@@ -281,6 +345,14 @@ class CoachRepository {
         if (segKm <= 0) return "--:--"
         val s = segKm.toLong()
         return "%d:%02d".format(s / 60, s % 60)
+    }
+
+    /** Converte "M:SS" para segundos/km — uso interno no contexto */
+    private fun paceParaSegundos(pace: String): Int {
+        if (pace == "--:--") return 0
+        val partes = pace.split(":")
+        if (partes.size != 2) return 0
+        return (partes[0].toIntOrNull() ?: 0) * 60 + (partes[1].toIntOrNull() ?: 0)
     }
 
 

@@ -173,14 +173,15 @@ class HistoricoViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun importarBackup() {
+    fun importarBackup(pastaUri: android.net.Uri) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(backupEmAndamento = true)
             val apiKey = withContext(Dispatchers.IO) {
                 container.preferencesRepository.apiKey.first() ?: ""
             }
             val resultado = withContext(Dispatchers.IO) {
-                container.createBackupRepository(apiKey).importarTudo(
+                container.createBackupRepository(apiKey).importarDePasta(
+                    pastaUri  = pastaUri,
                     athleteId = container.preferencesRepository.athleteId.first() ?: ""
                 )
             }

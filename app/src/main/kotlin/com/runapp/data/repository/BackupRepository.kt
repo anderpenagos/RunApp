@@ -58,7 +58,98 @@ class BackupRepository(
         count
     }
 
-    // ── IMPORTAR ─────────────────────────────────────────────────────────────
+    // ── IMPORTAR VIA SAF (Storage Access Framework) ──────────────────────────
+
+    /**
+     * Importa corridas de uma pasta selecionada pelo usuário via file picker.
+     *
+     * Usa DocumentFile (SAF) em vez de File direto — funciona no Android 10+
+     * sem precisar de permissão READ_EXTERNAL_STORAGE, inclusive para pastas
+     * em Downloads de uma instalação anterior do app.
+     */
+    suspend fun importarDePasta(
+        pastaUri: android.net.Uri,
+        athleteId: String,
+        paceZones: List<PaceZone> = emptyList()
+    ): Result<Pair<Int, Int>> = runCatching {
+        val pasta = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, pastaUri)
+            ?: return@runCatching Pair(0, 0)
+
+        var importadas = 0
+        var erros = 0
+
+        val gpxFiles = pasta.listFiles().filter {
+            it.isFile && it.name?.endsWith(".gpx", ignoreCase = true) == true
+        }
+
+        for (gpxDoc in gpxFiles) {
+            runCatching {
+                val nomeBase = gpxDoc.name?.removeSuffix(".gpx") ?: ""
+
+                // Lê metadados do JSON correspondente (se existir na mesma pasta)
+                val meta = pasta.listFiles()
+                    .firstOrNull { it.name == "$nomeBase.json" }
+                    ?.let { jsonDoc ->
+                        runCatching {
+                            val json = context.contentResolver
+                                .openInputStream(jsonDoc.uri)?.bufferedReader()?.readText()
+                            if (json != null) gson.fromJson(json, CorridaHistorico::class.java)
+                            else null
+                        }.getOrNull()
+                    }
+
+                // Reconstrói rota a partir do GPX via ContentResolver
+                val inputStream = context.contentResolver.openInputStream(gpxDoc.uri)
+                    ?: run { erros++; return@runCatching }
+                val rota = parsearGpxStream(inputStream)
+                if (rota.isEmpty()) {
+                    Log.w(TAG, "⚠️ GPX sem pontos: ${gpxDoc.name}")
+                    erros++
+                    return@runCatching
+                }
+
+                val distancia = rota.zipWithNext().sumOf { (a, b) ->
+                    haversine(a.lat, a.lng, b.lat, b.lng)
+                }
+                val tempoSegundos = if (rota.size >= 2)
+                    (rota.last().tempo - rota.first().tempo) / 1000L else 0L
+                val paceSegKm = if (distancia > 0)
+                    (tempoSegundos.toDouble() / distancia * 1000) else 0.0
+                val paceMedia = if (paceSegKm in 60.0..1200.0)
+                    "%d:%02d".format((paceSegKm / 60).toInt(), (paceSegKm % 60).toInt())
+                else "--:--"
+
+                workoutRepository.salvarAtividade(
+                    context            = context,
+                    athleteId          = athleteId,
+                    nomeAtividade      = meta?.nome ?: nomeBase,
+                    distanciaMetros    = distancia,
+                    tempoSegundos      = tempoSegundos,
+                    paceMedia          = paceMedia,
+                    rota               = rota,
+                    dataHora           = meta?.data ?: LocalDateTime.now().toString(),
+                    paceZones          = paceZones,
+                    stepLengthBaseline = meta?.stepLengthBaseline ?: 0.0,
+                    treinoNome         = meta?.treinoNome,
+                    treinoPassosJson   = meta?.treinoPassosJson
+                ).onSuccess {
+                    importadas++
+                    Log.d(TAG, "✅ Importada: ${gpxDoc.name}")
+                }.onFailure { e ->
+                    erros++
+                    Log.e(TAG, "❌ Falha ao importar ${gpxDoc.name}: ${e.message}")
+                }
+            }.onFailure { e ->
+                erros++
+                Log.e(TAG, "❌ Erro ao processar ${gpxDoc.name}: ${e.message}")
+            }
+        }
+
+        Log.d(TAG, "📦 Import SAF concluído: $importadas ok, $erros erros")
+        Pair(importadas, erros)
+    }
+
+    // ── IMPORTAR (caminho fixo — mantido para compatibilidade interna) ────────
 
     /**
      * Lê os arquivos de backup e reimporta cada corrida recalculando
@@ -147,15 +238,21 @@ class BackupRepository(
     // ── PARSER GPX ───────────────────────────────────────────────────────────
 
     /**
-     * Parseia um arquivo GPX e reconstrói a lista de pontos com todos os
-     * dados disponíveis: lat, lng, altitude, timestamp, cadência e pace.
+     * Parseia um arquivo GPX a partir de um File (mantido para importarTudo).
      */
-    private fun parsearGpx(file: File): List<LatLngPonto> {
+    private fun parsearGpx(file: File): List<LatLngPonto> =
+        parsearGpxStream(file.inputStream())
+
+    /**
+     * Parseia um GPX a partir de qualquer InputStream — usado pelo SAF
+     * (ContentResolver.openInputStream) e pelo parsearGpx de File acima.
+     */
+    private fun parsearGpxStream(stream: java.io.InputStream): List<LatLngPonto> {
         val pontos = mutableListOf<LatLngPonto>()
         runCatching {
             val factory = XmlPullParserFactory.newInstance()
             val parser = factory.newPullParser()
-            parser.setInput(file.inputStream(), "UTF-8")
+            parser.setInput(stream, "UTF-8")
 
             var lat = 0.0
             var lng = 0.0
