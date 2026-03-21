@@ -1490,7 +1490,7 @@ private fun CoachTexto(texto: String, foiCortado: Boolean = false, onRegenerar: 
     ) {
         texto.split("\n").filter { it.isNotBlank() }.forEach { paragrafo ->
             // Detecta títulos de seção (ex: **EXECUÇÃO**) e renderiza com estilo editorial
-            val isTitulo = paragrafo.matches(Regex("\*\*[A-ZÁÀÃÂÉÊÍÓÔÕÚÇ/ ]+\*\*"))
+            val isTitulo = paragrafo.matches(Regex("\\*\\*[A-ZÁÀÃÂÉÊÍÓÔÕÚÇ/ ]+\\*\\*"))
             if (isTitulo) {
                 val titulo = paragrafo.removeSurrounding("**")
                 Spacer(Modifier.height(4.dp))
