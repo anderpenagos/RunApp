@@ -119,15 +119,11 @@ fun DetalheAtividadeScreen(
             
             if (dados.temGAP) {
                 item {
-                    GraficoCard("GAP — Janela 20m", "Verde = esforço equivalente em plano (gradiente por janela de 20m)") {
+                    GraficoCard("Ritmo Ajustado (GAP)", "Verde = esforço equivalente em plano — gradiente por janela de 20m") {
                         GraficoGAP(dados, cursorFrac) { cursorFrac = it }
                     }
                 }
-                item {
-                    GraficoCard("GAP — Regressão Linear", "Verde = esforço equivalente em plano (gradiente por regressão de 10 pontos)") {
-                        GraficoGAPRegressao(dados, cursorFrac) { cursorFrac = it }
-                    }
-                }
+
             }
             
             if (dados.temCadencia) {

@@ -529,57 +529,35 @@ class CorridaViewModel(
             }
         }
 
-        // ── Modo Montanha — aviso motivacional com GAP em subidas íngremes ────
+        // ── Modo Montanha — anuncia uma vez ao entrar, silêncio até sair e reentrar ──
         viewModelScope.launch {
+            var anteriorMontanha = false
             service.modoMontanha.collect { emSubida ->
-                if (emSubida) {
-                    // Pequeno delay para o GAP instantâneo estabilizar após entrar na subida
-                    kotlinx.coroutines.delay(3_000)
+                if (emSubida && !anteriorMontanha) {
+                    // Transição false→true: anuncia uma vez
+                    kotlinx.coroutines.delay(3_000) // aguarda GAP estabilizar
                     val paceAtual = _uiState.value.paceAtual
                     val gapSegKm  = service.getGapAtualInstantaneo()
                     audioCoach.anunciarModoMontanha(paceAtual, gapSegKm)
                 }
+                anteriorMontanha = emSubida
             }
         }
 
-        // Descida Tecnica -- grade < -20% (paradoxo de Minetti)
-        //
-        // Duplo filtro para eliminar falsos positivos do GPS vertical:
-        //
-        // FILTRO 1 -- Persistencia: exige 3 pontos GPS CONSECUTIVOS abaixo de -20%.
-        // Um pico isolado de altitude (ex: GPS sob viaduto) gera gradiente de -22%
-        // por 1s e volta imediatamente. Sem isso o corredor ouvia alertas em plano.
-        //
-        // FILTRO 2 -- Media movel: a media dos ultimos 5 gradientes tambem precisa
-        // ser < -0.15. Isso elimina o cenario onde a regressao GPS oscila entre
-        // -21% e -8% alternadamente (GPS ruidoso) -- a media fica em ~-12%, abaixo
-        // do limiar, e o alerta nao dispara. Numa descida real de -20%, todos os
-        // pontos ficam consistentemente abaixo, e a media confirma.
-        //
-        // O debounce de 24s no AudioCoach garante que ladeiras longas nao repitam.
-        var pontosDescidaTecnicaConsecutivos = 0
-        val PERSISTENCIA_DESCIDA_TECNICA = 6   // 6 pontos consecutivos (~6s)
-        val janelaGradientes = ArrayDeque<Double>(10)
-
+        // Descida técnica — anuncia uma vez ao entrar, silêncio até sair e reentrar.
         viewModelScope.launch {
             service.gradienteAtual.collect { gradiente ->
                 _uiState.value = _uiState.value.copy(gradienteAtual = gradiente)
-                // Mantém janela dos últimos 10 gradientes
-                janelaGradientes.addLast(gradiente)
-                if (janelaGradientes.size > 10) janelaGradientes.removeFirst()
+            }
+        }
 
-                val mediaGradientes = if (janelaGradientes.size >= 6)
-                    janelaGradientes.average() else 0.0
-
-                if (gradiente < -0.06 && mediaGradientes < -0.05) {
-                    pontosDescidaTecnicaConsecutivos++
-                    if (pontosDescidaTecnicaConsecutivos >= PERSISTENCIA_DESCIDA_TECNICA) {
-                        audioCoach.anunciarDescidaTecnica()
-                        // Nao zera -- throttle de 24s no AudioCoach evita spam em ladeiras longas
-                    }
-                } else {
-                    pontosDescidaTecnicaConsecutivos = 0
+        viewModelScope.launch {
+            var anteriorDescida = false
+            service.descidaTecnica.collect { emDescida ->
+                if (emDescida && !anteriorDescida) {
+                    audioCoach.anunciarDescidaTecnica()
                 }
+                anteriorDescida = emDescida
             }
         }
 

@@ -533,22 +533,21 @@ class RunningService : Service(), SensorEventListener {
     private var gapTimeoutNotificado = false     // evita spam de notificação
     private var primeiropontoAposGap = false
 
-    // ── Filtro de Altitude: Mediana(5) + Regressão Linear(10) ────────────────
-    // Pipeline: altitude_bruta → Mediana(5 pts) → buffer_regressão(10 pts) → gradiente_GAP
+    // ── Filtro de Altitude: Mediana(5) + Regressão Linear (janela 40m) ─────────
+    // Pipeline: altitude_bruta → Mediana(5 pts) → buffer_regressão(~40m) → gradiente
     //
-    // Mediana: elimina spikes pontuais do GPS vertical (Urban Canyon pode causar
-    // saltos de ±20m). Com N=5, resiste a 2 outliers simultâneos.
+    // Mediana: elimina spikes pontuais do GPS vertical.
     //
-    // Regressão linear (mínimos quadrados): calcula a TENDÊNCIA de altitude vs.
-    // distância, eliminando o zig-zag sistemático do GPS vertical. Vantagem vs.
-    // EMA: sem lag — a inclinação real de uma subida íngreme é detectada imediatamente,
-    // não apenas ao chegar ao topo (onde o EMA pesado finalmente converge).
-    //
-    // Buffer (altMediana, distAcum): usa distância acumulada como eixo X, garantindo
-    // que o slope da regressão seja diretamente o gradiente em m/m (adimensional).
+    // Regressão linear com janela dinâmica de 40m:
+    //   - Buffer acumula pontos até cobrir 40m de distância horizontal
+    //   - Remove pontos do início quando a base excede 40m
+    //   - Quantidade de pontos varia com o ritmo (~13 pts a 3m/s, ~27 pts a 1.5m/s)
+    //   - Base física constante de 40m → gradiente espúrio máximo ~7.5% (ruído ±3m / 40m)
+    //   - Eixo X = distância acumulada → slope = gradiente m/m (adimensional)
+    private val JANELA_REGRESSAO_M = 40.0   // base horizontal mínima da regressão
     private val bufferAltBruta  = ArrayDeque<Double>(5)
     private data class AltDistPonto(val altMediana: Double, val distAcum: Double)
-    private val bufferAltDist   = ArrayDeque<AltDistPonto>(10)
+    private val bufferAltDist   = ArrayDeque<AltDistPonto>(30)  // capacidade para ritmos lentos
 
     /** Alimenta o pipeline de altitude e retorna a altitude mediada. */
     private fun processarAltitude(rawAlt: Double): Double {
@@ -560,15 +559,12 @@ class RunningService : Service(), SensorEventListener {
     }
 
     /**
-     * Gradiente via regressão linear de mínimos quadrados sobre o buffer de 10 pontos.
+     * Gradiente via regressão linear de mínimos quadrados sobre janela dinâmica de 40m.
      *
      * slope = (N·Σxy − Σx·Σy) / (N·Σx² − (Σx)²)
-     *   x = distância acumulada (metros) — eixo físico real, não índice temporal
+     *   x = distância acumulada (metros) — base física sempre ~40m
      *   y = altitude mediada (metros)
      *   resultado = m/m = fração adimensional (ex: 0.05 = 5% de subida)
-     *
-     * Usar distância como X (não índice de ponto) garante que pontos GPS chegando
-     * em lotes (batch mode com tela bloqueada) não distorçam o gradiente.
      */
     private fun calcularGradienteRegressao(): Double {
         if (bufferAltDist.size < 3) return 0.0
@@ -730,21 +726,21 @@ class RunningService : Service(), SensorEventListener {
     private val _gapAtualSegKm = MutableStateFlow(0.0)
     val gapAtualSegKm: StateFlow<Double> = _gapAtualSegKm.asStateFlow()
 
-    // Modo Montanha — subida > 6% sustentada por >= 100m
-    // Aumentado de 4% -> 6%: rampas urbanas de acessibilidade (~4%) disparavam falso positivo.
-    // 6% corresponde a uma ladeira claramente ingreme (~1 andar a cada 17m horizontais).
-    // Histerese: ativa com 100m, desativa apenas ao sair da subida (< 3%)
-    private var distSubidaAcum = 0.0
-    private val DISTANCIA_ATIVA_MONTANHA = 100.0  // metros subindo > 6%
-    private val LIMIAR_GRADE_MONTANHA    = 0.06   // 6%
-    private val LIMIAR_SAIDA_MONTANHA    = 0.06   // 6% -- sem histerese
-    private var emModoMontanha           = false
+    // Detecção unificada de subida e descida por distância acumulada com EMA do gradiente.
+    // Critério simétrico: 30m com gradienteEma > +0.08 → subida / < -0.08 → descida técnica.
+    // A EMA (~20s de memória) suaviza o gradiente instantâneo — ruído residual não acumula distância.
+    private var distSubidaAcum  = 0.0
+    private var distDescidaAcum = 0.0
+    private val DISTANCIA_CONFIRMACAO  = 30.0   // metros para confirmar subida ou descida
+    private val LIMIAR_GRADE_MONTANHA  = 0.08   // +8% → subida íngreme
+    private val LIMIAR_SAIDA_MONTANHA  = 0.04   // +4% → histerese de saída
+    private val LIMIAR_DESCIDA_TECNICA = -0.08  // -8% → descida técnica
+    private val LIMIAR_SAIDA_DESCIDA   = -0.04  // -4% → histerese de saída da descida
+    private var emModoMontanha         = false
     private val _modoMontanha = MutableStateFlow(false)
     val modoMontanha: StateFlow<Boolean> = _modoMontanha.asStateFlow()
-
-    // Descida tecnica -- grade < -8%
-    // Filtros robustos (6 pontos consecutivos + média 10 gradientes) evitam falsos positivos.
-    private val LIMIAR_DESCIDA_TECNICA = -0.06
+    private val _descidaTecnica = MutableStateFlow(false)
+    val descidaTecnica: StateFlow<Boolean> = _descidaTecnica.asStateFlow()
 
     /**
      * Carrega o resultado do km que acabou de fechar e zera os acumuladores.
@@ -783,6 +779,10 @@ class RunningService : Service(), SensorEventListener {
 
     private val _gradienteAtual = MutableStateFlow(0.0)
     val gradienteAtual: StateFlow<Double> = _gradienteAtual.asStateFlow()
+    // EMA do gradiente — suaviza o valor instantâneo da regressão para detecção estável
+    // alpha=0.15 → memória de ~20s — responsivo a mudanças reais, robusto a ruído residual
+    private var gradienteEmaInterno: Double = 0.0
+    private val ALPHA_GRADIENTE_EMA = 0.15
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Binder para comunicação local
@@ -1081,6 +1081,9 @@ class RunningService : Service(), SensorEventListener {
         emModoMontanha             = false
         _modoMontanha.value        = false
         _gradienteAtual.value      = 0.0
+        gradienteEmaInterno        = 0.0
+        distDescidaAcum            = 0.0
+        _descidaTecnica.value      = false
 
         registrarSensores()
 
@@ -1686,7 +1689,11 @@ class RunningService : Service(), SensorEventListener {
         // Alimenta buffer de (altMediana, distAcum) para regressão linear.
         // distAcum ANTES de somar o novo segmento → eixo X consistente com "onde estava".
         bufferAltDist.addLast(AltDistPonto(altMediana, _distanciaMetros.value))
-        if (bufferAltDist.size > 10) bufferAltDist.removeFirst()
+        // Remove pontos do início enquanto a base exceder 40m — janela deslizante por distância
+        while (bufferAltDist.size > 3 &&
+               bufferAltDist.last().distAcum - bufferAltDist.first().distAcum > JANELA_REGRESSAO_M) {
+            bufferAltDist.removeFirst()
+        }
 
         // ── Atualiza referência GPS para retomada híbrida ─────────────────────
         ultimaLocalizacaoParaAutoPause = location
@@ -1860,28 +1867,50 @@ class RunningService : Service(), SensorEventListener {
                     gapEmaInterno = novoGapEma
                     _gapAtualSegKm.value = novoGapEma
 
-                    // Expõe gradiente suavizado para o ViewModel monitorar descida técnica
-                    _gradienteAtual.value = gradiente
+                    // EMA do gradiente — suaviza o valor instantâneo
+                    gradienteEmaInterno = ALPHA_GRADIENTE_EMA * gradiente +
+                                         (1.0 - ALPHA_GRADIENTE_EMA) * gradienteEmaInterno
+                    val gradienteEma = gradienteEmaInterno
 
-                    // ── Detector de Modo Montanha com histerese ───────────────
+                    // Expõe gradienteEma para o ViewModel
+                    _gradienteAtual.value = gradienteEma
+
+                    // ── Detecção unificada por distância acumulada ────────────
+                    // Subida: gradienteEma > +8% por 30m → modo montanha
                     when {
-                        gradiente >= LIMIAR_GRADE_MONTANHA -> {
+                        gradienteEma >= LIMIAR_GRADE_MONTANHA -> {
                             distSubidaAcum += distancia
-                            if (!emModoMontanha && distSubidaAcum >= DISTANCIA_ATIVA_MONTANHA) {
+                            distDescidaAcum = 0.0
+                            if (!emModoMontanha && distSubidaAcum >= DISTANCIA_CONFIRMACAO) {
                                 emModoMontanha = true
                                 _modoMontanha.value = true
-                                Log.d(TAG, "⛰️ Modo Montanha ATIVADO: subida > ${(LIMIAR_GRADE_MONTANHA * 100).toInt()}% por ${distSubidaAcum.toInt()}m")
+                                Log.d(TAG, "Modo Montanha ATIVADO: subida > ${(LIMIAR_GRADE_MONTANHA * 100).toInt()}% por ${distSubidaAcum.toInt()}m")
                             }
                         }
-                        gradiente < LIMIAR_SAIDA_MONTANHA -> {
+                        gradienteEma < LIMIAR_SAIDA_MONTANHA -> {
                             distSubidaAcum = 0.0
                             if (emModoMontanha) {
                                 emModoMontanha = false
                                 _modoMontanha.value = false
-                                Log.d(TAG, "⛰️ Modo Montanha DESATIVADO (grade=${String.format("%.1f", gradiente * 100)}%)")
+                                Log.d(TAG, "Modo Montanha DESATIVADO (grade=${String.format("%.1f", gradienteEma * 100)}%)")
                             }
                         }
-                        // Zona de histerese (2–4%): mantém estado atual sem acumular
+                    }
+
+                    // Descida técnica: gradienteEma < -8% por 30m
+                    when {
+                        gradienteEma <= LIMIAR_DESCIDA_TECNICA -> {
+                            distDescidaAcum += distancia
+                            distSubidaAcum = 0.0
+                            if (distDescidaAcum >= DISTANCIA_CONFIRMACAO && !_descidaTecnica.value) {
+                                _descidaTecnica.value = true
+                                Log.d(TAG, "Descida Tecnica ATIVADA: ${String.format("%.1f", gradienteEma * 100)}% por ${distDescidaAcum.toInt()}m")
+                            }
+                        }
+                        gradienteEma > LIMIAR_SAIDA_DESCIDA -> {
+                            distDescidaAcum = 0.0
+                            _descidaTecnica.value = false
+                        }
                     }
                 }
             }
