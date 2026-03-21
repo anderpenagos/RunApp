@@ -321,9 +321,50 @@ fun AppNavigation(notificationIntent: Intent? = null) {
                                 val apiKey    = prefs.apiKey.first()
                                 val athleteId = prefs.athleteId.first()
                                 if (!apiKey.isNullOrBlank() && !athleteId.isNullOrBlank()) {
-                                    val dataCorrida = corrida.data.take(10)
+                                    val dataCorrida = java.time.LocalDate.parse(corrida.data.take(10))
+                                    val dataInicio  = dataCorrida.minusDays(6)
                                     val intervalsApi = com.runapp.data.api.IntervalsClient.create(apiKey)
-                                    intervalsApi.getWellness(athleteId, dataCorrida)
+
+                                    // Busca 7 dias de wellness para calcular tendência
+                                    val periodo = runCatching {
+                                        intervalsApi.getWellnessPeriodo(
+                                            athleteId,
+                                            dataInicio.toString(),
+                                            dataCorrida.toString()
+                                        )
+                                    }.getOrNull()
+
+                                    if (periodo != null && periodo.isNotEmpty()) {
+                                        val snapDia = periodo.lastOrNull { it.id == dataCorrida.toString() }
+                                            ?: periodo.last()
+                                        val snapInicio = periodo.first()
+
+                                        val deltaCTL  = snapDia.ctl - snapInicio.ctl
+                                        val deltaTSB  = snapDia.tsb - snapInicio.tsb
+                                        val diasNeg   = periodo.count { it.tsb < 0 }
+                                        val tsbMin    = periodo.minOf { it.tsb }
+                                        val cargaTotal = periodo.sumOf { it.atlLoad ?: 0.0 }
+
+                                        com.runapp.data.model.WellnessTendencia(
+                                            snapshot        = snapDia,
+                                            deltaCTL7d      = deltaCTL,
+                                            deltaTSB7d      = deltaTSB,
+                                            diasTSBNegativo = diasNeg,
+                                            tsbMinimo7d     = tsbMin,
+                                            cargaTotal7d    = cargaTotal
+                                        )
+                                    } else {
+                                        // Fallback: só o dia da corrida sem tendência
+                                        val snap = intervalsApi.getWellness(athleteId, dataCorrida.toString())
+                                        com.runapp.data.model.WellnessTendencia(
+                                            snapshot        = snap,
+                                            deltaCTL7d      = 0.0,
+                                            deltaTSB7d      = 0.0,
+                                            diasTSBNegativo = 0,
+                                            tsbMinimo7d     = snap.tsb,
+                                            cargaTotal7d    = 0.0
+                                        )
+                                    }
                                 } else null
                             }.getOrNull()
 

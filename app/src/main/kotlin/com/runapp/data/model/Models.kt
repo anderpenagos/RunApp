@@ -155,20 +155,28 @@ data class ResumoFinal(
 /**
  * Snapshot de condicionamento físico do atleta em um dado dia,
  * obtido via GET /api/v1/athlete/{id}/wellness/{date} do Intervals.icu.
- *
- * @param ctl       Chronic Training Load — "fitness" acumulado (média ponderada ~42 dias)
- * @param atl       Acute Training Load — "fadiga" recente (média ponderada ~7 dias)
- * @param tsb       Training Stress Balance — forma = CTL − ATL. A API retorna como "form".
- * @param rampRate  Taxa de variação semanal do CTL (pontos/semana). API: "rampRate".
- * @param atlLoad   Carga de treino acumulada nos últimos 7 dias. API: "atlLoad".
  */
 data class WellnessSnapshot(
+    val id:       String  = "",   // "yyyy-MM-dd" — data do snapshot
     val ctl:      Double,
     val atl:      Double,
-    @com.google.gson.annotations.SerializedName("form")
-    val tsb:      Double,
-    @com.google.gson.annotations.SerializedName("rampRate")
     val rampRate: Double? = null,
     @com.google.gson.annotations.SerializedName("atlLoad")
     val atlLoad:  Double? = null
+) {
+    // TSB não vem da API — calculado localmente como CTL − ATL
+    val tsb: Double get() = ctl - atl
+}
+
+/**
+ * Tendência de condicionamento dos últimos 7 dias — derivada de uma lista de WellnessSnapshot.
+ * Usada pelo coach para contextualizar o estado do atleta com progressão/regressão real.
+ */
+data class WellnessTendencia(
+    val snapshot: WellnessSnapshot,           // dado do dia da corrida
+    val deltaCTL7d: Double,                   // variação de CTL nos últimos 7 dias (positivo = crescendo)
+    val deltaTSB7d: Double,                   // variação de TSB nos últimos 7 dias (positivo = recuperando)
+    val diasTSBNegativo: Int,                 // quantos dias consecutivos o TSB está negativo
+    val tsbMinimo7d: Double,                  // TSB mais baixo nos últimos 7 dias
+    val cargaTotal7d: Double                  // soma de atlLoad dos últimos 7 dias (carga acumulada)
 )

@@ -39,16 +39,25 @@ interface IntervalsApi {
      *
      * Endpoint: GET /api/v1/athlete/{id}/wellness/{date}
      * Formato de data: "yyyy-MM-dd"
-     *
-     * O Intervals.icu calcula e armazena esses valores diariamente com base nas
-     * cargas de treino registradas. O TSB (Training Stress Balance = CTL − ATL)
-     * indica a "forma" do atleta: positivo = descansado, negativo = fatigado.
      */
     @GET("athlete/{id}/wellness/{date}")
     suspend fun getWellness(
         @Path("id") athleteId: String,
         @Path("date") date: String     // formato "yyyy-MM-dd"
     ): WellnessSnapshot
+
+    /**
+     * Retorna wellness de um período — usado para calcular tendência de CTL/TSB.
+     *
+     * Endpoint: GET /api/v1/athlete/{id}/wellness?oldest=...&newest=...
+     * Retorna lista ordenada do mais antigo para o mais recente.
+     */
+    @GET("athlete/{id}/wellness")
+    suspend fun getWellnessPeriodo(
+        @Path("id") athleteId: String,
+        @Query("oldest") oldest: String,   // "yyyy-MM-dd"
+        @Query("newest") newest: String    // "yyyy-MM-dd"
+    ): List<WellnessSnapshot>
 
     @POST("athlete/{id}/activities")
     @Multipart

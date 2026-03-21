@@ -8,7 +8,7 @@ import com.google.gson.JsonParser
 import com.runapp.BuildConfig
 import com.runapp.data.model.CorridaHistorico
 import com.runapp.data.model.PassoResumo
-import com.runapp.data.model.WellnessSnapshot
+import com.runapp.data.model.WellnessTendencia
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -54,7 +54,7 @@ class CoachRepository {
      */
     suspend fun gerarFeedback(
         corrida:  CorridaHistorico,
-        wellness: WellnessSnapshot? = null
+        wellness: WellnessTendencia? = null
     ): Result<String> =
         withContext(Dispatchers.IO) {
             val apiKey = BuildConfig.GEMINI_API_KEY
@@ -91,7 +91,7 @@ class CoachRepository {
 
     // ── Construção do payload ─────────────────────────────────────────────────
 
-    private fun construirRequest(corrida: CorridaHistorico, wellness: WellnessSnapshot?): String {
+    private fun construirRequest(corrida: CorridaHistorico, wellness: WellnessTendencia?): String {
         val system = """
             Você é um coach de corrida de elite. Sua comunicação é curta, direta e técnica — como um treinador profissional falaria no vestiário, não como um relatório.
             Regras absolutas:
@@ -102,6 +102,7 @@ class CoachRepository {
             - Tom: seco, honesto, encorajador apenas quando os dados justificam.
             - Para treinos estruturados: o mapeamento passo→volta já está calculado. Use-o para diagnosticar desvios, não para descrever o que o atleta pode ver na tabela.
             - Para corridas livres: foque em progressão de ritmo, consistência e o que o GAP revela sobre o esforço real.
+            - PRÓXIMO TREINO: use a tendência de 7 dias (deltaCTL, diasTSBNegativo, tsbMinimo) para uma recomendação concreta. TSB negativo por muitos dias consecutivos = semana de redução. CTL crescendo rápido com TSB deteriorando = risco de overreaching.
         """.trimIndent()
 
         val prompt = """
@@ -156,26 +157,41 @@ class CoachRepository {
         })
     }
 
-    private fun construirContexto(c: CorridaHistorico, wellness: WellnessSnapshot?): String = buildString {
+    private fun construirContexto(c: CorridaHistorico, wellness: WellnessTendencia?): String = buildString {
 
-        // ── Condicionamento físico do dia (Intervals.icu) ─────────────────────
+        // ── Condicionamento físico — dia do treino + tendência 7 dias ───────
         if (wellness != null) {
+            val snap = wellness.snapshot
             val tsbLabel = when {
-                wellness.tsb >  15 -> "Ótima forma — pronto para competir"
-                wellness.tsb >   5 -> "Descansado — boas condições de treino"
-                wellness.tsb in -5.0..5.0 -> "Neutro — carga e recuperação equilibradas"
-                wellness.tsb > -10 -> "Levemente fatigado — treino acumulando"
-                wellness.tsb > -20 -> "Fatigado — performance provavelmente limitada"
-                else               -> "⚠ Alta fadiga acumulada — risco real de overtraining"
+                snap.tsb >  15 -> "Ótima forma — pronto para competir"
+                snap.tsb >   5 -> "Descansado — boas condições de treino"
+                snap.tsb in -5.0..5.0 -> "Neutro — carga e recuperação equilibradas"
+                snap.tsb > -10 -> "Levemente fatigado — treino acumulando"
+                snap.tsb > -20 -> "Fatigado — performance provavelmente limitada"
+                else           -> "⚠ Alta fadiga acumulada — risco real de overtraining"
             }
-            val rampAlert = if ((wellness.rampRate ?: 0.0) > 8.0)
-                "  ⚠ Ramp Rate: +${"%.1f".format(wellness.rampRate)} pts/sem — carga semanal acima do recomendado!" else ""
+            val tendenciaCTL = when {
+                wellness.deltaCTL7d >  2.0 -> "↑ crescendo rápido (+${"%.1f".format(wellness.deltaCTL7d)} em 7 dias)"
+                wellness.deltaCTL7d >  0.5 -> "↑ crescendo (+${"%.1f".format(wellness.deltaCTL7d)} em 7 dias)"
+                wellness.deltaCTL7d < -2.0 -> "↓ caindo (-${"%.1f".format(-wellness.deltaCTL7d)} em 7 dias) — destreinamento"
+                wellness.deltaCTL7d < -0.5 -> "↓ caindo levemente"
+                else -> "→ estável"
+            }
+            val tendenciaTSB = when {
+                wellness.deltaTSB7d >  5.0 -> "recuperando bem (+${"%.1f".format(wellness.deltaTSB7d)})"
+                wellness.deltaTSB7d < -5.0 -> "deteriorando (${"%+.1f".format(wellness.deltaTSB7d)}) — fadiga acumulando"
+                else -> "estável"
+            }
+            val rampAlert = if ((snap.rampRate ?: 0.0) > 8.0)
+                "  ⚠ Ramp Rate: +${"%.1f".format(snap.rampRate)} pts/sem — acima do recomendado!" else ""
 
-            appendLine("CONDICIONAMENTO FÍSICO (Intervals.icu — dia do treino):")
-            appendLine("  CTL (Fitness):  ${"%.1f".format(wellness.ctl)}")
-            appendLine("  ATL (Fadiga):   ${"%.1f".format(wellness.atl)}")
-            appendLine("  TSB (Forma):    ${"%.1f".format(wellness.tsb)}  → $tsbLabel")
-            wellness.rampRate?.let { appendLine("  Ramp Rate:      ${"%.1f".format(it)} pts/semana$rampAlert") }
+            appendLine("CONDICIONAMENTO FÍSICO (Intervals.icu — últimos 7 dias):")
+            appendLine("  CTL: ${"%.1f".format(snap.ctl)}  $tendenciaCTL")
+            appendLine("  ATL: ${"%.1f".format(snap.atl)}")
+            appendLine("  TSB: ${"%.1f".format(snap.tsb)}  → $tsbLabel  |  tendência: $tendenciaTSB")
+            appendLine("  TSB negativo por ${wellness.diasTSBNegativo} dos últimos 7 dias  |  mínimo: ${"%.1f".format(wellness.tsbMinimo7d)}")
+            if (wellness.cargaTotal7d > 0) appendLine("  Carga acumulada 7 dias: ${"%.0f".format(wellness.cargaTotal7d)}")
+            snap.rampRate?.let { appendLine("  Ramp Rate: ${"%.1f".format(it)} pts/semana$rampAlert") }
             appendLine()
         }
 
