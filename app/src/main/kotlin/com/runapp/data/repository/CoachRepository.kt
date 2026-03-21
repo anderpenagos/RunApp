@@ -118,7 +118,7 @@ class CoachRepository {
             [Para treino estruturado: consistência entre repetições e qualidade das recuperações com números. Para corrida livre: variação de pace ao longo da corrida e o que ela indica — não descreva os splits, interprete-os.]
 
             **BIOMECÂNICA**
-            [1-2 linhas: cadência, passada vs baseline. Queda >5% = alerta de fadiga mecânica. Se sem baseline, diga só o número e se é adequado para o pace.]
+            [1-2 linhas: cadência, passada vs baseline. Queda >5% = alerta de fadiga mecânica. Se sem baseline, diga só o número e se é adequado para o pace de cada repetição/passo do treino.]
 
             **PRÓXIMO TREINO**
             [1 linha específica e acionável. Ex: "Adicione 10min ao volume. Mantenha Z2." ou "Reduza carga — TSB -18, risco real de overtraining."]
