@@ -191,7 +191,7 @@ class RunningService : Service(), SensorEventListener {
     }
     private val ultimasLocalizacoes = mutableListOf<Location>()
 
-    private var janelaAtualSegundos = 12
+    private var janelaAtualSegundos = 22
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // Custódia do Treino — sobrevive à morte da ViewModel
@@ -277,7 +277,7 @@ class RunningService : Service(), SensorEventListener {
     }
 
     fun setDuracaoPassoAtual(duracaoSegundos: Int) {
-        janelaAtualSegundos = if (duracaoSegundos < 60) 5 else 12
+        janelaAtualSegundos = if (duracaoSegundos < 60) 5 else 22
         Log.d(TAG, "⚙️ Janela de pace ajustada para ${janelaAtualSegundos}s (passo=${duracaoSegundos}s)")
     }
 
@@ -1031,7 +1031,7 @@ class RunningService : Service(), SensorEventListener {
         rotaTotalPontos = 0
         ultimasLocalizacoes.clear()
         ultimoPaceEmaInterno = null
-        janelaAtualSegundos = 12
+        janelaAtualSegundos = 22
 
         // Reset pressão de referência — será atualizada com dado real via Open-Meteo
         // quando o primeiro ponto GPS chegar (lat/lng necessário para a requisição)
@@ -2033,8 +2033,8 @@ class RunningService : Service(), SensorEventListener {
 
         val accuracyAtual = ultimasLocalizacoes.last().accuracy
         val janelaEfetiva = when {
-            accuracyAtual > 20f -> (janelaAtualSegundos * 1.5).toInt().coerceAtMost(15)
-            accuracyAtual < 5f  -> janelaAtualSegundos.coerceAtLeast(3)
+            accuracyAtual > 20f -> (janelaAtualSegundos * 1.5).toInt().coerceAtMost(33)
+            accuracyAtual < 5f  -> janelaAtualSegundos.coerceAtLeast(10)
             else                -> janelaAtualSegundos
         }
         val corte = System.currentTimeMillis() - (janelaEfetiva * 1000L)
