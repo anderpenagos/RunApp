@@ -945,7 +945,7 @@ class RunningService : Service(), SensorEventListener {
                 Log.d(TAG, "🛡️ Modo GPS recovery ativado — filtrando saltos impossíveis nos primeiros pontos")
             }
 
-            iniciarForeground("♻️ Corrida recuperada — ${String.format("%.2f", checkpoint.distanciaMetros / 1000)}km já registrados")
+            iniciarForeground("Corrida recuperada — ${String.format("%.2f", checkpoint.distanciaMetros / 1000)}km já registrados")
             wakeLock?.acquire(6 * 60 * 60 * 1000L)
 
             registrarSensores()
@@ -1322,7 +1322,7 @@ class RunningService : Service(), SensorEventListener {
                 Log.w(TAG, "⏱️ GPS ausente há ${gapMs / 1000}s — dead reckoning suspenso (limite de 2min)")
 
                 val notif = androidx.core.app.NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setContentTitle("RunApp — Sem sinal GPS 🛰️")
+                    .setContentTitle("RunApp — Sem sinal GPS")
                     .setContentText("Sinal perdido há ${gapMs / 60_000}min. Distância pausada até o GPS voltar.")
                     .setSmallIcon(android.R.drawable.ic_dialog_alert)
                     .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
@@ -1476,12 +1476,12 @@ class RunningService : Service(), SensorEventListener {
                 ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
                 val msg = if (!temPermissao)
-                    "⚠️ Permissão de GPS revogada — corrida pausada!"
+                    "Permissão de GPS revogada — corrida pausada"
                 else
-                    "⚠️ Sinal GPS perdido — aguardando reconexão..."
+                    "Sinal GPS perdido — aguardando reconexão"
 
                 val notif = androidx.core.app.NotificationCompat.Builder(this@RunningService, CHANNEL_ID)
-                    .setContentTitle("RunApp — GPS Interrompido 🛑")
+                    .setContentTitle("RunApp — GPS Interrompido")
                     .setContentText(msg)
                     .setSmallIcon(android.R.drawable.ic_dialog_alert)
                     .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
@@ -1659,7 +1659,7 @@ class RunningService : Service(), SensorEventListener {
                     "Sinal GPS recuperado. Sincronizando percurso..."
 
                 val notif = androidx.core.app.NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setContentTitle("RunApp — GPS Recuperado ✅")
+                    .setContentTitle("RunApp — GPS Recuperado")
                     .setContentText(msg)
                     .setSmallIcon(android.R.drawable.ic_menu_mylocation)
                     .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)  // silenciosa
@@ -2311,7 +2311,7 @@ class RunningService : Service(), SensorEventListener {
             android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("RunApp — Corrida Ativa 🏃")
+            .setContentTitle("RunApp — Corrida Ativa")
             .setContentText(conteudo)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setContentIntent(pendingIntent)

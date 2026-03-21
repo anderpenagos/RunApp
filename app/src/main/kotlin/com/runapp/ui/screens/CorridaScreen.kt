@@ -123,7 +123,7 @@ fun CorridaScreen(
         if (!permissaoGps) {
             Toast.makeText(
                 context,
-                "⚠️ Permissões de GPS são necessárias para rastrear sua corrida",
+                "Permissões de GPS são necessárias para rastrear sua corrida",
                 Toast.LENGTH_LONG
             ).show()
         } else {
@@ -196,19 +196,19 @@ fun CorridaScreen(
     val gpsLocalizou = state.posicaoAtual != null
     val (statusGps, corBanner) = when {
         // 1. Sem permissão — prioridade crítica
-        !permissaoGps -> "⚠️ Sem permissão GPS" to Color(0xFFFF6B6B)
+        !permissaoGps -> "Sem permissão GPS" to Color(0xFFFF6B6B)
         // 2. Instante exato do Play (tempo ainda zerado) — GPS estava OK, não deve "piscar"
         // Precisa vir antes do !gpsLocalizou para blindar a transição de estado
         state.fase == FaseCorrida.CORRENDO && state.tempoTotalSegundos == 0L ->
-            "🚀 Iniciando..." to Color(0xFF4ECDC4)
+            "Iniciando..." to Color(0xFF4ECDC4)
         // 3. Perda total de sinal (posicaoAtual sumiu completamente)
-        !gpsLocalizou -> "🔍 Buscando sinal GPS..." to Color(0xFFFFBE0B)
+        !gpsLocalizou -> "Buscando sinal GPS..." to Color(0xFFFFBE0B)
         // 4. Antes do Play — verde tranquilo
-        state.fase == FaseCorrida.PREPARANDO -> "✅ GPS OK (Pronto para iniciar)" to Color(0xFF4ECDC4)
+        state.fase == FaseCorrida.PREPARANDO -> "GPS OK — Pronto para iniciar" to Color(0xFF4ECDC4)
         // 5. Primeiros pontos após o Play — GPS OK, rota ainda acumulando
-        state.fase == FaseCorrida.CORRENDO && pontosColetados < 5 -> "🚀 Iniciando gravação..." to Color(0xFF4ECDC4)
+        state.fase == FaseCorrida.CORRENDO && pontosColetados < 5 -> "Iniciando gravação..." to Color(0xFF4ECDC4)
         // 6. Corrida normal
-        else -> "✅ GPS OK ($pontosColetados pontos)" to Color(0xFF4ECDC4)
+        else -> "GPS OK ($pontosColetados pontos)" to Color(0xFF4ECDC4)
     }
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -649,7 +649,7 @@ fun CorridaScreen(
                                 Text(passo.nome, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                 if (!passo.isDescanso) {
                                     Text(
-                                        text = "🎯 ${passo.paceAlvoMin}—${passo.paceAlvoMax}/km",
+                                        text = "${passo.paceAlvoMin}—${passo.paceAlvoMax}/km",
                                         fontSize = 12.sp, color = Color.White.copy(alpha = 0.9f)
                                     )
                                 }
@@ -1090,7 +1090,7 @@ private fun MetricasFullscreen(
                     ) {
                         Text(passo.nome, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         if (!passo.isDescanso) {
-                            Text("🎯 ${passo.paceAlvoMin}—${passo.paceAlvoMax}/km", fontSize = 13.sp, color = Color.White.copy(alpha = 0.9f))
+                            Text("${passo.paceAlvoMin}—${passo.paceAlvoMax}/km", fontSize = 13.sp, color = Color.White.copy(alpha = 0.9f))
                         }
                         Spacer(androidx.compose.ui.Modifier.height(6.dp))
                         LinearProgressIndicator(
@@ -1130,7 +1130,7 @@ private fun MetricasFullscreen(
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("⏸️ Auto-pause • Aguardando movimento...", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("Auto-pause — Aguardando movimento...", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 }
             }
         }

@@ -57,7 +57,7 @@ fun ResumoScreen(
         }
 
         Text(
-            text = "Corrida Concluída! 🎉",
+            text = "Corrida Concluída",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
         )

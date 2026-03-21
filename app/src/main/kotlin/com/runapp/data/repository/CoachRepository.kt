@@ -168,7 +168,7 @@ class CoachRepository {
                 snap.tsb in -5.0..5.0 -> "Neutro — carga e recuperação equilibradas"
                 snap.tsb > -10 -> "Levemente fatigado — treino acumulando"
                 snap.tsb > -20 -> "Fatigado — performance provavelmente limitada"
-                else           -> "⚠ Alta fadiga acumulada — risco real de overtraining"
+                else           -> "Alta fadiga acumulada — risco real de overtraining"
             }
             val tendenciaCTL = when {
                 wellness.deltaCTL7d >  2.0 -> "↑ crescendo rápido (+${"%.1f".format(wellness.deltaCTL7d)} em 7 dias)"
@@ -183,7 +183,7 @@ class CoachRepository {
                 else -> "estável"
             }
             val rampAlert = if ((snap.rampRate ?: 0.0) > 8.0)
-                "  ⚠ Ramp Rate: +${"%.1f".format(snap.rampRate)} pts/sem — acima do recomendado!" else ""
+                "  Ramp Rate: +${"%.1f".format(snap.rampRate)} pts/sem — acima do recomendado!" else ""
 
             appendLine("CONDICIONAMENTO FÍSICO (Intervals.icu — últimos 7 dias):")
             appendLine("  CTL: ${"%.1f".format(snap.ctl)}  $tendenciaCTL")
@@ -212,7 +212,7 @@ class CoachRepository {
             val diff = (c.stepLengthTreino - c.stepLengthBaseline) / c.stepLengthBaseline * 100.0
             appendLine()
             appendLine("BIOMECÂNICA:")
-            appendLine("  Passada baseline: ${"%.2f".format(c.stepLengthBaseline)}m  |  Neste treino: ${"%.2f".format(c.stepLengthTreino)}m  |  Variação: ${if (diff >= 0) "+" else ""}${"%.1f".format(diff)}%  ${if (diff < -5) "⚠ Possível fadiga mecânica" else if (diff > 5) "↑ Melhora técnica" else "✓ Normal"}")
+            appendLine("  Passada baseline: ${"%.2f".format(c.stepLengthBaseline)}m  |  Neste treino: ${"%.2f".format(c.stepLengthTreino)}m  |  Variação: ${if (diff >= 0) "+" else ""}${"%.1f".format(diff)}%  ${if (diff < -5) "Fadiga mecânica detectada" else if (diff > 5) "Melhora técnica" else "Normal"}")
         }
         appendLine()
 
@@ -267,7 +267,7 @@ class CoachRepository {
                     alvoMinSeg <= 0 -> "sem alvo definido"
                     executadoSeg < alvoMinSeg - tolerancia -> "ACIMA DO ALVO (+${fmt(alvoMinSeg - executadoSeg)} mais rápido)"
                     executadoSeg > alvoMaxSeg + tolerancia -> "ABAIXO DO ALVO (+${fmt(executadoSeg - alvoMaxSeg)} mais lento)"
-                    else -> "dentro do alvo ✓"
+                    else -> "dentro do alvo"
                 }
 
                 val cadStr = if (volta.cadenciaMedia > 0) " | ${volta.cadenciaMedia} spm" else ""
@@ -296,14 +296,14 @@ class CoachRepository {
                 val deriva   = ultimo - primeiro
                 appendLine("CONSISTÊNCIA DOS TIROS (${tirosEsforco.size} esforços — aquec/desaq excluídos):")
                 appendLine("  Pace médio: ${fmt(media)}/km  |  Desvio: ±${fmt(desvio)}/km  |  ${if (desvio > 30) "inconsistente" else "consistente"}")
-                appendLine("  Deriva: 1º tiro ${fmt(primeiro)}/km → último ${fmt(ultimo)}/km  |  ${if (deriva > 20) "⚠ afundou ${fmt(deriva)}" else if (deriva < -20) "↑ acelerou ${fmt(-deriva)}" else "estável ✓"}")
+                appendLine("  Deriva: 1º tiro ${fmt(primeiro)}/km → último ${fmt(ultimo)}/km  |  ${if (deriva > 20) "afundou ${fmt(deriva)}" else if (deriva < -20) "acelerou ${fmt(-deriva)}" else "estável"}")
                 // Cadência por tiro — sinal de fadiga mecânica se cair no final
                 val cadTiros = tirosEsforco.filter { it.cadenciaMedia > 0 }
                 if (cadTiros.size >= 2) {
                     val cadInicio = cadTiros.first().cadenciaMedia
                     val cadFim = cadTiros.last().cadenciaMedia
                     val quedaCad = cadInicio - cadFim
-                    appendLine("  Cadência: 1º tiro ${cadInicio} spm → último ${cadFim} spm  |  ${if (quedaCad > 5) "⚠ queda de ${quedaCad} spm — possível fadiga mecânica" else "estável ✓"}")
+                    appendLine("  Cadência: 1º tiro ${cadInicio} spm → último ${cadFim} spm  |  ${if (quedaCad > 5) "queda de ${quedaCad} spm — possível fadiga mecânica" else "estável"}")
                 }
             }
 
@@ -354,9 +354,9 @@ class CoachRepository {
                 val paceFim    = splits.takeLast(terco).map { it.paceSegKm }.average()
                 val deriva     = paceFim - paceInicio
                 val tendencia  = when {
-                    deriva >  30 -> "⚠ afundou ${fmt(deriva)}/km no final — possível fade de ritmo ou desidratação"
+                    deriva >  30 -> "afundou ${fmt(deriva)}/km no final"
                     deriva < -30 -> "↑ negativo split — acelerou ${fmt(-deriva)}/km no final"
-                    else         -> "ritmo estável ✓ (variação ${fmt(kotlin.math.abs(deriva))})"
+                    else         -> "ritmo estável (variação ${fmt(kotlin.math.abs(deriva))})"
                 }
                 appendLine("PROGRESSÃO DE PACE:")
                 appendLine("  1º terço: ${fmt(paceInicio)}/km  |  Último terço: ${fmt(paceFim)}/km  |  $tendencia")
@@ -368,7 +368,7 @@ class CoachRepository {
                 val media  = splits.map { it.paceSegKm }.average()
                 val desvio = kotlin.math.sqrt(splits.map { (it.paceSegKm - media).let { d -> d * d } }.average())
                 appendLine("CONSISTÊNCIA DE RITMO:")
-                appendLine("  Desvio padrão dos splits: ±${fmt(desvio)}/km  |  ${if (desvio > 45) "ritmo muito irregular" else if (desvio > 20) "alguma variação — verificar terreno ou esforço" else "consistente ✓"}")
+                appendLine("  Desvio padrão dos splits: ±${fmt(desvio)}/km  |  ${if (desvio > 45) "ritmo muito irregular" else if (desvio > 20) "alguma variação — verificar terreno ou esforço" else "consistente"}")
                 appendLine()
             }
 

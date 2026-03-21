@@ -125,7 +125,7 @@ fun ConfigScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "⚙️ Configurações Gerais",
+                    text = "Configurações Gerais",
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -168,7 +168,7 @@ fun ConfigScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "⛰️ GAP apenas em ladeiras",
+                            text = "GAP apenas em ladeiras",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium
                         )
@@ -195,7 +195,7 @@ fun ConfigScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "🔊 Feedback de Áudio",
+                    text = "Feedback de Áudio",
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -372,7 +372,7 @@ fun ConfigScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "🎙️ Voz do Coach",
+                        text = "Voz do Coach",
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -463,7 +463,7 @@ fun ConfigScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "💡 Como encontrar suas credenciais",
+                    text = "Como encontrar suas credenciais",
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.bodyMedium
                 )

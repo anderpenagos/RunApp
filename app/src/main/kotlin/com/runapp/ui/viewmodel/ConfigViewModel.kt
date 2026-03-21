@@ -108,7 +108,7 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                     onSuccess = { zonesResponse ->
                         val zonas = repo.processarZonas(zonesResponse)
                         val texto = if (zonas.isEmpty()) {
-                            "❌ API respondeu mas não encontrou zonas de corrida.\n" +
+                            "API respondeu mas não encontrou zonas de corrida.\n" +
                             "Verifique se há zonas de pace configuradas no Intervals.icu.\n" +
                             "sportSettings recebidos: ${zonesResponse.sportSettings.size}\n" +
                             "threshold_pace raiz: ${zonesResponse.thresholdPace}\n" +
@@ -146,14 +146,14 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                     onFailure = { erro ->
                         _uiState.value = _uiState.value.copy(
                             zonasTestandoApi = false,
-                            zonasTeste = "❌ Erro na API: ${erro.message}"
+                            zonasTeste = "Erro na API: ${erro.message}"
                         )
                     }
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     zonasTestandoApi = false,
-                    zonasTeste = "❌ Exceção: ${e.message}"
+                    zonasTeste = "Erro: ${e.message}"
                 )
             }
         }

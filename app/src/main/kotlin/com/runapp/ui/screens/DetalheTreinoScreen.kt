@@ -120,7 +120,7 @@ fun DetalheTreinoScreen(
                     Column(modifier = Modifier.padding(16.dp)) {
                         if (corridaAtiva) {
                             Text(
-                                text = "⚠️ Finalize a corrida atual para iniciar este treino",
+                                text = "Finalize a corrida atual para iniciar este treino",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
                                 modifier = Modifier
@@ -275,7 +275,7 @@ fun PassoCard(numero: Int, passo: PassoExecucao) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = passo.nome, fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleSmall)
-                Text(text = "⏱ $duracaoTexto  •  🏃 $paceTexto",
+                Text(text = "$duracaoTexto  •  $paceTexto",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
                 if (passo.instrucao.isNotBlank()) {

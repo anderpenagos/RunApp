@@ -167,7 +167,7 @@ class HistoricoViewModel(application: Application) : AndroidViewModel(applicatio
             }
             val msg = resultado.fold(
                 onSuccess = { n -> "$n corridas exportadas para Downloads/RunApp/backup/" },
-                onFailure = { e -> "❌ Erro ao exportar: ${e.message}" }
+                onFailure = { e -> "Erro ao exportar: ${e.message}" }
             )
             _uiState.value = _uiState.value.copy(backupEmAndamento = false, mensagem = msg)
         }
@@ -190,7 +190,7 @@ class HistoricoViewModel(application: Application) : AndroidViewModel(applicatio
                     if (err == 0) "$ok corridas importadas com sucesso"
                     else "$ok importadas, $err com erro"
                 },
-                onFailure = { e -> "❌ Erro ao importar: ${e.message}" }
+                onFailure = { e -> "Erro ao importar: ${e.message}" }
             )
             _uiState.value = _uiState.value.copy(backupEmAndamento = false, mensagem = msg)
             carregarHistorico()

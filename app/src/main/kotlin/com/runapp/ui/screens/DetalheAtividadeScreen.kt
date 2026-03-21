@@ -316,7 +316,7 @@ private fun GraficoPaceElevacao(
                 Text("⏱ ${dados.paceFormatado[idx]}/km", color = CorPace, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (distLabel.isNotEmpty()) Text(distLabel, color = Color.White.copy(alpha = 0.4f), fontSize = 10.sp)
-                    Text("⛰ ${dados.altitudes[idx].roundToInt()} m", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                    Text("${dados.altitudes[idx].roundToInt()} m alt", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
                 }
             } else {
                 Text("Topo: ${formatarPaceSegKm(dados.paceMin)}/km  •  Base: ${formatarPaceSegKm(dados.paceMax)}/km",
@@ -521,7 +521,7 @@ private fun GraficoCadencia(dados: DadosGrafico, frac: Float, onFracChange: (Flo
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             if (idx >= 0 && dados.cadencias[idx] > 0) {
                 val distLabel = dados.distanciasKm.getOrNull(idx)?.let { "%.2fkm".format(it) } ?: ""
-                Text("👟 ${dados.cadencias[idx]} spm", color = CorCadencia, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text("${dados.cadencias[idx]} spm", color = CorCadencia, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 if (distLabel.isNotEmpty()) Text(distLabel, color = Color.White.copy(alpha = 0.4f), fontSize = 10.sp)
             } else
                 Text("Média: $cadMedia spm", color = CorCadencia.copy(alpha = 0.6f), fontSize = 11.sp)
