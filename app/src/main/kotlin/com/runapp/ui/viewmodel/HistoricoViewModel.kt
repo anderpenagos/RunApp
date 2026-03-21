@@ -133,7 +133,7 @@ class HistoricoViewModel(application: Application) : AndroidViewModel(applicatio
                     onSuccess = {
                         _uiState.value = _uiState.value.copy(
                             uploadEmAndamento = null,
-                            mensagem = "✅ Enviado para Intervals.icu!"
+                            mensagem = "Enviado para Intervals.icu"
                         )
                     },
                     onFailure = { e ->
@@ -166,7 +166,7 @@ class HistoricoViewModel(application: Application) : AndroidViewModel(applicatio
                 container.createBackupRepository(apiKey).exportarTudo()
             }
             val msg = resultado.fold(
-                onSuccess = { n -> "✅ $n corridas exportadas para Downloads/RunApp/backup/" },
+                onSuccess = { n -> "$n corridas exportadas para Downloads/RunApp/backup/" },
                 onFailure = { e -> "❌ Erro ao exportar: ${e.message}" }
             )
             _uiState.value = _uiState.value.copy(backupEmAndamento = false, mensagem = msg)
@@ -187,8 +187,8 @@ class HistoricoViewModel(application: Application) : AndroidViewModel(applicatio
             }
             val msg = resultado.fold(
                 onSuccess = { (ok, err) ->
-                    if (err == 0) "✅ $ok corridas importadas com sucesso!"
-                    else "⚠️ $ok importadas, $err com erro"
+                    if (err == 0) "$ok corridas importadas com sucesso"
+                    else "$ok importadas, $err com erro"
                 },
                 onFailure = { e -> "❌ Erro ao importar: ${e.message}" }
             )

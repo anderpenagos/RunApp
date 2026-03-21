@@ -95,7 +95,7 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
     fun testarZonas() {
         val state = _uiState.value
         if (state.apiKey.isBlank() || state.athleteId.isBlank()) {
-            _uiState.value = state.copy(zonasTeste = "⚠️ Configure API Key e Athlete ID primeiro")
+            _uiState.value = state.copy(zonasTeste = "Configure API Key e Athlete ID primeiro")
             return
         }
         _uiState.value = state.copy(zonasTestandoApi = true, zonasTeste = "")
@@ -114,7 +114,7 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                             "threshold_pace raiz: ${zonesResponse.thresholdPace}\n" +
                             "pace_zones raiz: ${zonesResponse.paceZones?.size ?: 0} zonas"
                         } else {
-                            "✅ ${zonas.size} zonas recebidas:\n" +
+                            "${zonas.size} zonas recebidas:\n" +
                             zonas.joinToString("\n") { z ->
                                 val min = z.min?.let { (it * 1000).toLong() }?.let { "%d:%02d".format(it / 60, it % 60) } ?: "--"
                                 val max = z.max?.let { (it * 1000).toLong() }?.let { "%d:%02d".format(it / 60, it % 60) } ?: "∞"

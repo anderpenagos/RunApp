@@ -72,7 +72,7 @@ fun HistoricoScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Histórico de Corridas 📋") },
+                title = { Text("Histórico de Corridas") },
                 navigationIcon = {
                     IconButton(onClick = onVoltar) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Voltar")
@@ -96,7 +96,7 @@ fun HistoricoScreen(
                                 DropdownMenuItem(
                                     text = {
                                         Column {
-                                            Text("📤 Exportar backup")
+                                            Text("Exportar backup")
                                             Text(
                                                 "Salva em Downloads/RunApp/backup/",
                                                 fontSize = 11.sp,
@@ -112,7 +112,7 @@ fun HistoricoScreen(
                                 DropdownMenuItem(
                                     text = {
                                         Column {
-                                            Text("📥 Importar backup")
+                                            Text("Importar backup")
                                             Text(
                                                 "Recalcula tudo com código atual",
                                                 fontSize = 11.sp,
@@ -153,7 +153,12 @@ fun HistoricoScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Text("🏃", fontSize = 64.sp)
+                        Icon(
+                        imageVector = Icons.Default.DirectionsRun,
+                        contentDescription = null,
+                        modifier = Modifier.size(64.dp),
+                        tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.3f)
+                    )
                         Text(
                             "Nenhuma corrida salva ainda",
                             style = MaterialTheme.typography.titleMedium,
@@ -242,7 +247,7 @@ private fun CorridaHistoricoCard(
                 }
                 // Indicador de upload já enviado
                 if (corrida.enviadoIntervals) {
-                    Text("✓ Intervals", style = MaterialTheme.typography.labelSmall,
+                    Text("Intervals", style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary)
                 }
             }
@@ -254,13 +259,13 @@ private fun CorridaHistoricoCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                MetricaMini("📏", "%.2f km".format(corrida.distanciaKm))
-                MetricaMini("⏱", corrida.tempoFormatado)
-                MetricaMini("🏃", "${corrida.paceMedia}/km")
+                MetricaMini("dist", "%.2f km".format(corrida.distanciaKm))
+                MetricaMini("tempo", corrida.tempoFormatado)
+                MetricaMini("pace", "${corrida.paceMedia}/km")
                 if (corrida.ganhoElevacaoM > 0)
-                    MetricaMini("⛰️", "+${corrida.ganhoElevacaoM}m")
+                    MetricaMini("d+", "+${corrida.ganhoElevacaoM}m")
                 if (corrida.cadenciaMedia > 0)
-                    MetricaMini("👟", "${corrida.cadenciaMedia}spm")
+                    MetricaMini("spm", "${corrida.cadenciaMedia}spm")
             }
 
             // ── Mini splits sparkline — só mostra se tiver splits ─────────
@@ -340,13 +345,19 @@ private fun CorridaHistoricoCard(
 }
 
 @Composable
-private fun MetricaMini(emoji: String, valor: String) {
+private fun MetricaMini(label: String, valor: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(emoji, fontSize = 16.sp)
+        Text(
+            text = label.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+            fontSize = 9.sp,
+            letterSpacing = 0.8.sp
+        )
         Text(
             text = valor,
             style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.SemiBold
         )
     }
 }

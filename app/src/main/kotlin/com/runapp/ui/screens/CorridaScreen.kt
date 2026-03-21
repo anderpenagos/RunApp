@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -720,7 +721,12 @@ fun CorridaScreen(
                                     color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium
                                 )
                             } else {
-                                Text("⚠️", fontSize = 40.sp)
+                                Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = null,
+                                modifier = Modifier.size(40.dp),
+                                tint = Color.White
+                            )
                                 Text("Não foi possível restaurar a corrida", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                                 Text("O sinal GPS pode estar fraco ou o serviço de rastreamento foi interrompido.", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp, textAlign = TextAlign.Center)
                                 Spacer(modifier = Modifier.height(8.dp))
@@ -755,7 +761,7 @@ fun CorridaScreen(
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("⚠️ ${state.erro}", color = Color.White, fontSize = 13.sp, textAlign = TextAlign.Center)
+                                Text("${state.erro}", color = Color.White, fontSize = 13.sp, textAlign = TextAlign.Center)
                                 Spacer(modifier = Modifier.height(8.dp))
                                 TextButton(onClick = { viewModel.carregarTreino(eventId) }) {
                                     Text("Tentar novamente", color = Color.White, fontWeight = FontWeight.Bold)

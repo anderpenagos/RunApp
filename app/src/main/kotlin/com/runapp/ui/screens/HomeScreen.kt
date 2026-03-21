@@ -40,7 +40,7 @@ fun HomeScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("RunApp 🏃", fontWeight = FontWeight.Bold) },
+                title = { Text("RunApp", fontWeight = FontWeight.Bold) },
                 actions = {
                     IconButton(onClick = onConfigurar) {
                         Icon(Icons.Default.Settings, contentDescription = "Configurações")
@@ -76,7 +76,7 @@ fun HomeScreen(
                     ) {
                         Column {
                             Text(
-                                text = "🏃 Corrida em andamento",
+                                text = "Corrida em andamento",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 16.sp,
                                 color = Color.White
@@ -102,7 +102,7 @@ fun HomeScreen(
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
             )
             Text(
-                text = "Pronto para treinar? 💪",
+                text = "Pronto para treinar",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -229,7 +229,7 @@ fun HomeScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "💡 Dica do Dia",
+                        text = "Dica do Dia",
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleSmall
                     )

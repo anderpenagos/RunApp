@@ -95,14 +95,14 @@ fun ResumoScreen(
         // Card de métricas
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(20.dp)) {
-                MetricaResumo("📏 Distância", "%.2f km".format(state.distanciaMetros / 1000.0))
+                MetricaResumo("Distância", "%.2f km".format(state.distanciaMetros / 1000.0))
                 HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
-                MetricaResumo("⏱ Tempo Total", state.tempoFormatado)
+                MetricaResumo("Tempo Total", state.tempoFormatado)
                 HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
-                MetricaResumo("🏃 Pace Médio", "${state.paceMedia}/km")
+                MetricaResumo("Pace Médio", "${state.paceMedia}/km")
                 HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
                 MetricaResumo(
-                    "✅ Passos Completos",
+                    "Passos Completos",
                     "${state.passoAtualIndex + 1} de ${state.passos.size}"
                 )
             }
@@ -142,7 +142,7 @@ fun ResumoScreen(
                         ) {
                             Icon(Icons.Default.Save, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("💾 Salvar Corrida")
+                            Text("Salvar Corrida")
                         }
 
                         SalvamentoEstado.SALVANDO -> Button(
@@ -174,7 +174,7 @@ fun ResumoScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                "✅ Corrida salva no dispositivo",
+                                "Corrida salva no dispositivo",
                                 color = MaterialTheme.colorScheme.secondary
                             )
                         }
@@ -187,7 +187,7 @@ fun ResumoScreen(
                                     containerColor = MaterialTheme.colorScheme.error
                                 )
                             ) {
-                                Text("⚠️ Tentar salvar novamente")
+                                Text("Tentar salvar novamente")
                             }
                             val erroSalvar = state.erroSalvamento
                             if (erroSalvar != null) {
@@ -216,7 +216,7 @@ fun ResumoScreen(
                             ) {
                                 Icon(Icons.Default.CloudUpload, contentDescription = null)
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("⬆️ Enviar para Intervals.icu")
+                                Text("Enviar para Intervals.icu")
                             }
 
                             UploadEstado.ENVIANDO -> OutlinedButton(
@@ -247,7 +247,7 @@ fun ResumoScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    "✅ Enviado para Intervals.icu",
+                                    "Enviado para Intervals.icu",
                                     color = MaterialTheme.colorScheme.tertiary
                                 )
                             }
@@ -260,7 +260,7 @@ fun ResumoScreen(
                                         contentColor = MaterialTheme.colorScheme.error
                                     )
                                 ) {
-                                    Text("⚠️ Tentar upload novamente")
+                                    Text("Tentar upload novamente")
                                 }
                                 val erroUpload = state.erroSalvamento
                                 if (erroUpload != null) {

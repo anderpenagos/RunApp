@@ -397,7 +397,7 @@ private fun GraficoGAP(dados: DadosGrafico, frac: Float, onFracChange: (Float) -
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             if (idx >= 0) {
                 val distLabel = dados.distanciasKm.getOrNull(idx)?.let { "%.2fkm".format(it) } ?: ""
-                Text("⚡ GAP: ${dados.gapFormatado[idx]}/km", color = CorGAP, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text("GAP  ${dados.gapFormatado[idx]}/km", color = CorGAP, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (distLabel.isNotEmpty()) Text(distLabel, color = Color.White.copy(alpha = 0.4f), fontSize = 10.sp)
                     Text("Real: ${dados.paceFormatado[idx]}/km", color = Color.White.copy(alpha = 0.45f), fontSize = 11.sp)
@@ -458,7 +458,7 @@ private fun GraficoGAPRegressao(dados: DadosGrafico, frac: Float, onFracChange: 
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             if (idx >= 0) {
                 val distLabel = dados.distanciasKm.getOrNull(idx)?.let { "%.2fkm".format(it) } ?: ""
-                Text("⚡ GAP: ${dados.gapRegFormatado[idx]}/km", color = CorGAPReg, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text("GAP  ${dados.gapRegFormatado[idx]}/km", color = CorGAPReg, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (distLabel.isNotEmpty()) Text(distLabel, color = Color.White.copy(alpha = 0.4f), fontSize = 10.sp)
                     Text("Real: ${dados.paceFormatado[idx]}/km", color = Color.White.copy(alpha = 0.45f), fontSize = 11.sp)
@@ -1399,7 +1399,7 @@ private fun CartaoCoach(estado: CoachUiState, onRegenerar: () -> Unit) {
                     modifier = Modifier.size(20.dp)
                 )
                 Text(
-                    text = "Análise do Coach",
+                    text = "Performance Report",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = corAccent,
@@ -1459,7 +1459,7 @@ private fun CartaoCoach(estado: CoachUiState, onRegenerar: () -> Unit) {
                 is CoachUiState.Erro -> {
                     Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
                         Text(
-                            text = "⚠️ Não foi possível gerar a análise.",
+                            text = "Não foi possível gerar a análise.",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFF888888)
                         )
@@ -1489,17 +1489,43 @@ private fun CoachTexto(texto: String, foiCortado: Boolean = false, onRegenerar: 
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         texto.split("\n").filter { it.isNotBlank() }.forEach { paragrafo ->
-            Text(
-                text = parseBold(paragrafo),
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFFCCCCCC),
-                lineHeight = 20.sp
-            )
+            // Detecta títulos de seção (ex: **EXECUÇÃO**) e renderiza com estilo editorial
+            val isTitulo = paragrafo.matches(Regex("\*\*[A-ZÁÀÃÂÉÊÍÓÔÕÚÇ/ ]+\*\*"))
+            if (isTitulo) {
+                val titulo = paragrafo.removeSurrounding("**")
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = titulo,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Medium,
+                        color = Color(0xFF80CBC4).copy(alpha = 0.7f),
+                        letterSpacing = 1.2.sp,
+                        fontSize = 10.sp
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    HorizontalDivider(
+                        modifier = Modifier.weight(1f),
+                        color = Color(0xFF80CBC4).copy(alpha = 0.15f),
+                        thickness = 0.5.dp
+                    )
+                }
+            } else {
+                Text(
+                    text = parseBold(paragrafo),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFCCCCCC),
+                    lineHeight = 20.sp
+                )
+            }
         }
         // Aviso discreto quando o modelo foi interrompido pelo limite de tokens
         if (foiCortado) {
             Text(
-                text = "↩ análise incompleta — toque para regenerar",
+                text = "Análise incompleta — toque para regenerar",
                 fontSize = 10.sp,
                 color = Color(0xFF80CBC4).copy(alpha = 0.8f),
                 modifier = Modifier

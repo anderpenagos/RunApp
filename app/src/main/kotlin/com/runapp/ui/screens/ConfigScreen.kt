@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
@@ -47,7 +48,12 @@ fun ConfigScreen(
         Spacer(modifier = Modifier.height(40.dp))
 
         // Ícone e título
-        Text(text = "🏃", fontSize = 64.sp)
+        Icon(
+        imageVector = Icons.Default.DirectionsRun,
+        contentDescription = null,
+        modifier = Modifier.size(64.dp),
+        tint = MaterialTheme.colorScheme.primary
+    )
         Text(
             text = "RunApp",
             style = MaterialTheme.typography.headlineLarge,
