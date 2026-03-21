@@ -158,14 +158,17 @@ data class ResumoFinal(
  *
  * @param ctl       Chronic Training Load — "fitness" acumulado (média ponderada ~42 dias)
  * @param atl       Acute Training Load — "fadiga" recente (média ponderada ~7 dias)
- * @param tsb       Training Stress Balance — forma = CTL − ATL (positivo = descansado)
- * @param rampRate  Taxa de variação semanal do CTL (pontos/semana)
- * @param atlLoad   Carga de treino acumulada nos últimos 7 dias (contribuição para ATL)
+ * @param tsb       Training Stress Balance — forma = CTL − ATL. A API retorna como "form".
+ * @param rampRate  Taxa de variação semanal do CTL (pontos/semana). API: "rampRate".
+ * @param atlLoad   Carga de treino acumulada nos últimos 7 dias. API: "atlLoad".
  */
 data class WellnessSnapshot(
     val ctl:      Double,
     val atl:      Double,
+    @com.google.gson.annotations.SerializedName("form")
     val tsb:      Double,
+    @com.google.gson.annotations.SerializedName("rampRate")
     val rampRate: Double? = null,
+    @com.google.gson.annotations.SerializedName("atlLoad")
     val atlLoad:  Double? = null
 )

@@ -161,12 +161,12 @@ class CoachRepository {
         // ── Condicionamento físico do dia (Intervals.icu) ─────────────────────
         if (wellness != null) {
             val tsbLabel = when {
-                wellness.tsb >  10 -> "Muito descansado — forma excelente"
-                wellness.tsb >   5 -> "Descansado — boas condições"
-                wellness.tsb in -5.0..5.0 -> "Neutro — estado normal"
-                wellness.tsb > -10 -> "Levemente fatigado"
-                wellness.tsb > -20 -> "Fatigado — performance pode estar limitada"
-                else               -> "⚠ Alta fadiga acumulada — risco de overtraining"
+                wellness.tsb >  15 -> "Ótima forma — pronto para competir"
+                wellness.tsb >   5 -> "Descansado — boas condições de treino"
+                wellness.tsb in -5.0..5.0 -> "Neutro — carga e recuperação equilibradas"
+                wellness.tsb > -10 -> "Levemente fatigado — treino acumulando"
+                wellness.tsb > -20 -> "Fatigado — performance provavelmente limitada"
+                else               -> "⚠ Alta fadiga acumulada — risco real de overtraining"
             }
             val rampAlert = if ((wellness.rampRate ?: 0.0) > 8.0)
                 "  ⚠ Ramp Rate: +${"%.1f".format(wellness.rampRate)} pts/sem — carga semanal acima do recomendado!" else ""
@@ -210,17 +210,34 @@ class CoachRepository {
         if (passos != null && c.voltasAnalise.isNotEmpty()) {
             appendLine("TREINO PLANEJADO: ${c.treinoNome ?: "Treino estruturado"}")
             passos.forEachIndexed { i, p ->
-                appendLine("  Passo ${i+1} — ${p.nome}: ${p.duracaoSegundos/60}min | alvo ${p.paceAlvoMin}–${p.paceAlvoMax}/km")
+                val tipo = when {
+                    i == 0 -> "AQUECIMENTO"
+                    i == passos.lastIndex -> "DESAQUECIMENTO"
+                    p.isDescanso -> "RECUPERAÇÃO"
+                    else -> "ESFORÇO Z${p.zona}"
+                }
+                appendLine("  Passo ${i+1} [$tipo] ${p.nome}: ${p.duracaoSegundos/60}min | alvo ${p.paceAlvoMin}–${p.paceAlvoMax}/km")
             }
             appendLine()
+
+            // Identifica índices dos passos de esforço real (exclui aquecimento e desaquecimento)
+            val indicesEsforco = passos.indices.filter { i ->
+                i != 0 && i != passos.lastIndex && !passos[i].isDescanso
+            }
 
             // Mapeia cada passo planejado à volta executada correspondente por índice
             appendLine("PLANO vs EXECUÇÃO (passo a passo):")
             val voltas = c.voltasAnalise
             passos.forEachIndexed { i, passo ->
                 val volta = voltas.getOrNull(i)
+                val tipo = when {
+                    i == 0 -> "AQUECIMENTO"
+                    i == passos.lastIndex -> "DESAQUECIMENTO"
+                    passo.isDescanso -> "RECUPERAÇÃO"
+                    else -> "ESFORÇO Z${passo.zona}"
+                }
                 if (volta == null) {
-                    appendLine("  Passo ${i+1} [${passo.nome}] → não executado")
+                    appendLine("  Passo ${i+1} [$tipo] → não executado")
                     return@forEachIndexed
                 }
 
@@ -228,44 +245,57 @@ class CoachRepository {
                 val alvoMaxSeg = paceParaSegundos(passo.paceAlvoMax).toDouble()
                 val executadoSeg = volta.paceSegKm
 
+                // Aquecimento e desaquecimento têm tolerância maior (±30s) — são transições
+                val tolerancia = if (i == 0 || i == passos.lastIndex) 30 else 10
                 val status = when {
                     alvoMinSeg <= 0 -> "sem alvo definido"
-                    executadoSeg < alvoMinSeg - 10 -> "ACIMA DO ALVO (+${fmt(alvoMinSeg - executadoSeg)} mais rápido)"
-                    executadoSeg > alvoMaxSeg + 10 -> "ABAIXO DO ALVO (+${fmt(executadoSeg - alvoMaxSeg)} mais lento)"
+                    executadoSeg < alvoMinSeg - tolerancia -> "ACIMA DO ALVO (+${fmt(alvoMinSeg - executadoSeg)} mais rápido)"
+                    executadoSeg > alvoMaxSeg + tolerancia -> "ABAIXO DO ALVO (+${fmt(executadoSeg - alvoMaxSeg)} mais lento)"
                     else -> "dentro do alvo ✓"
                 }
 
                 val cadStr = if (volta.cadenciaMedia > 0) " | ${volta.cadenciaMedia} spm" else ""
-                appendLine("  Passo ${i+1} [${passo.nome}] → Volta ${volta.numero}: ${volta.paceFormatado}/km | ${"%.2f".format(volta.distanciaKm)}km | ${volta.tempoSegundos/60}m${(volta.tempoSegundos%60).toString().padStart(2,'0')}s$cadStr")
+                appendLine("  Passo ${i+1} [$tipo] → Volta ${volta.numero}: ${volta.paceFormatado}/km | ${"%.2f".format(volta.distanciaKm)}km | ${volta.tempoSegundos/60}m${(volta.tempoSegundos%60).toString().padStart(2,'0')}s$cadStr")
                 appendLine("    Alvo: ${passo.paceAlvoMin}–${passo.paceAlvoMax}/km → $status")
             }
-            // Voltas extras que não têm passo correspondente (corrida continuou além do plano)
+            // Voltas extras que não têm passo correspondente
             if (voltas.size > passos.size) {
                 appendLine()
                 appendLine("  Voltas além do plano (${voltas.size - passos.size} extra):")
                 voltas.drop(passos.size).forEach { v ->
-                    val tipo = if (v.isDescanso) "DESCANSO" else "ESFORÇO"
+                    val tipo = if (v.isDescanso) "RECUPERAÇÃO" else "ESFORÇO"
                     appendLine("    Volta ${v.numero} [$tipo] → ${v.paceFormatado}/km | ${"%.2f".format(v.distanciaKm)}km")
                 }
             }
 
-            // Consistência entre repetições do mesmo tipo de passo (ex: todos os tiros Z2)
-            val tiros = voltas.filterIndexed { i, v -> !v.isDescanso && passos.getOrNull(i)?.let { !it.nome.contains("aquec", ignoreCase = true) && !it.nome.contains("desaq", ignoreCase = true) } == true }
-            if (tiros.size >= 2) {
+            // Consistência dos tiros de esforço (exclui aquecimento e desaquecimento)
+            val tirosEsforco = indicesEsforco.mapNotNull { i -> voltas.getOrNull(i) }
+            if (tirosEsforco.size >= 2) {
                 appendLine()
-                val pacesTiros = tiros.map { it.paceSegKm }
+                val pacesTiros = tirosEsforco.map { it.paceSegKm }
                 val media = pacesTiros.average()
                 val desvio = kotlin.math.sqrt(pacesTiros.map { (it - media).let { d -> d * d } }.average())
                 val primeiro = pacesTiros.first()
                 val ultimo   = pacesTiros.last()
-                val deriva   = ultimo - primeiro  // positivo = afundou, negativo = acelerou
-                appendLine("CONSISTÊNCIA DOS TIROS (${tiros.size} esforços):")
+                val deriva   = ultimo - primeiro
+                appendLine("CONSISTÊNCIA DOS TIROS (${tirosEsforco.size} esforços — aquec/desaq excluídos):")
                 appendLine("  Pace médio: ${fmt(media)}/km  |  Desvio: ±${fmt(desvio)}/km  |  ${if (desvio > 30) "inconsistente" else "consistente"}")
                 appendLine("  Deriva: 1º tiro ${fmt(primeiro)}/km → último ${fmt(ultimo)}/km  |  ${if (deriva > 20) "⚠ afundou ${fmt(deriva)}" else if (deriva < -20) "↑ acelerou ${fmt(-deriva)}" else "estável ✓"}")
+                // Cadência por tiro — sinal de fadiga mecânica se cair no final
+                val cadTiros = tirosEsforco.filter { it.cadenciaMedia > 0 }
+                if (cadTiros.size >= 2) {
+                    val cadInicio = cadTiros.first().cadenciaMedia
+                    val cadFim = cadTiros.last().cadenciaMedia
+                    val quedaCad = cadInicio - cadFim
+                    appendLine("  Cadência: 1º tiro ${cadInicio} spm → último ${cadFim} spm  |  ${if (quedaCad > 5) "⚠ queda de ${quedaCad} spm — possível fadiga mecânica" else "estável ✓"}")
+                }
             }
 
-            // Qualidade das recuperações
-            val recuperacoes = voltas.filterIndexed { i, v -> v.isDescanso || (passos.getOrNull(i)?.nome?.contains("Z1", ignoreCase = true) == true && i > 0) }
+            // Qualidade das recuperações (passos isDescanso entre os tiros)
+            val indicesRecuperacao = passos.indices.filter { i ->
+                i != 0 && i != passos.lastIndex && passos[i].isDescanso
+            }
+            val recuperacoes = indicesRecuperacao.mapNotNull { i -> voltas.getOrNull(i) }
             if (recuperacoes.isNotEmpty() && c.zonasFronteira.isNotEmpty()) {
                 appendLine()
                 appendLine("QUALIDADE DAS RECUPERAÇÕES (${recuperacoes.size} blocos):")

@@ -1260,7 +1260,9 @@ class CorridaViewModel(
                             nome            = p.nome,
                             duracaoSegundos = p.duracao,
                             paceAlvoMin     = p.paceAlvoMin,
-                            paceAlvoMax     = p.paceAlvoMax
+                            paceAlvoMax     = p.paceAlvoMax,
+                            zona            = p.zona,
+                            isDescanso      = p.isDescanso
                         )
                     }
                     com.google.gson.Gson().toJson(resumos)

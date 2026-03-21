@@ -108,5 +108,7 @@ data class PassoResumo(
     val nome: String,
     val duracaoSegundos: Int,
     val paceAlvoMin: String,   // ex: "5:00"
-    val paceAlvoMax: String    // ex: "5:30"
+    val paceAlvoMax: String,   // ex: "5:30"
+    val zona: Int = 1,         // 1=Z1, 2=Z2 etc — identifica tipo de passo
+    val isDescanso: Boolean = false  // true = recuperação/desaquecimento
 )
