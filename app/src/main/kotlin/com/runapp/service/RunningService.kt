@@ -1876,60 +1876,34 @@ class RunningService : Service(), SensorEventListener {
             if (rota.size >= 2 && distancia > 0.5) {
                 val gradiente = calcularGradienteRegressao()
                 
-                // Usamos .let para garantir que 'pace' seja um Double não nulo e imutável
-                ultimoPaceEmaInterno?.let { pace ->
-                    if (pace in 60.0..1200.0) {
-                        val fator = fatorMinetti(gradiente)
-                        
-                        // Agora o compilador tem 100% de certeza que 'pace' e 'fator' são Double
-                        val gapPonto = (pace / fator).coerceIn(60.0, 1200.0)
+                // Pegamos uma cópia local e já garantimos um valor padrão caso seja nulo
+                val paceSeguro = ultimoPaceEmaInterno ?: 0.0
 
-                        // Acumular para o km atual (ponderado por distância)
-                        gapSomadoPonderadoKm       += gapPonto  * distancia
-                        gradienteSomadoPonderadoKm += gradiente * distancia
-                        gapDistanciaAcumKm         += distancia
+                if (paceSeguro in 60.0..1200.0) {
+                    val fator = fatorMinetti(gradiente)
+                    
+                    // Calculamos o gap garantindo que o resultado da divisão seja Double (não nulo)
+                    val resultadoDivisao: Double = paceSeguro / fator
+                    val gapPonto = resultadoDivisao.coerceIn(60.0, 1200.0)
 
-                        // EMA para display em tempo real (α=0.2)
-                        val alphaGAP = 0.2
-                        val anteriorGap = gapEmaInterno ?: gapPonto
-                        val novoGapEma = (alphaGAP * gapPonto) + (1.0 - alphaGAP) * anteriorGap
-                        
-                        gapEmaInterno = novoGapEma
-                        _gapAtualSegKm.value = novoGapEma
+                    // Acumuladores km atual
+                    gapSomadoPonderadoKm       += gapPonto  * distancia
+                    gradienteSomadoPonderadoKm += gradiente * distancia
+                    gapDistanciaAcumKm         += distancia
 
-                        // EMA do gradiente
-                        gradienteEmaInterno = (ALPHA_GRADIENTE_EMA * gradiente) +
-                                             (1.0 - ALPHA_GRADIENTE_EMA) * gradienteEmaInterno
-                        
-                        val gradienteEma = gradienteEmaInterno
-                        _gradienteAtual.value = gradienteEma
+                    // EMA para display
+                    val alphaGAP = 0.2
+                    val anteriorGap = gapEmaInterno ?: gapPonto
+                    val novoGapEma = (alphaGAP * gapPonto) + (1.0 - alphaGAP) * anteriorGap
+                    
+                    gapEmaInterno = novoGapEma
+                    _gapAtualSegKm.value = novoGapEma
 
-                        // Detecção de Subida/Descida
-                        if (gradienteEma >= LIMIAR_GRADE_MONTANHA) {
-                            distSubidaAcum += distancia
-                            distDescidaAcum = 0.0
-                            if (!emModoMontanha && distSubidaAcum >= DISTANCIA_CONFIRMACAO) {
-                                emModoMontanha = true
-                                _modoMontanha.value = true
-                            }
-                        } else if (gradienteEma < LIMIAR_SAIDA_MONTANHA) {
-                            distSubidaAcum = 0.0
-                            if (emModoMontanha) {
-                                emModoMontanha = false
-                                _modoMontanha.value = false
-                            }
-                        }
-
-                        if (gradienteEma <= LIMIAR_DESCIDA_TECNICA) {
-                            distDescidaAcum += distancia
-                            if (distDescidaAcum >= DISTANCIA_CONFIRMACAO && !_descidaTecnica.value) {
-                                _descidaTecnica.value = true
-                            }
-                        } else if (gradienteEma > LIMIAR_SAIDA_DESCIDA) {
-                            distDescidaAcum = 0.0
-                            _descidaTecnica.value = false
-                        }
-                    }
+                    // EMA do gradiente
+                    gradienteEmaInterno = (ALPHA_GRADIENTE_EMA * gradiente) +
+                                         (1.0 - ALPHA_GRADIENTE_EMA) * gradienteEmaInterno
+                    
+                    _gradienteAtual.value = gradienteEmaInterno
                 }
             }
 
