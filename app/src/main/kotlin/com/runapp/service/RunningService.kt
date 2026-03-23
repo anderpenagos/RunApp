@@ -1875,11 +1875,12 @@ class RunningService : Service(), SensorEventListener {
             //      pela melhor reta, não pela diferença entre dois pontos ruidosos
             if (rota.size >= 2 && distancia > 0.5) {
                 val gradiente = calcularGradienteRegressao()
-                val paceInstantaneo = ultimoPaceEmaInterno ?: 0.0
+                //val paceInstantaneo = ultimoPaceEmaInterno ?: 0.0
+                val paceBase = ultimoPaceEmaInterno 
 
-                if (paceInstantaneo in 60.0..1200.0) {
+                if (paceBase != null && paceBase in 60.0..1200.0) {
                     val fator = fatorMinetti(gradiente)
-                    val gapPonto = (paceInstantaneo / fator).coerceIn(60.0, 1200.0)
+                    val gapPonto = (paceBase / fator).coerceIn(60.0, 1200.0)
 
                     // Acumular para o km atual (ponderado por distância)
                     gapSomadoPonderadoKm       += gapPonto  * distancia
