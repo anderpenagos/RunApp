@@ -533,29 +533,55 @@ class RunningService : Service(), SensorEventListener {
     private var gapTimeoutNotificado = false     // evita spam de notificação
     private var primeiropontoAposGap = false
 
-    // ── Filtro de Altitude: Mediana(5) + Regressão Linear (janela 40m) ─────────
-    // Pipeline: altitude_bruta → Mediana(5 pts) → buffer_regressão(~40m) → gradiente
+    // ── Filtro de Altitude: Moda(5pts/5s) + Regressão Linear (janela 60m) ──────
     //
-    // Mediana: elimina spikes pontuais do GPS vertical.
+    // Pipeline: altitude_bruta → Moda(5 pontos, ~5s) → buffer_regressão(~60m) → gradiente
     //
-    // Regressão linear com janela dinâmica de 40m:
-    //   - Buffer acumula pontos até cobrir 40m de distância horizontal
-    //   - Remove pontos do início quando a base excede 40m
-    //   - Quantidade de pontos varia com o ritmo (~13 pts a 3m/s, ~27 pts a 1.5m/s)
-    //   - Base física constante de 40m → gradiente espúrio máximo ~7.5% (ruído ±3m / 40m)
+    // MODA com fallback para mediana:
+    //   - Acumula 5 pontos GPS (1/s → 1 valor a cada ~5s)
+    //   - Arredonda a 1m para encontrar o bin dominante
+    //   - Bin vencedor (≥3 pontos): usa mediana dos originais desse bin → precisão sub-metro
+    //   - Empate ou sem moda: usa mediana de todos os 5 originais
+    //   - Robusto a spikes isolados (1-2 pontos ruins) e preserva precisão
+    //
+    // Regressão linear com janela dinâmica de 60m:
+    //   - Base física constante → gradiente espúrio máximo ~5% (ruído ±3m / 60m)
     //   - Eixo X = distância acumulada → slope = gradiente m/m (adimensional)
-    private val JANELA_REGRESSAO_M = 40.0   // base horizontal mínima da regressão
-    private val bufferAltBruta  = ArrayDeque<Double>(5)
+    private val JANELA_REGRESSAO_M   = 60.0   // base horizontal da regressão
+    private val JANELA_MODA_PONTOS   = 5      // pontos acumulados antes de calcular moda
+    private val bufferAltBruta       = ArrayDeque<Double>(5)
     private data class AltDistPonto(val altMediana: Double, val distAcum: Double)
-    private val bufferAltDist   = ArrayDeque<AltDistPonto>(30)  // capacidade para ritmos lentos
+    private val bufferAltDist        = ArrayDeque<AltDistPonto>(50)  // capacidade para ritmos lentos
 
-    /** Alimenta o pipeline de altitude e retorna a altitude mediada. */
-    private fun processarAltitude(rawAlt: Double): Double {
+    /**
+     * Acumula 5 pontos GPS e retorna a altitude filtrada pela moda.
+     * Retorna null enquanto o buffer não tiver 5 pontos — alimenta a regressão
+     * só quando há um valor confiável.
+     *
+     * Lógica:
+     *   1. Arredonda cada ponto a 1m para agrupar em bins
+     *   2. Bin com ≥3 pontos → mediana dos originais desse bin
+     *   3. Empate ou todos diferentes → mediana de todos os 5 originais
+     */
+    private fun processarAltitude(rawAlt: Double): Double? {
         bufferAltBruta.addLast(rawAlt)
-        if (bufferAltBruta.size > 5) bufferAltBruta.removeFirst()
+        if (bufferAltBruta.size < JANELA_MODA_PONTOS) return null  // aguarda 5 pontos
+        if (bufferAltBruta.size > JANELA_MODA_PONTOS) bufferAltBruta.removeFirst()
 
-        val arr = bufferAltBruta.toDoubleArray().also { it.sort() }
-        return arr[arr.size / 2]  // mediana — imune a outliers
+        val originais = bufferAltBruta.toList()
+        // Agrupa por bin de 1m
+        val bins = originais.groupBy { kotlin.math.round(it).toInt() }
+        val binVencedor = bins.maxByOrNull { it.value.size }
+
+        return if (binVencedor != null && binVencedor.value.size >= 3) {
+            // Moda clara — mediana dos originais do bin vencedor
+            val sorted = binVencedor.value.sorted()
+            sorted[sorted.size / 2]
+        } else {
+            // Sem moda — mediana de todos os 5 originais
+            val sorted = originais.sorted()
+            sorted[sorted.size / 2]
+        }
     }
 
     /**
@@ -631,7 +657,7 @@ class RunningService : Service(), SensorEventListener {
         bufferAltBruta.clear()
         bufferAltDist.clear()
         baroAltBuffer.clear()
-        Log.d(TAG, "🧹 Pipeline de elevação resetada (offset + buffers Mediana/Regressão/Baro)")
+        Log.d(TAG, "Pipeline de elevação resetada (offset + buffers Moda/Regressão/Baro)")
     }
 
     /**
@@ -731,7 +757,7 @@ class RunningService : Service(), SensorEventListener {
     // A EMA (~20s de memória) suaviza o gradiente instantâneo — ruído residual não acumula distância.
     private var distSubidaAcum  = 0.0
     private var distDescidaAcum = 0.0
-    private val DISTANCIA_CONFIRMACAO  = 30.0   // metros para confirmar subida ou descida
+    private val DISTANCIA_CONFIRMACAO  = 50.0   // metros para confirmar subida ou descida
     private val LIMIAR_GRADE_MONTANHA  = 0.08   // +8% → subida íngreme
     private val LIMIAR_SAIDA_MONTANHA  = 0.04   // +4% → histerese de saída
     private val LIMIAR_DESCIDA_TECNICA = -0.08  // -8% → descida técnica
@@ -1678,22 +1704,23 @@ class RunningService : Service(), SensorEventListener {
         val deltaMs = if (rota.isNotEmpty()) (agora - rota.last().tempo).coerceAtLeast(100L) else 1000L
         val (latK, lngK) = aplicarKalman(location.latitude, location.longitude, location.accuracy, deltaMs)
 
-        // ── Pipeline de Altitude: Fusão GPS/Baro → Mediana(5) → Regressão(10) ─
+        // ── Pipeline de Altitude: Fusão GPS/Baro → Moda(5pts/5s) → Regressão(60m) ──
         // 1. obterAltitudeFusion: barômetro fornece variações de cm; GPS ancora a altitude
         //    absoluta. Fallback transparente se barômetro indisponível.
-        // 2. processarAltitude (Mediana 5pts): elimina spikes residuais do baro (rafas de
-        //    vento no sensor) e glitches pontuais do GPS vertical.
-        // 3. bufferAltDist → calcularGradienteRegressao(): gradiente instantâneo sem lag.
+        // 2. processarAltitude (Moda 5pts/5s): elimina spikes e ruído — valor a cada ~5s.
+        // 3. bufferAltDist → calcularGradienteRegressao(): gradiente sobre janela de 60m.
         val altitudeFundida = obterAltitudeFusion(location.altitude, location.accuracy)
-        val altMediana = processarAltitude(altitudeFundida)
-        // Alimenta buffer de (altMediana, distAcum) para regressão linear.
-        // distAcum ANTES de somar o novo segmento → eixo X consistente com "onde estava".
-        bufferAltDist.addLast(AltDistPonto(altMediana, _distanciaMetros.value))
-        // Remove pontos do início enquanto a base exceder 40m — janela deslizante por distância
-        while (bufferAltDist.size > 3 &&
-               bufferAltDist.last().distAcum - bufferAltDist.first().distAcum > JANELA_REGRESSAO_M) {
-            bufferAltDist.removeFirst()
+        val altModa = processarAltitude(altitudeFundida)
+        // Alimenta regressão só quando moda está disponível (~a cada 5s)
+        if (altModa != null) {
+            bufferAltDist.addLast(AltDistPonto(altModa, _distanciaMetros.value))
+            // Remove pontos do início enquanto a base exceder 60m — janela deslizante por distância
+            while (bufferAltDist.size > 3 &&
+                   bufferAltDist.last().distAcum - bufferAltDist.first().distAcum > JANELA_REGRESSAO_M) {
+                bufferAltDist.removeFirst()
+            }
         }
+        val altMediana = altModa ?: (bufferAltDist.lastOrNull()?.altMediana ?: altitudeFundida)
 
         // ── Atualiza referência GPS para retomada híbrida ─────────────────────
         ultimaLocalizacaoParaAutoPause = location
@@ -1701,7 +1728,7 @@ class RunningService : Service(), SensorEventListener {
         val pontoNovo = LatLngPonto(
             lat = latK,
             lng = lngK,
-            alt = altMediana,       // altitude filtrada (mediana) — melhor para GPX e elevação
+            alt = altMediana,       // altitude filtrada (moda/mediana) — melhor para GPX e elevação
             tempo = agora,
             accuracy = location.accuracy,
             paceNoPonto = ultimoPaceValidoGrafico,
