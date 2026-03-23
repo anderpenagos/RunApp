@@ -1876,61 +1876,59 @@ class RunningService : Service(), SensorEventListener {
             if (rota.size >= 2 && distancia > 0.5) {
                 val gradiente = calcularGradienteRegressao()
                 
-                // Criamos uma referência local imutável (val) para garantir segurança de nulidade
-                val paceParaCalculo = ultimoPaceEmaInterno
+                // Usamos .let para garantir que 'pace' seja um Double não nulo e imutável
+                ultimoPaceEmaInterno?.let { pace ->
+                    if (pace in 60.0..1200.0) {
+                        val fator = fatorMinetti(gradiente)
+                        
+                        // Agora o compilador tem 100% de certeza que 'pace' e 'fator' são Double
+                        val gapPonto = (pace / fator).coerceIn(60.0, 1200.0)
 
-                // Se não for nulo e estiver na faixa válida, processamos
-                if (paceParaCalculo != null && paceParaCalculo in 60.0..1200.0) {
-                    val fator = fatorMinetti(gradiente)
-                    
-                    // Agora o compilador tem certeza que paceParaCalculo é Double
-                    val gapPonto = (paceParaCalculo / fator).coerceIn(60.0, 1200.0)
+                        // Acumular para o km atual (ponderado por distância)
+                        gapSomadoPonderadoKm       += gapPonto  * distancia
+                        gradienteSomadoPonderadoKm += gradiente * distancia
+                        gapDistanciaAcumKm         += distancia
 
-                    // Acumuladores km atual
-                    gapSomadoPonderadoKm       += gapPonto  * distancia
-                    gradienteSomadoPonderadoKm += gradiente * distancia
-                    gapDistanciaAcumKm         += distancia
+                        // EMA para display em tempo real (α=0.2)
+                        val alphaGAP = 0.2
+                        val anteriorGap = gapEmaInterno ?: gapPonto
+                        val novoGapEma = (alphaGAP * gapPonto) + (1.0 - alphaGAP) * anteriorGap
+                        
+                        gapEmaInterno = novoGapEma
+                        _gapAtualSegKm.value = novoGapEma
 
-                    // EMA para display
-                    val alphaGAP = 0.2
-                    val anteriorGap = gapEmaInterno ?: gapPonto
-                    val novoGapEma = (alphaGAP * gapPonto) + (1.0 - alphaGAP) * anteriorGap
-                    
-                    gapEmaInterno = novoGapEma
-                    _gapAtualSegKm.value = novoGapEma
+                        // EMA do gradiente
+                        gradienteEmaInterno = (ALPHA_GRADIENTE_EMA * gradiente) +
+                                             (1.0 - ALPHA_GRADIENTE_EMA) * gradienteEmaInterno
+                        
+                        val gradienteEma = gradienteEmaInterno
+                        _gradienteAtual.value = gradienteEma
 
-                    // EMA do gradiente
-                    gradienteEmaInterno = (ALPHA_GRADIENTE_EMA * gradiente) +
-                                         (1.0 - ALPHA_GRADIENTE_EMA) * gradienteEmaInterno
-                    
-                    val gradienteEma = gradienteEmaInterno
-                    _gradienteAtual.value = gradienteEma
-
-                    // Lógica de Subida/Descida (Modo Montanha)
-                    if (gradienteEma >= LIMIAR_GRADE_MONTANHA) {
-                        distSubidaAcum += distancia
-                        distDescidaAcum = 0.0
-                        if (!emModoMontanha && distSubidaAcum >= DISTANCIA_CONFIRMACAO) {
-                            emModoMontanha = true
-                            _modoMontanha.value = true
+                        // Detecção de Subida/Descida
+                        if (gradienteEma >= LIMIAR_GRADE_MONTANHA) {
+                            distSubidaAcum += distancia
+                            distDescidaAcum = 0.0
+                            if (!emModoMontanha && distSubidaAcum >= DISTANCIA_CONFIRMACAO) {
+                                emModoMontanha = true
+                                _modoMontanha.value = true
+                            }
+                        } else if (gradienteEma < LIMIAR_SAIDA_MONTANHA) {
+                            distSubidaAcum = 0.0
+                            if (emModoMontanha) {
+                                emModoMontanha = false
+                                _modoMontanha.value = false
+                            }
                         }
-                    } else if (gradienteEma < LIMIAR_SAIDA_MONTANHA) {
-                        distSubidaAcum = 0.0
-                        if (emModoMontanha) {
-                            emModoMontanha = false
-                            _modoMontanha.value = false
+
+                        if (gradienteEma <= LIMIAR_DESCIDA_TECNICA) {
+                            distDescidaAcum += distancia
+                            if (distDescidaAcum >= DISTANCIA_CONFIRMACAO && !_descidaTecnica.value) {
+                                _descidaTecnica.value = true
+                            }
+                        } else if (gradienteEma > LIMIAR_SAIDA_DESCIDA) {
+                            distDescidaAcum = 0.0
+                            _descidaTecnica.value = false
                         }
-                    }
-                    
-                    // Descida técnica
-                    if (gradienteEma <= LIMIAR_DESCIDA_TECNICA) {
-                        distDescidaAcum += distancia
-                        if (distDescidaAcum >= DISTANCIA_CONFIRMACAO && !_descidaTecnica.value) {
-                            _descidaTecnica.value = true
-                        }
-                    } else if (gradienteEma > LIMIAR_SAIDA_DESCIDA) {
-                        distDescidaAcum = 0.0
-                        _descidaTecnica.value = false
                     }
                 }
             }
