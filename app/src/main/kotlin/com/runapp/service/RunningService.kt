@@ -939,7 +939,7 @@ class RunningService : Service(), SensorEventListener {
             ultimaLocalizacaoParaAutoPause = null
             // Reaquece buffers de regressão com pontos históricos (sem calcular gradiente)
             pontosParaBuffer.takeLast(10).forEach { p ->
-                val medianed = processarAltitude(p.alt)
+                val medianed = processarAltitude(p.alt) ?: p.alt
                 bufferAltDist.addLast(AltDistPonto(medianed, _distanciaMetros.value))
             }
             if (pontosRecuperados.isNotEmpty()) {
@@ -1875,35 +1875,70 @@ class RunningService : Service(), SensorEventListener {
             //      pela melhor reta, não pela diferença entre dois pontos ruidosos
             if (rota.size >= 2 && distancia > 0.5) {
                 val gradiente = calcularGradienteRegressao()
-                
-                // Pegamos uma cópia local e já garantimos um valor padrão caso seja nulo
-                val paceSeguro = ultimoPaceEmaInterno ?: 0.0
+                val paceInstantaneo = ultimoPaceEmaInterno ?: 0.0
 
-                if (paceSeguro in 60.0..1200.0) {
+                if (paceInstantaneo in 60.0..1200.0) {
                     val fator = fatorMinetti(gradiente)
-                    
-                    // Calculamos o gap garantindo que o resultado da divisão seja Double (não nulo)
-                    val resultadoDivisao: Double = paceSeguro / fator
-                    val gapPonto = resultadoDivisao.coerceIn(60.0, 1200.0)
+                    val gapPonto = (paceInstantaneo / fator).coerceIn(60.0, 1200.0)
 
-                    // Acumuladores km atual
+                    // Acumular para o km atual (ponderado por distância)
                     gapSomadoPonderadoKm       += gapPonto  * distancia
                     gradienteSomadoPonderadoKm += gradiente * distancia
                     gapDistanciaAcumKm         += distancia
 
-                    // EMA para display
-                    val alphaGAP = 0.2
-                    val anteriorGap = gapEmaInterno ?: gapPonto
-                    val novoGapEma = (alphaGAP * gapPonto) + (1.0 - alphaGAP) * anteriorGap
-                    
+                    // EMA para display em tempo real (α=0.2 → suavização de ~5 pontos)
+                    val alpha = 0.2
+                    val novoGapEma = gapEmaInterno?.let { prev ->
+                        alpha * gapPonto + (1.0 - alpha) * prev
+                    } ?: gapPonto
                     gapEmaInterno = novoGapEma
                     _gapAtualSegKm.value = novoGapEma
 
-                    // EMA do gradiente
-                    gradienteEmaInterno = (ALPHA_GRADIENTE_EMA * gradiente) +
+                    // EMA do gradiente — suaviza o valor instantâneo
+                    gradienteEmaInterno = ALPHA_GRADIENTE_EMA * gradiente +
                                          (1.0 - ALPHA_GRADIENTE_EMA) * gradienteEmaInterno
-                    
-                    _gradienteAtual.value = gradienteEmaInterno
+                    val gradienteEma = gradienteEmaInterno
+
+                    // Expõe gradienteEma para o ViewModel
+                    _gradienteAtual.value = gradienteEma
+
+                    // ── Detecção unificada por distância acumulada ────────────
+                    // Subida: gradienteEma > +8% por 30m → modo montanha
+                    when {
+                        gradienteEma >= LIMIAR_GRADE_MONTANHA -> {
+                            distSubidaAcum += distancia
+                            distDescidaAcum = 0.0
+                            if (!emModoMontanha && distSubidaAcum >= DISTANCIA_CONFIRMACAO) {
+                                emModoMontanha = true
+                                _modoMontanha.value = true
+                                Log.d(TAG, "Modo Montanha ATIVADO: subida > ${(LIMIAR_GRADE_MONTANHA * 100).toInt()}% por ${distSubidaAcum.toInt()}m")
+                            }
+                        }
+                        gradienteEma < LIMIAR_SAIDA_MONTANHA -> {
+                            distSubidaAcum = 0.0
+                            if (emModoMontanha) {
+                                emModoMontanha = false
+                                _modoMontanha.value = false
+                                Log.d(TAG, "Modo Montanha DESATIVADO (grade=${String.format("%.1f", gradienteEma * 100)}%)")
+                            }
+                        }
+                    }
+
+                    // Descida técnica: gradienteEma < -8% por 30m
+                    when {
+                        gradienteEma <= LIMIAR_DESCIDA_TECNICA -> {
+                            distDescidaAcum += distancia
+                            distSubidaAcum = 0.0
+                            if (distDescidaAcum >= DISTANCIA_CONFIRMACAO && !_descidaTecnica.value) {
+                                _descidaTecnica.value = true
+                                Log.d(TAG, "Descida Tecnica ATIVADA: ${String.format("%.1f", gradienteEma * 100)}% por ${distDescidaAcum.toInt()}m")
+                            }
+                        }
+                        gradienteEma > LIMIAR_SAIDA_DESCIDA -> {
+                            distDescidaAcum = 0.0
+                            _descidaTecnica.value = false
+                        }
+                    }
                 }
             }
 
