@@ -444,6 +444,7 @@ class RunningService : Service(), SensorEventListener {
                     // vendo o último pace válido em vez de "--:--".
                     ultimasLocalizacoes.clear()
                     bufferPace30s.clear()
+                    bufferPaceModa.clear()
                     bufferStride5s.clear()
                     Log.d(TAG, "Tela ligada apos ${tempoTelaApagadaMs / 1000}s - buffers limpos, EMA preservada para evitar spike de pace")
                 }
@@ -714,6 +715,16 @@ class RunningService : Service(), SensorEventListener {
     // ── Buffer de pace dos últimos 30s ────────────────────────────────────────
     private data class PaceSnapshot(val timestampMs: Long, val paceSegKm: Double)
     private val bufferPace30s = ArrayDeque<PaceSnapshot>(35)
+
+    // ── Moda de Pace — filtro de spike pós-Stride-Length ─────────────────────
+    // 5 amostras (ímpar): empate triplo matematicamente impossível — pior caso 3-2.
+    // Bin 10s: agrupa paces próximos para maximizar clustering sem perder precisão
+    //          (o output é sempre o valor bruto original, nunca o valor arredondado).
+    // Dispersão total (1-1-1-1-1): bypass direto para a EMA — comportamento atual.
+    private data class PaceModaSnapshot(val paceBruto: Double, val timestampMs: Long)
+    private val bufferPaceModa  = ArrayDeque<PaceModaSnapshot>(5)
+    private val JANELA_MODA_PACE = 5      // ímpar — elimina empates simétricos
+    private val BIN_MODA_SEG     = 10.0   // bin de 10s → output é o valor original
     private var stepLengthNoGap = 0.0
 
     // ── Auto-Learner de step length ───────────────────────────────────────────
@@ -1091,6 +1102,7 @@ class RunningService : Service(), SensorEventListener {
         gapTimeoutNotificado = false
         primeiropontoAposGap = false
         bufferPace30s.clear()
+        bufferPaceModa.clear()
         stepLengthNoGap = 0.0
         stepLengthAprendido = 0.0
         passosDesdeUltimoGpsBom = 0
@@ -1611,6 +1623,7 @@ class RunningService : Service(), SensorEventListener {
                 // sem isso o PRÓXIMO ponto seria comparado com a posição
                 // pré-salto → novo spike em cascata (efeito dominó evitado).
                 bufferPace30s.clear()
+                bufferPaceModa.clear()
                 ultimasLocalizacoes.clear()
                 ultimaLocalizacaoSignificativa = location
                 _paceAtual.value = "--:--"
@@ -2073,6 +2086,51 @@ class RunningService : Service(), SensorEventListener {
     // Cálculos de Pace
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    /**
+     * Filtro de Moda para pace bruto — elimina spikes que passaram pelo Stride Length guard.
+     *
+     * Pipeline:
+     *   1. Acumula até 5 amostras de paceBruto numa janela deslizante (mais antigo sai).
+     *   2. Com < 5 amostras: bypass direto → EMA cuida do resto (comportamento atual).
+     *   3. Com 5 amostras: arredonda cada valor ao bin de 10s mais próximo para votação.
+     *   4. Dispersão total (todos os bins com 1 voto): bypass → nenhuma informação confiável.
+     *   5. Vencedor único ou empate: retorna o valor bruto ORIGINAL mais recente
+     *      entre todas as amostras dos bins vencedores.
+     *      — "mais recente" captura direção da mudança (aceleração/desaceleração).
+     *      — bin 10s com 5 amostras ímpares: empate triplo é matematicamente impossível.
+     */
+    private fun aplicarModaPace(paceBruto: Double): Double {
+        bufferPaceModa.addLast(PaceModaSnapshot(paceBruto, System.currentTimeMillis()))
+        if (bufferPaceModa.size > JANELA_MODA_PACE) bufferPaceModa.removeFirst()
+
+        // Amostra insuficiente → comportamento atual (bypass)
+        if (bufferPaceModa.size < JANELA_MODA_PACE) return paceBruto
+
+        val amostras = bufferPaceModa.toList()
+
+        // Agrupa por bin de 10s — chave = índice inteiro do bin
+        val bins = amostras.groupBy { kotlin.math.round(it.paceBruto / BIN_MODA_SEG).toInt() }
+
+        // Dispersão total: nenhum bin tem vantagem → bypass
+        if (bins.values.all { it.size == 1 }) {
+            Log.d(TAG, "🎲 Moda pace: dispersão total → bypass (bruto=${formatarPace(paceBruto)})")
+            return paceBruto
+        }
+
+        val maxVotos = bins.values.maxOf { it.size }
+        val vencedores = bins.filter { it.value.size == maxVotos }
+
+        // Retorna o valor bruto original mais recente entre as amostras dos bins vencedores
+        val resultado = vencedores.values
+            .flatten()
+            .maxByOrNull { it.timestampMs }!!
+            .paceBruto
+
+        Log.d(TAG, "🎲 Moda pace: bins=${vencedores.keys} votos=$maxVotos → " +
+            "${formatarPace(resultado)} (bruto=${formatarPace(paceBruto)})")
+        return resultado
+    }
+
     private fun calcularPaceSegKm(paceFormatado: String): Double {
         if (paceFormatado == "--:--") return 0.0
         return runCatching {
@@ -2186,6 +2244,11 @@ class RunningService : Service(), SensorEventListener {
             }
         }
 
+        // ── Moda de Pace (5 amostras, bin 10s) ───────────────────────────────────
+        // Filtra spikes que passaram pelo Stride Length guard.
+        // < 5 amostras (início/recovery): paceBruto passa direto, EMA cuida do resto.
+        val paceFiltrado = aplicarModaPace(paceBruto)
+
         // Alpha reduzido nos primeiros 20s após SCREEN_ON/início — GPS ainda estabilizando.
         // alpha=0.05 (tau≈20s): protege contra spikes mas responde em ~20s a um pace real.
         val alpha = when {
@@ -2194,8 +2257,8 @@ class RunningService : Service(), SensorEventListener {
             else                      -> 0.25
         }
         val paceEma = ultimoPaceEmaInterno?.let { anterior ->
-            (paceBruto * alpha) + (anterior * (1.0 - alpha))
-        } ?: paceBruto
+            (paceFiltrado * alpha) + (anterior * (1.0 - alpha))
+        } ?: paceFiltrado
 
         // Log para diagnóstico de spike de pace pós-desbloqueio.
 
