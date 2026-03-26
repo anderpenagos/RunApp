@@ -444,7 +444,9 @@ class RunningService : Service(), SensorEventListener {
                     // vendo o último pace válido em vez de "--:--".
                     ultimasLocalizacoes.clear()
                     bufferPace30s.clear()
-                    bufferPaceModa.clear()
+                    bufferDeltasPace.clear()
+                    urnaVotosPace.clear()
+                    historicoCadenciaGatilho.clear()
                     bufferStride5s.clear()
                     Log.d(TAG, "Tela ligada apos ${tempoTelaApagadaMs / 1000}s - buffers limpos, EMA preservada para evitar spike de pace")
                 }
@@ -716,15 +718,36 @@ class RunningService : Service(), SensorEventListener {
     private data class PaceSnapshot(val timestampMs: Long, val paceSegKm: Double)
     private val bufferPace30s = ArrayDeque<PaceSnapshot>(35)
 
-    // ── Moda de Pace — filtro de spike pós-Stride-Length ─────────────────────
-    // 5 amostras (ímpar): empate triplo matematicamente impossível — pior caso 3-2.
-    // Bin 10s: agrupa paces próximos para maximizar clustering sem perder precisão
-    //          (o output é sempre o valor bruto original, nunca o valor arredondado).
-    // Dispersão total (1-1-1-1-1): bypass direto para a EMA — comportamento atual.
-    private data class PaceModaSnapshot(val paceBruto: Double, val timestampMs: Long)
-    private val bufferPaceModa  = ArrayDeque<PaceModaSnapshot>(5)
-    private val JANELA_MODA_PACE = 5      // ímpar — elimina empates simétricos
-    private val BIN_MODA_SEG     = 10.0   // bin de 10s → output é o valor original
+    // ── Moda de Pace v2 ───────────────────────────────────────────────────────
+    // Pipeline: delta GPS → micro-janela 3s sobreposta (1Hz) → urna 21 votos →
+    //           Moda bin 30s → valor mais recente do bin vencedor → EMA
+    //
+    // Micro-janela 3s sobrepostas: a cada segundo, soma os 3 deltas GPS mais
+    // recentes para gerar 1 voto. Deltas sobrepostos são aceitáveis — o benefício
+    // de estabilizar o denominador (distância) supera o custo estatístico.
+    //
+    // Urna 21 votos (ímpar): pior empate possível = 11-10, resolve com mais recente.
+    // Bin 30s: agrupa ruído GPS sem mascarar mudança real de ritmo.
+    //          Output = valor bruto original mais recente do bin vencedor.
+    // Dispersão total: bypass para EMA com paceBruto da janela 22s (fallback).
+    //
+    // Gatilho de cadência: degrau > 25 spm (2s recente vs 3s anterior) →
+    //   considera apenas últimos 7 votos → lag de ~4s vs ~11s normal.
+    //   Isso permite capturar tiros curtos (~30s) sem sacrificar robustez
+    //   contra ruído GPS em ritmo estável.
+    private data class DeltaPaceGps(val distM: Double, val deltaMs: Long)
+    private val bufferDeltasPace     = ArrayDeque<DeltaPaceGps>(5)
+
+    private data class VotoPace(val paceSegKm: Double, val timestampMs: Long)
+    private val urnaVotosPace        = ArrayDeque<VotoPace>(23)
+
+    private val URNA_VOTOS_NORMAL    = 21     // janela normal (21s)
+    private val URNA_VOTOS_GATILHO   = 7      // janela curta ao detectar degrau de cadência
+    private val BIN_MODA_SEG         = 30.0   // bin 30s para votação
+    private val GATILHO_CADENCIA_SPM = 25     // degrau mínimo para ativar janela curta
+
+    // Histórico de cadência para detectar degrau (últimos 7 ticks de 1s)
+    private val historicoCadenciaGatilho = ArrayDeque<Int>(10)
     private var stepLengthNoGap = 0.0
 
     // ── Auto-Learner de step length ───────────────────────────────────────────
@@ -1102,7 +1125,9 @@ class RunningService : Service(), SensorEventListener {
         gapTimeoutNotificado = false
         primeiropontoAposGap = false
         bufferPace30s.clear()
-        bufferPaceModa.clear()
+        bufferDeltasPace.clear()
+        urnaVotosPace.clear()
+        historicoCadenciaGatilho.clear()
         stepLengthNoGap = 0.0
         stepLengthAprendido = 0.0
         passosDesdeUltimoGpsBom = 0
@@ -1623,7 +1648,9 @@ class RunningService : Service(), SensorEventListener {
                 // sem isso o PRÓXIMO ponto seria comparado com a posição
                 // pré-salto → novo spike em cascata (efeito dominó evitado).
                 bufferPace30s.clear()
-                bufferPaceModa.clear()
+                bufferDeltasPace.clear()
+                urnaVotosPace.clear()
+                historicoCadenciaGatilho.clear()
                 ultimasLocalizacoes.clear()
                 ultimaLocalizacaoSignificativa = location
                 _paceAtual.value = "--:--"
@@ -2027,7 +2054,7 @@ class RunningService : Service(), SensorEventListener {
             return
         }
 
-        calcularPaceAtual(location)
+        calcularPaceAtual(location, distancia, deltaMs)
         calcularPaceMedia()
 
         Log.d(TAG, "📍 Dist: ${String.format("%.1f", _distanciaMetros.value)}m | Pace: ${_paceAtual.value} | Janela: ${ultimasLocalizacoes.size}")
@@ -2087,47 +2114,70 @@ class RunningService : Service(), SensorEventListener {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     /**
-     * Filtro de Moda para pace bruto — elimina spikes que passaram pelo Stride Length guard.
+     * Moda de Pace v2 — micro-janela 3s sobreposta + urna 21 votos + bin 30s.
      *
-     * Pipeline:
-     *   1. Acumula até 5 amostras de paceBruto numa janela deslizante (mais antigo sai).
-     *   2. Com < 5 amostras: bypass direto → EMA cuida do resto (comportamento atual).
-     *   3. Com 5 amostras: arredonda cada valor ao bin de 10s mais próximo para votação.
-     *   4. Dispersão total (todos os bins com 1 voto): bypass → nenhuma informação confiável.
-     *   5. Vencedor único ou empate: retorna o valor bruto ORIGINAL mais recente
-     *      entre todas as amostras dos bins vencedores.
-     *      — "mais recente" captura direção da mudança (aceleração/desaceleração).
-     *      — bin 10s com 5 amostras ímpares: empate triplo é matematicamente impossível.
+     * Recebe o delta GPS do ponto atual (distM, deltaMs) e:
+     *   1. Armazena no bufferDeltasPace (máx 5 deltas).
+     *   2. Calcula o voto da micro-janela: soma dos últimos 3 deltas → pace de 3s.
+     *      - < 2 deltas disponíveis: retorna null (urna ainda vazia — fallback para EMA).
+     *   3. Insere o voto na urnaVotosPace (máx 23 — margem para o takeLast).
+     *   4. Detecta degrau de cadência (últimos 2s vs 3s anteriores):
+     *      - Degrau > 25 spm → usa apenas os últimos 7 votos (lag ~4s).
+     *      - Ritmo estável → usa os 21 votos completos (lag ~11s, robusto).
+     *   5. Votação com bin 30s sobre os votos ativos:
+     *      - Dispersão total: retorna null → fallback para EMA com paceBruto 22s.
+     *      - Vencedor: retorna o paceSegKm original mais recente do bin vencedor.
      */
-    private fun aplicarModaPace(paceBruto: Double): Double {
-        bufferPaceModa.addLast(PaceModaSnapshot(paceBruto, System.currentTimeMillis()))
-        if (bufferPaceModa.size > JANELA_MODA_PACE) bufferPaceModa.removeFirst()
+    private fun aplicarModaPaceV2(distM: Double, deltaMs: Long): Double? {
+        // 1. Acumula deltas brutos para a micro-janela
+        bufferDeltasPace.addLast(DeltaPaceGps(distM, deltaMs))
+        if (bufferDeltasPace.size > 5) bufferDeltasPace.removeFirst()
 
-        // Amostra insuficiente → comportamento atual (bypass)
-        if (bufferPaceModa.size < JANELA_MODA_PACE) return paceBruto
+        // 2. Calcula voto da micro-janela (últimos 3 deltas sobrepostos)
+        val deltas = bufferDeltasPace.toList().takeLast(3)
+        if (deltas.size < 2) return null
+        val distTotal  = deltas.sumOf { it.distM }
+        val tempoTotal = deltas.sumOf { it.deltaMs }
+        if (distTotal < 0.5 || tempoTotal < 500L) return null
+        val voto = (tempoTotal / 1000.0 / distTotal) * 1000.0
+        if (voto < 90.0 || voto > 1200.0) return null
 
-        val amostras = bufferPaceModa.toList()
+        // 3. Insere voto na urna
+        val agora = System.currentTimeMillis()
+        urnaVotosPace.addLast(VotoPace(voto, agora))
+        if (urnaVotosPace.size > URNA_VOTOS_NORMAL + 2) urnaVotosPace.removeFirst()
 
-        // Agrupa por bin de 10s — chave = índice inteiro do bin
-        val bins = amostras.groupBy { kotlin.math.round(it.paceBruto / BIN_MODA_SEG).toInt() }
+        // 4. Detecta degrau de cadência para ajustar tamanho da janela ativa
+        historicoCadenciaGatilho.addLast(_cadencia.value)
+        if (historicoCadenciaGatilho.size > 8) historicoCadenciaGatilho.removeFirst()
 
-        // Dispersão total: nenhum bin tem vantagem → bypass
+        val nVotosAtivos = if (historicoCadenciaGatilho.size >= 5) {
+            val recente = historicoCadenciaGatilho.toList().takeLast(2).average()
+            val base    = historicoCadenciaGatilho.toList().dropLast(2).takeLast(3).average()
+            if (kotlin.math.abs(recente - base) >= GATILHO_CADENCIA_SPM) {
+                Log.d(TAG, "⚡ Gatilho cadência: ${base.toInt()}→${recente.toInt()} spm → urna curta (${URNA_VOTOS_GATILHO}v)")
+                URNA_VOTOS_GATILHO
+            } else URNA_VOTOS_NORMAL
+        } else URNA_VOTOS_NORMAL
+
+        // 5. Votação com bin 30s
+        val votosAtivos = urnaVotosPace.toList().takeLast(nVotosAtivos)
+        if (votosAtivos.size < 3) return null  // urna ainda vazia demais
+
+        val bins = votosAtivos.groupBy { kotlin.math.round(it.paceSegKm / BIN_MODA_SEG).toInt() }
+
+        // Dispersão total → fallback
         if (bins.values.all { it.size == 1 }) {
-            Log.d(TAG, "🎲 Moda pace: dispersão total → bypass (bruto=${formatarPace(paceBruto)})")
-            return paceBruto
+            Log.d(TAG, "🗳️ Moda pace v2: dispersão total → fallback EMA")
+            return null
         }
 
-        val maxVotos = bins.values.maxOf { it.size }
+        val maxVotos  = bins.values.maxOf { it.size }
         val vencedores = bins.filter { it.value.size == maxVotos }
+        val resultado  = vencedores.values.flatten().maxByOrNull { it.timestampMs }!!.paceSegKm
 
-        // Retorna o valor bruto original mais recente entre as amostras dos bins vencedores
-        val resultado = vencedores.values
-            .flatten()
-            .maxByOrNull { it.timestampMs }!!
-            .paceBruto
-
-        Log.d(TAG, "🎲 Moda pace: bins=${vencedores.keys} votos=$maxVotos → " +
-            "${formatarPace(resultado)} (bruto=${formatarPace(paceBruto)})")
+        Log.d(TAG, "🗳️ Moda pace v2: urna=${nVotosAtivos}v bins=${vencedores.keys} " +
+            "votos=$maxVotos → ${formatarPace(resultado)}")
         return resultado
     }
 
@@ -2139,65 +2189,8 @@ class RunningService : Service(), SensorEventListener {
         }.getOrDefault(0.0)
     }
 
-    private fun calcularPaceAtual(location: android.location.Location) {
+    private fun calcularPaceAtual(location: android.location.Location, distanciaAtual: Double, deltaMsAtual: Long) {
         if (ultimasLocalizacoes.size < 2) {
-            _paceAtual.value = "--:--"
-            return
-        }
-
-        val accuracyAtual = ultimasLocalizacoes.last().accuracy
-        val janelaEfetiva = when {
-            accuracyAtual > 20f -> (janelaAtualSegundos * 1.5).toInt().coerceAtMost(33)
-            accuracyAtual < 5f  -> janelaAtualSegundos.coerceAtLeast(10)
-            else                -> janelaAtualSegundos
-        }
-        val corte = System.currentTimeMillis() - (janelaEfetiva * 1000L)
-        val pontosJanela = ultimasLocalizacoes.filter { it.time >= corte }
-        if (pontosJanela.size < 2) {
-            _paceAtual.value = "--:--"
-            return
-        }
-
-        var distanciaJanela = 0.0
-        for (i in 1 until pontosJanela.size) {
-            val dtMs = (pontosJanela[i].time - pontosJanela[i - 1].time).coerceAtLeast(100L)
-            val dtS  = dtMs / 1000.0
-            val d = calcularDistancia(
-                pontosJanela[i - 1].latitude, pontosJanela[i - 1].longitude,
-                pontosJanela[i].latitude,     pontosJanela[i].longitude
-            )
-            // FIX: descarta segmentos fora da faixa de velocidade humana (0.5m..6.5 m/s).
-            //
-            // Bug real: ao desbloquear a tela, o GPS chipset reativa e entrega 1-2 pontos
-            // com pequeno drift de posicao (~5-15m a frente). Esse drift nao chega a 11 m/s
-            // (filtro modoRecuperacaoGps), mas na janela curta apos limpar o buffer:
-            //   distJanela = drift(~10m) + real(~2.8m) = ~12.8m em 1s
-            //   paceBruto = (1/12.8)*1000 = 78 s/km = 1:18/km — ultraveloz, passa no filtro >90
-            // Isso vira semente da EMA e o pace exibido fica muito rapido por 15-20s,
-            // ficando registrado no grafico e no mapa do historico.
-            //
-            // Filtrando por velocidade do segmento (nao apenas d > 0.5):
-            //   - Descarta drift GPS (veloc > 6.5 m/s = ~2:34/km)
-            //   - Descarta GPS travado (d < 0.5m)
-            // Apenas o segmento outlier e descartado; o tempo total da janela permanece
-            // correto (last.time - first.time) pois esses pontos ainda estao na janela.
-            val velocidadeSegMs = d / dtS
-            if (velocidadeSegMs > 6.5 || d < 0.5) {
-                continue
-            }
-            distanciaJanela += d
-        }
-
-        val tempoJanelaSegundos = (pontosJanela.last().time - pontosJanela.first().time) / 1000.0
-
-        if (distanciaJanela < 1.0 || tempoJanelaSegundos < 1.0) {
-            _paceAtual.value = "--:--"
-            return
-        }
-
-        val paceBruto = (tempoJanelaSegundos / distanciaJanela) * 1000.0
-
-        if (paceBruto < 90.0 || paceBruto > 1200.0) {
             _paceAtual.value = "--:--"
             return
         }
@@ -2205,68 +2198,103 @@ class RunningService : Service(), SensorEventListener {
         val msDesdeScreenOn = if (screenOnTimestampMs > 0)
             SystemClock.elapsedRealtime() - screenOnTimestampMs else Long.MAX_VALUE
 
-        // ── Filtro de Stride Length — janela deslizante de 5s ──────────────────
+        // ── 1. MODA v2 (micro-janela 3s + urna 21 votos + bin 30s) ──────────────
+        // Primeira fonte de pace — mais estável que a janela 22s.
+        // Retorna null se urna vazia (início/recovery) ou dispersão total.
+        val paceModa = aplicarModaPaceV2(distanciaAtual, deltaMsAtual)
+        val modaTemConsenso = paceModa != null
+
+        // ── 2. JANELA 22s (fallback) ─────────────────────────────────────────────
+        // Só calculada quando a Moda não tem consenso.
+        val paceBruto22s: Double? = if (modaTemConsenso) null else run {
+            val accuracyAtual = ultimasLocalizacoes.last().accuracy
+            val janelaEfetiva = when {
+                accuracyAtual > 20f -> (janelaAtualSegundos * 1.5).toInt().coerceAtMost(33)
+                accuracyAtual < 5f  -> janelaAtualSegundos.coerceAtLeast(10)
+                else                -> janelaAtualSegundos
+            }
+            val corte = System.currentTimeMillis() - (janelaEfetiva * 1000L)
+            val pontosJanela = ultimasLocalizacoes.filter { it.time >= corte }
+            if (pontosJanela.size < 2) return@run null
+
+            var distanciaJanela = 0.0
+            for (i in 1 until pontosJanela.size) {
+                val dtMs = (pontosJanela[i].time - pontosJanela[i - 1].time).coerceAtLeast(100L)
+                val dtS  = dtMs / 1000.0
+                val d = calcularDistancia(
+                    pontosJanela[i - 1].latitude, pontosJanela[i - 1].longitude,
+                    pontosJanela[i].latitude,     pontosJanela[i].longitude
+                )
+                val velocidadeSegMs = d / dtS
+                if (velocidadeSegMs > 6.5 || d < 0.5) continue
+                distanciaJanela += d
+            }
+            val tempoJanelaSegundos = (pontosJanela.last().time - pontosJanela.first().time) / 1000.0
+            if (distanciaJanela < 1.0 || tempoJanelaSegundos < 1.0) return@run null
+            val pb = (tempoJanelaSegundos / distanciaJanela) * 1000.0
+            if (pb < 90.0 || pb > 1200.0) null else pb
+        }
+
+        // Pace candidato: Moda se tem consenso, janela 22s caso contrário
+        val paceCandidato = paceModa ?: paceBruto22s ?: run {
+            _paceAtual.value = "--:--"
+            return
+        }
+
+        // ── 3. REGRAS A/B (Stride Length) ────────────────────────────────────────
+        // Sempre aplicadas — mas com thresholds relaxados quando a Moda tem consenso,
+        // pois um tiro confirmado por maioria de votos pode ter passada > 1.9m.
         //
-        // REGRA A (biomecânica): stride = distJanela5s / passosJanela5s > 1.9m → bloqueia
-        //   Guard de cold start: só aplica rigorosamente com >= 3s de dados ou >= 4 passos.
-        //   Abaixo disso a janela é muito pequena e um tremido isolado dispara falso positivo.
+        // REGRA A: stride > limiteStride → GPS exagerando a distância
+        //   Sem consenso:   1.9m (corrida normal)
+        //   Com consenso:   2.4m (tiro confirmado pela Moda — elite ~190 spm / 3:30/km)
         //
-        // REGRA B (fail-safe): passos=0 mas GPS em movimento
-        //   Accuracy normal:           <= 15m aceita (sinal limpo)
-        //   Durante modoRecuperacaoGps: <= 25m aceita (folga para lag de batching do sensor)
-        //   Velocidade > 10 m/s (carro/ônibus): sempre bloqueia.
+        // REGRA B: sem passos mas GPS em movimento
+        //   Com consenso:   só bloqueia velocidade absurda > 10 m/s (carro/ônibus)
+        //   Sem consenso:   bloqueia accuracy ruim OU velocidade > 10 m/s
         run {
             val distJanela5s   = bufferStride5s.sumOf { it.distM }
             val passosJanela5s = bufferStride5s.sumOf { it.passos }
             val janelaSeg      = if (bufferStride5s.size >= 2)
                 (bufferStride5s.last().timestampMs - bufferStride5s.first().timestampMs) / 1000.0
                 else 0.0
-            val velocidadeGps  = location.speed  // m/s
+            val velocidadeGps  = location.speed
             val janelaQuente   = janelaSeg >= 3.0 || passosJanela5s >= 4
 
             if (passosJanela5s > 0) {
+                // REGRA A
+                val limiteStride = if (modaTemConsenso) 2.2 else 1.9
                 val stride = distJanela5s / passosJanela5s
-                if (janelaQuente && stride > 1.9) {
-                    // REGRA A — passada impossível, GPS exagerando
+                if (janelaQuente && stride > limiteStride) {
+                    Log.d(TAG, "🚫 Regra A: stride=${String.format("%.2f", stride)}m > ${limiteStride}m " +
+                        "(consenso=$modaTemConsenso) → bloqueado")
                     _paceAtual.value = "--:--"
                     return
                 }
-
             } else if (velocidadeGps > 0.5f) {
-                // REGRA B — sem passos mas GPS em movimento
-                // Folga maior durante recuperação para absorver lag de batching do sensor
+                // REGRA B — checagem normal independente de consenso
                 val limiteAccuracy = if (modoRecuperacaoGps) 25f else 15f
                 if (location.accuracy > limiteAccuracy || velocidadeGps > 10.0f) {
+                    Log.d(TAG, "🚫 Regra B: accuracy=${location.accuracy}m speed=${velocidadeGps}m/s " +
+                        "(consenso=$modaTemConsenso) → bloqueado")
                     _paceAtual.value = "--:--"
                     return
                 }
-
             }
         }
 
-        // ── Moda de Pace (5 amostras, bin 10s) ───────────────────────────────────
-        // Filtra spikes que passaram pelo Stride Length guard.
-        // < 5 amostras (início/recovery): paceBruto passa direto, EMA cuida do resto.
-        val paceFiltrado = aplicarModaPace(paceBruto)
-
-        // Alpha reduzido nos primeiros 20s após SCREEN_ON/início — GPS ainda estabilizando.
-        // alpha=0.05 (tau≈20s): protege contra spikes mas responde em ~20s a um pace real.
+        // ── 4. EMA ────────────────────────────────────────────────────────────────
+        // alpha 0.05 nos primeiros 20s pós SCREEN_ON (GPS estabilizando)
+        // alpha 0.30 normal — ligeiramente mais responsivo que o anterior (0.25)
         val alpha = when {
             msDesdeScreenOn < 20_000L -> 0.05
-            janelaAtualSegundos <= 5  -> 0.4
-            else                      -> 0.25
+            else                      -> 0.30
         }
         val paceEma = ultimoPaceEmaInterno?.let { anterior ->
-            (paceFiltrado * alpha) + (anterior * (1.0 - alpha))
-        } ?: paceFiltrado
+            (paceCandidato * alpha) + (anterior * (1.0 - alpha))
+        } ?: paceCandidato
 
-        // Log para diagnóstico de spike de pace pós-desbloqueio.
-
-
-        // Quarentena de 10s após SCREEN_ON: GPS ainda estabilizando.
-        // Atualiza EMA internamente mas não grava no gráfico nem altera o display.
-        // O corredor continua vendo o último pace válido enquanto o chip GNSS
-        // recalibra o Doppler. Log confirma que o A54 leva ~10s para convergir.
+        // Quarentena 10s pós SCREEN_ON: atualiza EMA interna mas não exibe
         if (msDesdeScreenOn < 10_000L) {
             ultimoPaceEmaInterno = paceEma
             return
