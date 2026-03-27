@@ -738,15 +738,21 @@ class RunningService : Service(), SensorEventListener {
     private data class DeltaPaceGps(val distM: Double, val deltaMs: Long)
     private val bufferDeltasPace     = ArrayDeque<DeltaPaceGps>(5)
 
-    private data class VotoPace(val paceSegKm: Double, val timestampMs: Long)
-    private val urnaVotosPace        = ArrayDeque<VotoPace>(23)
+    private data class VotoPace(
+        val paceSegKm: Double,
+        val timestampMs: Long,
+        val distM: Double,      // delta original — para acumulado tipo parcial no estágio 2
+        val deltaMs: Long       // delta original — para acumulado tipo parcial no estágio 2
+    )
+    private val urnaVotosPace        = ArrayDeque<VotoPace>(30)
 
-    private val URNA_VOTOS_NORMAL    = 21     // janela normal (21s)
-    private val URNA_VOTOS_GATILHO   = 7      // janela curta ao detectar degrau de cadência
-    private val BIN_MODA_SEG         = 30.0   // bin 30s para votação
+    private val URNA_VOTOS_NORMAL    = 27     // janela normal (27s) — ruído precisa de 14 votos consecutivos
+    private val URNA_VOTOS_GATILHO   = 13     // janela curta ao detectar degrau de cadência
+    private val BIN_ESTAGIO1_SEG     = 60.0   // bin largo — agrupamento agressivo contra ruído
+    private val BIN_ESTAGIO2_SEG     = 30.0   // bin fino — refina precisão dentro dos vencedores
     private val GATILHO_CADENCIA_SPM = 25     // degrau mínimo para ativar janela curta
 
-    // Histórico de cadência para detectar degrau (últimos 7 ticks de 1s)
+    // Histórico de cadência para detectar degrau (últimos 8 ticks de 1s)
     private val historicoCadenciaGatilho = ArrayDeque<Int>(10)
     private var stepLengthNoGap = 0.0
 
@@ -2114,19 +2120,17 @@ class RunningService : Service(), SensorEventListener {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     /**
-     * Moda de Pace v2 — micro-janela 3s sobreposta + urna 21 votos + bin 30s.
+     * Moda de Pace v2 — micro-janela 3s sobreposta + urna 27 votos + bins cascateados 60s→30s.
      *
-     * Recebe o delta GPS do ponto atual (distM, deltaMs) e:
-     *   1. Armazena no bufferDeltasPace (máx 5 deltas).
-     *   2. Calcula o voto da micro-janela: soma dos últimos 3 deltas → pace de 3s.
-     *      - < 2 deltas disponíveis: retorna null (urna ainda vazia — fallback para EMA).
-     *   3. Insere o voto na urnaVotosPace (máx 23 — margem para o takeLast).
-     *   4. Detecta degrau de cadência (últimos 2s vs 3s anteriores):
-     *      - Degrau > 25 spm → usa apenas os últimos 7 votos (lag ~4s).
-     *      - Ritmo estável → usa os 21 votos completos (lag ~11s, robusto).
-     *   5. Votação com bin 30s sobre os votos ativos:
-     *      - Dispersão total: retorna null → fallback para EMA com paceBruto 22s.
-     *      - Vencedor: retorna o paceSegKm original mais recente do bin vencedor.
+     * Pipeline:
+     *   1. Acumula delta GPS no bufferDeltasPace (máx 5).
+     *   2. Micro-janela 3s sobrepostas → 1 voto/segundo com distM e deltaMs originais.
+     *   3. Gatilho de cadência: degrau > 25 spm → urna curta (13 votos, lag ~7s).
+     *   4. Estágio 1 — bin 60s: ruído precisa de 14 votos consecutivos para superar maioria.
+     *   5. Estágio 2 — bin 30s: refina precisão dentro dos vencedores do estágio 1.
+     *   6. Output — acumulado tipo parcial: soma(deltaMs) / soma(distM) dos vencedores
+     *      do estágio 2 → outliers que entraram no bin têm peso mínimo no total.
+     *   7. Dispersão total em qualquer estágio → null (fallback para janela 22s).
      */
     private fun aplicarModaPaceV2(distM: Double, deltaMs: Long): Double? {
         // 1. Acumula deltas brutos para a micro-janela
@@ -2142,10 +2146,15 @@ class RunningService : Service(), SensorEventListener {
         val voto = (tempoTotal / 1000.0 / distTotal) * 1000.0
         if (voto < 90.0 || voto > 1200.0) return null
 
-        // 3. Insere voto na urna
+        // 3. Insere voto na urna com deltas originais preservados
         val agora = System.currentTimeMillis()
-        urnaVotosPace.addLast(VotoPace(voto, agora))
-        if (urnaVotosPace.size > URNA_VOTOS_NORMAL + 2) urnaVotosPace.removeFirst()
+        urnaVotosPace.addLast(VotoPace(
+            paceSegKm   = voto,
+            timestampMs = agora,
+            distM       = distTotal,
+            deltaMs     = tempoTotal
+        ))
+        if (urnaVotosPace.size > URNA_VOTOS_NORMAL + 3) urnaVotosPace.removeFirst()
 
         // 4. Detecta degrau de cadência para ajustar tamanho da janela ativa
         historicoCadenciaGatilho.addLast(_cadencia.value)
@@ -2160,24 +2169,38 @@ class RunningService : Service(), SensorEventListener {
             } else URNA_VOTOS_NORMAL
         } else URNA_VOTOS_NORMAL
 
-        // 5. Votação com bin 30s
         val votosAtivos = urnaVotosPace.toList().takeLast(nVotosAtivos)
-        if (votosAtivos.size < 3) return null  // urna ainda vazia demais
+        if (votosAtivos.size < 3) return null
 
-        val bins = votosAtivos.groupBy { kotlin.math.round(it.paceSegKm / BIN_MODA_SEG).toInt() }
-
-        // Dispersão total → fallback
-        if (bins.values.all { it.size == 1 }) {
-            Log.d(TAG, "🗳️ Moda pace v2: dispersão total → fallback EMA")
+        // 5. Estágio 1 — bin 60s: agrupamento agressivo contra ruído persistente
+        val bins1 = votosAtivos.groupBy {
+            kotlin.math.round(it.paceSegKm / BIN_ESTAGIO1_SEG).toInt()
+        }
+        if (bins1.values.all { it.size == 1 }) {
+            Log.d(TAG, "🗳️ Moda pace v2: dispersão total estágio 1 → fallback")
             return null
         }
+        val maxVotos1   = bins1.values.maxOf { it.size }
+        val vencedores1 = bins1.filter { it.value.size == maxVotos1 }.values.flatten()
 
-        val maxVotos  = bins.values.maxOf { it.size }
-        val vencedores = bins.filter { it.value.size == maxVotos }
-        val resultado  = vencedores.values.flatten().maxByOrNull { it.timestampMs }!!.paceSegKm
+        // 6. Estágio 2 — bin 30s: refina dentro dos vencedores do estágio 1
+        val bins2     = vencedores1.groupBy {
+            kotlin.math.round(it.paceSegKm / BIN_ESTAGIO2_SEG).toInt()
+        }
+        val maxVotos2   = bins2.values.maxOf { it.size }
+        val vencedores2 = bins2.filter { it.value.size == maxVotos2 }.values.flatten()
 
-        Log.d(TAG, "🗳️ Moda pace v2: urna=${nVotosAtivos}v bins=${vencedores.keys} " +
-            "votos=$maxVotos → ${formatarPace(resultado)}")
+        // 7. Output: acumulado tipo parcial sobre os vencedores do estágio 2
+        val distAcum  = vencedores2.sumOf { it.distM }
+        val tempoAcum = vencedores2.sumOf { it.deltaMs }
+        if (distAcum < 0.5 || tempoAcum < 500L) return null
+        val resultado = (tempoAcum / 1000.0 / distAcum) * 1000.0
+        if (resultado < 90.0 || resultado > 1200.0) return null
+
+        Log.d(TAG, "🗳️ Moda pace v2: urna=${nVotosAtivos}v " +
+            "bin60→${maxVotos1}v bin30→${maxVotos2}v " +
+            "acum=${String.format("%.1f", distAcum)}m/${tempoAcum}ms " +
+            "→ ${formatarPace(resultado)}")
         return resultado
     }
 
