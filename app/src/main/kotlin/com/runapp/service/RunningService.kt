@@ -446,7 +446,6 @@ class RunningService : Service(), SensorEventListener {
                     bufferPace30s.clear()
                     bufferDeltasPace.clear()
                     urnaVotosPace.clear()
-                    historicoCadenciaGatilho.clear()
                     bufferStride5s.clear()
                     Log.d(TAG, "Tela ligada apos ${tempoTelaApagadaMs / 1000}s - buffers limpos, EMA preservada para evitar spike de pace")
                 }
@@ -758,10 +757,7 @@ class RunningService : Service(), SensorEventListener {
     private val URNA_VOTOS_GATILHO   = 13     // janela curta ao detectar degrau de cadência
     private val BIN_ESTAGIO1_SEG     = 60.0   // bin largo — agrupamento agressivo contra ruído
     private val BIN_ESTAGIO2_SEG     = 30.0   // bin fino — refina precisão dentro dos vencedores
-    private val GATILHO_CADENCIA_SPM = 25     // degrau mínimo para ativar janela curta
-
-    // Histórico de cadência para detectar degrau (últimos 8 ticks de 1s)
-    private val historicoCadenciaGatilho = ArrayDeque<Int>(10)
+    private val GATILHO_CADENCIA_SPM = 25     // degrau mínimo mediaRapida vs mediaLenta
     private var stepLengthNoGap = 0.0
 
     // ── Auto-Learner de step length ───────────────────────────────────────────
@@ -1141,7 +1137,6 @@ class RunningService : Service(), SensorEventListener {
         bufferPace30s.clear()
         bufferDeltasPace.clear()
         urnaVotosPace.clear()
-        historicoCadenciaGatilho.clear()
         stepLengthNoGap = 0.0
         stepLengthAprendido = 0.0
         passosDesdeUltimoGpsBom = 0
@@ -1664,7 +1659,6 @@ class RunningService : Service(), SensorEventListener {
                 bufferPace30s.clear()
                 bufferDeltasPace.clear()
                 urnaVotosPace.clear()
-                historicoCadenciaGatilho.clear()
                 ultimasLocalizacoes.clear()
                 ultimaLocalizacaoSignificativa = location
                 _paceAtual.value = "--:--"
@@ -2164,17 +2158,22 @@ class RunningService : Service(), SensorEventListener {
         ))
         if (urnaVotosPace.size > URNA_VOTOS_NORMAL + 3) urnaVotosPace.removeFirst()
 
-        // 4. Detecta degrau de cadência para ajustar tamanho da janela ativa
-        historicoCadenciaGatilho.addLast(_cadencia.value)
-        if (historicoCadenciaGatilho.size > 8) historicoCadenciaGatilho.removeFirst()
+        // 4. Detecta degrau de cadência — mediaRapida (últimos 3 passos reais)
+        //    vs mediaLenta (_cadencia.value = janela 10s).
+        //    A mediaRapida sobe para o ritmo do tiro no 2º passo — muito mais
+        //    responsiva que comparar ticks de _cadencia que já é média de 10s.
+        val mediaLenta = _cadencia.value.toDouble()
+        val ultimosPassos = timestampsPassos.toList().takeLast(3)
+        val mediaRapida = if (ultimosPassos.size >= 2) {
+            val intervaloMs = ultimosPassos.last() - ultimosPassos.first()
+            if (intervaloMs > 0) (ultimosPassos.size - 1).toDouble() / intervaloMs * 60_000
+            else mediaLenta
+        } else mediaLenta
 
-        val nVotosAtivos = if (historicoCadenciaGatilho.size >= 5) {
-            val recente = historicoCadenciaGatilho.toList().takeLast(2).average()
-            val base    = historicoCadenciaGatilho.toList().dropLast(2).takeLast(3).average()
-            if (kotlin.math.abs(recente - base) >= GATILHO_CADENCIA_SPM) {
-                Log.d(TAG, "⚡ Gatilho cadência: ${base.toInt()}→${recente.toInt()} spm → urna curta (${URNA_VOTOS_GATILHO}v)")
-                URNA_VOTOS_GATILHO
-            } else URNA_VOTOS_NORMAL
+        val nVotosAtivos = if (kotlin.math.abs(mediaRapida - mediaLenta) >= GATILHO_CADENCIA_SPM) {
+            Log.d(TAG, "⚡ Gatilho cadência: lenta=${mediaLenta.toInt()} rápida=${mediaRapida.toInt()} " +
+                "spm → urna curta (${URNA_VOTOS_GATILHO}v)")
+            URNA_VOTOS_GATILHO
         } else URNA_VOTOS_NORMAL
 
         val gatilhoAtivo = nVotosAtivos == URNA_VOTOS_GATILHO
@@ -2249,8 +2248,11 @@ class RunningService : Service(), SensorEventListener {
         val modaTemConsenso = paceModa != null
 
         // ── 2. JANELA 22s (fallback) ─────────────────────────────────────────────
-        // Só calculada quando a Moda não tem consenso.
-        val paceBruto22s: Double? = if (modaTemConsenso) null else run {
+        // Usado quando: Moda sem consenso OU urna com menos de 17 votos (startup).
+        // Com < 17 votos a urna ainda não tem informação estatística suficiente —
+        // o método antigo é mais confiável nesse período inicial.
+        val urnaAquecida = urnaVotosPace.size >= 17
+        val paceBruto22s: Double? = if (modaTemConsenso && urnaAquecida) null else run {
             val accuracyAtual = ultimasLocalizacoes.last().accuracy
             val janelaEfetiva = when {
                 accuracyAtual > 20f -> (janelaAtualSegundos * 1.5).toInt().coerceAtMost(33)
@@ -2279,8 +2281,9 @@ class RunningService : Service(), SensorEventListener {
             if (pb < 90.0 || pb > 1200.0) null else pb
         }
 
-        // Pace candidato: Moda se tem consenso, janela 22s caso contrário
-        val paceCandidato = paceModa ?: paceBruto22s ?: run {
+        // Pace candidato: Moda se tem consenso E urna aquecida, 22s caso contrário
+        val paceCandidato = (if (modaTemConsenso && urnaAquecida) paceModa else null)
+            ?: paceBruto22s ?: run {
             _paceAtual.value = "--:--"
             return
         }
@@ -2327,12 +2330,19 @@ class RunningService : Service(), SensorEventListener {
             }
         }
 
-        // ── 4. EMA ────────────────────────────────────────────────────────────────
-        // alpha 0.05 nos primeiros 20s pós SCREEN_ON (GPS estabilizando)
-        // alpha 0.30 normal — ligeiramente mais responsivo que o anterior (0.25)
+        // ── 4. EMA com alpha dinâmico baseado na confiança da urna ───────────────
+        // Votos no bin 30s vencedor indicam quão "limpo" é o sinal:
+        //   ≥ 15v → sinal limpo, reage rápido  (alpha 0.40)
+        //   8-14v → intermediário               (alpha 0.20)
+        //   < 8v  → sinal ruidoso, segura valor (alpha 0.10)
+        // Nos primeiros 20s pós SCREEN_ON o GPS ainda estabiliza → alpha fixo 0.05.
+        val votos30sAtual = _modaDebug.value.votos30s
         val alpha = when {
             msDesdeScreenOn < 20_000L -> 0.05
-            else                      -> 0.30
+            !modaTemConsenso || !urnaAquecida -> 0.20  // fallback 22s — alpha moderado
+            votos30sAtual >= 15       -> 0.40
+            votos30sAtual >= 8        -> 0.20
+            else                      -> 0.10
         }
         val paceEma = ultimoPaceEmaInterno?.let { anterior ->
             (paceCandidato * alpha) + (anterior * (1.0 - alpha))
