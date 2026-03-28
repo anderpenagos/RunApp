@@ -125,7 +125,11 @@ data class CorridaUiState(
     val distanciaFinalMetros: Double = 0.0,
 
     // Gradiente ao vivo (para diagnóstico de subida/descida)
-    val gradienteAtual: Double = 0.0
+    val gradienteAtual: Double = 0.0,
+
+    // Debug da Moda de Pace — visível na tela de corrida durante testes
+    val modaDebug: com.runapp.service.RunningService.ModaDebugInfo =
+        com.runapp.service.RunningService.ModaDebugInfo()
 )
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -548,6 +552,11 @@ class CorridaViewModel(
         viewModelScope.launch {
             service.gradienteAtual.collect { gradiente ->
                 _uiState.value = _uiState.value.copy(gradienteAtual = gradiente)
+            }
+        }
+        serviceScope.launch {
+            service.modaDebug.collect { debug ->
+                _uiState.value = _uiState.value.copy(modaDebug = debug)
             }
         }
 

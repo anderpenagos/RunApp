@@ -714,7 +714,15 @@ class RunningService : Service(), SensorEventListener {
     private val timestampsPassosAutoPause = ArrayDeque<Long>(10)
     private var ultimaLocalizacaoParaAutoPause: Location? = null
 
-    // ── Buffer de pace dos últimos 30s ────────────────────────────────────────
+    // ── Debug da Moda de Pace — visível na tela de corrida ───────────────────
+    data class ModaDebugInfo(
+        val votosAtivos: Int   = 0,
+        val votos60s: Int      = 0,   // votos do bin 60s vencedor
+        val votos30s: Int      = 0,   // votos do bin 30s vencedor
+        val gatilhoAtivo: Boolean = false
+    )
+    private val _modaDebug = MutableStateFlow(ModaDebugInfo())
+    val modaDebug: StateFlow<ModaDebugInfo> = _modaDebug.asStateFlow()
     private data class PaceSnapshot(val timestampMs: Long, val paceSegKm: Double)
     private val bufferPace30s = ArrayDeque<PaceSnapshot>(35)
 
@@ -2169,14 +2177,19 @@ class RunningService : Service(), SensorEventListener {
             } else URNA_VOTOS_NORMAL
         } else URNA_VOTOS_NORMAL
 
+        val gatilhoAtivo = nVotosAtivos == URNA_VOTOS_GATILHO
         val votosAtivos = urnaVotosPace.toList().takeLast(nVotosAtivos)
-        if (votosAtivos.size < 3) return null
+        if (votosAtivos.size < 3) {
+            _modaDebug.value = ModaDebugInfo(votosAtivos = votosAtivos.size)
+            return null
+        }
 
         // 5. Estágio 1 — bin 60s: agrupamento agressivo contra ruído persistente
         val bins1 = votosAtivos.groupBy {
             kotlin.math.round(it.paceSegKm / BIN_ESTAGIO1_SEG).toInt()
         }
         if (bins1.values.all { it.size == 1 }) {
+            _modaDebug.value = ModaDebugInfo(votosAtivos = votosAtivos.size, gatilhoAtivo = gatilhoAtivo)
             Log.d(TAG, "🗳️ Moda pace v2: dispersão total estágio 1 → fallback")
             return null
         }
@@ -2189,6 +2202,14 @@ class RunningService : Service(), SensorEventListener {
         }
         val maxVotos2   = bins2.values.maxOf { it.size }
         val vencedores2 = bins2.filter { it.value.size == maxVotos2 }.values.flatten()
+
+        // Emite debug antes do output
+        _modaDebug.value = ModaDebugInfo(
+            votosAtivos  = votosAtivos.size,
+            votos60s     = maxVotos1,
+            votos30s     = maxVotos2,
+            gatilhoAtivo = gatilhoAtivo
+        )
 
         // 7. Output: acumulado tipo parcial sobre os vencedores do estágio 2
         val distAcum  = vencedores2.sumOf { it.distM }

@@ -1013,29 +1013,8 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
     val pMin = pacesValidos.minOrNull() ?: 300.0
     val pMax = pacesValidos.maxOrNull() ?: 600.0
 
-    // SMA centrada de ±12 pontos (~24s) aplicada APENAS para o gráfico.
-    // O paceNoPonto foi gravado com responsividade de display em mente — correto para
-    // o número na tela em tempo real, mas "nervoso" demais para visualização histórica.
-    // A altitude já usa SMA ±5; o pace precisa de janela maior pois é mais ruidoso.
-    // Importante: usamos apenas pontos válidos (60-1200 s/km) na média — pontos inválidos
-    // (paradas, GPS perdido) são ignorados no cálculo mas marcados como -1 no resultado
-    // para que o gráfico quebre a linha nesses trechos (comportamento correto).
-    val JANELA_SUAV = 12  // ±12 pontos = janela de 25 pontos centrada = ~24s de dados
-    val pacesSuav = paces.mapIndexed { i, p ->
-        if (p !in 60.0..1200.0) return@mapIndexed -1.0  // inválido — não suaviza
-        val a = (i - JANELA_SUAV).coerceAtLeast(0)
-        val b = (i + JANELA_SUAV).coerceAtMost(paces.lastIndex)
-        val vizinhos = (a..b).mapNotNull { j ->
-            if (!isGpsSpike[j] && paces[j] in 60.0..1200.0) paces[j] else null
-        }
-        if (vizinhos.isEmpty()) -1.0 else vizinhos.average()
-    }
-
-    // Recalcula pMin/pMax com os valores suavizados para aproveitar melhor o range do gráfico
-    val pacesSuavValidos = pacesSuav.filter { it in 60.0..1200.0 }
-    val pMinSuav = pacesSuavValidos.minOrNull() ?: pMin
-    val pMaxSuav = pacesSuavValidos.maxOrNull() ?: pMax
-    val paceRangeSuav = (pMaxSuav - pMinSuav).coerceAtLeast(1.0)
+    // SMA removida — paceNoPonto já sai da EMA alimentada pela Moda cascateada,
+    // estável o suficiente para visualização histórica sem suavização adicional.
 
     // GAP: usa paces ORIGINAIS (não suavizados) — cálculo biomecânico, não visual.
     // Fórmula de Minetti (2002) idêntica à do RunningService:
@@ -1113,7 +1092,7 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
     val step = maxOf(1, rota.size / 300)
     val idxs = rota.indices.filter { it % step == 0 }
 
-    val paceRange = paceRangeSuav
+    val paceRange = (pMax - pMin).coerceAtLeast(1.0)
     val gapRange  = (gMax - gMin).coerceAtLeast(1.0)
     val altMin = altsSuav.min(); val altMax = altsSuav.max()
     val altRange  = (altMax - altMin).coerceAtLeast(1.0)
@@ -1158,13 +1137,13 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
     }
 
     // Min/max reais dos pontos subamostrados — alinha normalização com labels do eixo Y
-    val pMinReal = idxs.mapNotNull { i -> pacesSuav[i].takeIf { it in 60.0..1200.0 } }.minOrNull() ?: pMinSuav
-    val pMaxReal = idxs.mapNotNull { i -> pacesSuav[i].takeIf { it in 60.0..1200.0 } }.maxOrNull() ?: pMaxSuav
+    val pMinReal = idxs.mapNotNull { i -> paces[i].takeIf { it in 60.0..1200.0 } }.minOrNull() ?: pMin
+    val pMaxReal = idxs.mapNotNull { i -> paces[i].takeIf { it in 60.0..1200.0 } }.maxOrNull() ?: pMax
     val pRangeReal = (pMaxReal - pMinReal).coerceAtLeast(1.0)
 
     return DadosGrafico(
         paceNorm = idxs.map { i ->
-            val p = pacesSuav[i]; if (p < 0.0) -1f
+            val p = paces[i]; if (p < 0.0) -1f
             else ((p - pMinReal) / pRangeReal).toFloat().coerceIn(0f, 1f)
         },
         altNorm = idxs.map { i ->
@@ -1178,7 +1157,7 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
             val g = gapsReg[i]; if (g <= 0) -1f
             else ((g - gRegMin) / (gRegMax - gRegMin).coerceAtLeast(1.0)).toFloat().coerceIn(0f, 1f)
         },
-        paceFormatado    = idxs.map { formatarPaceSegKm(pacesSuav[it].coerceAtLeast(0.0).let { v -> if (v < 60.0) paces[it] else v }) },
+        paceFormatado    = idxs.map { formatarPaceSegKm(paces[it].coerceAtLeast(0.0).let { v -> if (v < 60.0) paces[it] else v }) },
         gapFormatado     = idxs.map { formatarPaceSegKm(gaps[it]) },
         gapRegFormatado  = idxs.map { formatarPaceSegKm(gapsReg[it]) },
         altitudes     = idxs.map { altsSuav[it] },

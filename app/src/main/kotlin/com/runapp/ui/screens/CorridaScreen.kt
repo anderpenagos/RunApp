@@ -1228,6 +1228,25 @@ private fun MetricasFullscreen(
                     )
                 }
             }
+
+            // ── Debug Moda de Pace ─────────────────────────────────────────────
+            if (state.fase == FaseCorrida.CORRENDO) {
+                val d = state.modaDebug
+                val gatilhoStr = if (d.gatilhoAtivo) " ⚡" else ""
+                Row(
+                    modifier = androidx.compose.ui.Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "urna:${d.votosAtivos}v  60s:${d.votos60s}v  30s:${d.votos30s}v$gatilhoStr",
+                        color = Color.White.copy(alpha = 0.45f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Normal
+                    )
+                }
+            }
         }
 
         // ── Botão mapa (canto inferior direito, acima dos controles) ───────
