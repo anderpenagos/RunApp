@@ -554,7 +554,7 @@ class CorridaViewModel(
                 _uiState.value = _uiState.value.copy(gradienteAtual = gradiente)
             }
         }
-        serviceScope.launch {
+        viewModelScope.launch {
             service.modaDebug.collect { debug ->
                 _uiState.value = _uiState.value.copy(modaDebug = debug)
             }
