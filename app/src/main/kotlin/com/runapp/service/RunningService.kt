@@ -715,10 +715,12 @@ class RunningService : Service(), SensorEventListener {
 
     // ── Debug da Moda de Pace — visível na tela de corrida ───────────────────
     data class ModaDebugInfo(
-        val votosAtivos: Int   = 0,
-        val votos60s: Int      = 0,   // votos do bin 60s vencedor
-        val votos30s: Int      = 0,   // votos do bin 30s vencedor
-        val gatilhoAtivo: Boolean = false
+        val votosAtivos: Int      = 0,
+        val votos60s: Int         = 0,     // votos do bin 60s vencedor
+        val votos30s: Int         = 0,     // votos do bin 30s vencedor
+        val gatilhoAtivo: Boolean = false,
+        val blend60s: Boolean     = false, // blend ativado no estágio 1
+        val blend30s: Boolean     = false  // blend ativado no estágio 2
     )
     private val _modaDebug = MutableStateFlow(ModaDebugInfo())
     val modaDebug: StateFlow<ModaDebugInfo> = _modaDebug.asStateFlow()
@@ -757,7 +759,7 @@ class RunningService : Service(), SensorEventListener {
     private val URNA_VOTOS_GATILHO   = 13     // janela curta ao detectar degrau de cadência
     private val BIN_ESTAGIO1_SEG     = 60.0   // bin largo — agrupamento agressivo contra ruído
     private val BIN_ESTAGIO2_SEG     = 30.0   // bin fino — refina precisão dentro dos vencedores
-    private val GATILHO_CADENCIA_SPM = 25     // degrau mínimo mediaRapida vs mediaLenta
+    private val GATILHO_CADENCIA_SPM = 30     // degrau mínimo mediaRapida vs mediaLenta
     private var stepLengthNoGap = 0.0
 
     // ── Auto-Learner de step length ───────────────────────────────────────────
@@ -2163,20 +2165,26 @@ class RunningService : Service(), SensorEventListener {
         //    A mediaRapida sobe para o ritmo do tiro no 2º passo — muito mais
         //    responsiva que comparar ticks de _cadencia que já é média de 10s.
         val mediaLenta = _cadencia.value.toDouble()
-        val ultimosPassos = timestampsPassos.toList().takeLast(3)
+        val ultimosPassos = timestampsPassos.toList().takeLast(6)
         val mediaRapida = if (ultimosPassos.size >= 2) {
             val intervaloMs = ultimosPassos.last() - ultimosPassos.first()
             if (intervaloMs > 0) (ultimosPassos.size - 1).toDouble() / intervaloMs * 60_000
             else mediaLenta
         } else mediaLenta
 
-        val nVotosAtivos = if (kotlin.math.abs(mediaRapida - mediaLenta) >= GATILHO_CADENCIA_SPM) {
+        val gatilhoAtivo = kotlin.math.abs(mediaRapida - mediaLenta) >= GATILHO_CADENCIA_SPM
+        val nVotosAtivos = if (gatilhoAtivo) {
+            // Trunca urna fisicamente — descarta histórico do ritmo antigo.
+            // Com 3 votos restantes, o novo ritmo precisa de apenas 2 para ganhar maioria.
+            if (urnaVotosPace.size > 3) {
+                val recentes = urnaVotosPace.toList().takeLast(3)
+                urnaVotosPace.clear()
+                urnaVotosPace.addAll(recentes)
+            }
             Log.d(TAG, "⚡ Gatilho cadência: lenta=${mediaLenta.toInt()} rápida=${mediaRapida.toInt()} " +
-                "spm → urna curta (${URNA_VOTOS_GATILHO}v)")
+                "spm → urna truncada para ${urnaVotosPace.size}v")
             URNA_VOTOS_GATILHO
         } else URNA_VOTOS_NORMAL
-
-        val gatilhoAtivo = nVotosAtivos == URNA_VOTOS_GATILHO
         val votosAtivos = urnaVotosPace.toList().takeLast(nVotosAtivos)
         if (votosAtivos.size < 3) {
             _modaDebug.value = ModaDebugInfo(votosAtivos = votosAtivos.size)
@@ -2184,6 +2192,9 @@ class RunningService : Service(), SensorEventListener {
         }
 
         // 5. Estágio 1 — bin 60s: agrupamento agressivo contra ruído persistente
+        // Blend de adjacência: se o segundo bin está a ≤30s/km do vencedor,
+        // inclui seus votos no conjunto — corrige casos de fronteira de bin
+        // (pace real partido artificialmente entre dois bins vizinhos).
         val bins1 = votosAtivos.groupBy {
             kotlin.math.round(it.paceSegKm / BIN_ESTAGIO1_SEG).toInt()
         }
@@ -2192,22 +2203,74 @@ class RunningService : Service(), SensorEventListener {
             Log.d(TAG, "🗳️ Moda pace v2: dispersão total estágio 1 → fallback")
             return null
         }
-        val maxVotos1   = bins1.values.maxOf { it.size }
-        val vencedores1 = bins1.filter { it.value.size == maxVotos1 }.values.flatten()
+        val maxVotos1 = bins1.values.maxOf { it.size }
+        val binVencedor1 = bins1.filter { it.value.size == maxVotos1 }
+        val paceMediaVencedor1 = binVencedor1.values.flatten().let { votos ->
+            if (votos.isEmpty()) return null
+            val d = votos.sumOf { it.distM }
+            val t = votos.sumOf { it.deltaMs }
+            if (d < 0.1) return null
+            t / 1000.0 / d * 1000.0
+        }
+        // Verifica se segundo bin está a ≤30s/km do vencedor
+        val segundoBin1 = bins1.filter { it.value.size < maxVotos1 }
+            .maxByOrNull { it.value.size }
+        val blendVotos1 = if (segundoBin1 != null) {
+            val paceMediaSegundo1 = segundoBin1.value.let { votos ->
+                val d = votos.sumOf { it.distM }
+                val t = votos.sumOf { it.deltaMs }
+                if (d < 0.1) null else t / 1000.0 / d * 1000.0
+            }
+            if (paceMediaSegundo1 != null &&
+                kotlin.math.abs(paceMediaVencedor1 - paceMediaSegundo1) <= 30.0) {
+                Log.d(TAG, "🔀 Blend estágio 1: vencedor=${formatarPace(paceMediaVencedor1)} " +
+                    "segundo=${formatarPace(paceMediaSegundo1)} → combinados")
+                binVencedor1.values.flatten() + segundoBin1.value
+            } else binVencedor1.values.flatten()
+        } else binVencedor1.values.flatten()
 
-        // 6. Estágio 2 — bin 30s: refina dentro dos vencedores do estágio 1
-        val bins2     = vencedores1.groupBy {
+        val blend60sAtivo = blendVotos1.size > binVencedor1.values.flatten().size
+
+        // 6. Estágio 2 — bin 30s: refina dentro do conjunto do estágio 1
+        // Blend de adjacência: se o segundo bin está a ≤15s/km do vencedor,
+        // inclui seus votos no acumulado final.
+        val bins2 = blendVotos1.groupBy {
             kotlin.math.round(it.paceSegKm / BIN_ESTAGIO2_SEG).toInt()
         }
-        val maxVotos2   = bins2.values.maxOf { it.size }
-        val vencedores2 = bins2.filter { it.value.size == maxVotos2 }.values.flatten()
+        val maxVotos2 = bins2.values.maxOf { it.size }
+        val binVencedor2 = bins2.filter { it.value.size == maxVotos2 }
+        val paceMediaVencedor2 = binVencedor2.values.flatten().let { votos ->
+            val d = votos.sumOf { it.distM }
+            val t = votos.sumOf { it.deltaMs }
+            if (d < 0.1) return null
+            t / 1000.0 / d * 1000.0
+        }
+        val segundoBin2 = bins2.filter { it.value.size < maxVotos2 }
+            .maxByOrNull { it.value.size }
+        val vencedores2 = if (segundoBin2 != null) {
+            val paceMediaSegundo2 = segundoBin2.value.let { votos ->
+                val d = votos.sumOf { it.distM }
+                val t = votos.sumOf { it.deltaMs }
+                if (d < 0.1) null else t / 1000.0 / d * 1000.0
+            }
+            if (paceMediaSegundo2 != null &&
+                kotlin.math.abs(paceMediaVencedor2 - paceMediaSegundo2) <= 15.0) {
+                Log.d(TAG, "🔀 Blend estágio 2: vencedor=${formatarPace(paceMediaVencedor2)} " +
+                    "segundo=${formatarPace(paceMediaSegundo2)} → combinados")
+                binVencedor2.values.flatten() + segundoBin2.value
+            } else binVencedor2.values.flatten()
+        } else binVencedor2.values.flatten()
+
+        val blend30sAtivo = vencedores2.size > binVencedor2.values.flatten().size
 
         // Emite debug antes do output
         _modaDebug.value = ModaDebugInfo(
             votosAtivos  = votosAtivos.size,
             votos60s     = maxVotos1,
             votos30s     = maxVotos2,
-            gatilhoAtivo = gatilhoAtivo
+            gatilhoAtivo = gatilhoAtivo,
+            blend60s     = blend60sAtivo,
+            blend30s     = blend30sAtivo
         )
 
         // 7. Output: acumulado tipo parcial sobre os vencedores do estágio 2
