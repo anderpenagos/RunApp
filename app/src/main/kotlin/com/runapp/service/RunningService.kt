@@ -716,14 +716,16 @@ class RunningService : Service(), SensorEventListener {
     // ── Debug da Moda de Pace — visível na tela de corrida ───────────────────
     data class ModaDebugInfo(
         val votosAtivos: Int      = 0,
-        val votos60s: Int         = 0,     // votos do bin 60s vencedor
-        val votos30s: Int         = 0,     // votos do bin 30s vencedor
+        val votos60s: Int         = 0,
+        val votos30s: Int         = 0,
         val gatilhoAtivo: Boolean = false,
-        val blend60s: Boolean     = false, // blend ativado no estágio 1
-        val blend30s: Boolean     = false  // blend ativado no estágio 2
+        val blend60s: Boolean     = false,
+        val blend30s: Boolean     = false,
+        val paceSegundoEma: String = "--:--"  // pace dos segundos ganhadores com EMA
     )
     private val _modaDebug = MutableStateFlow(ModaDebugInfo())
     val modaDebug: StateFlow<ModaDebugInfo> = _modaDebug.asStateFlow()
+    private var ultimoPaceEmaSegundoInterno: Double? = null  // EMA do pace dos segundos bins
     private data class PaceSnapshot(val timestampMs: Long, val paceSegKm: Double)
     private val bufferPace30s = ArrayDeque<PaceSnapshot>(35)
 
@@ -1103,6 +1105,7 @@ class RunningService : Service(), SensorEventListener {
         rotaTotalPontos = 0
         ultimasLocalizacoes.clear()
         ultimoPaceEmaInterno = null
+        ultimoPaceEmaSegundoInterno = null
         janelaAtualSegundos = 22
 
         // Reset pressão de referência — será atualizada com dado real via Open-Meteo
@@ -2263,14 +2266,47 @@ class RunningService : Service(), SensorEventListener {
 
         val blend30sAtivo = vencedores2.size > binVencedor2.values.flatten().size
 
+        // ── Pace dos segundos ganhadores (debug) ──────────────────────────────
+        // Pega os segundos bins de cada estágio (independente do blend),
+        // calcula o acumulado e aplica a mesma EMA do pace principal.
+        val paceSegundoStr = run {
+            // Segundo bin estágio 1 → segundo bin estágio 2 dentro dele
+            val votosSegundo1 = segundoBin1?.value ?: return@run "--:--"
+            val bins2Segundo = votosSegundo1.groupBy {
+                kotlin.math.round(it.paceSegKm / BIN_ESTAGIO2_SEG).toInt()
+            }
+            val maxVotos2Segundo = bins2Segundo.values.maxOfOrNull { it.size } ?: return@run "--:--"
+            val vencedor2Segundo = bins2Segundo.filter { it.value.size == maxVotos2Segundo }
+                .values.flatten()
+            val d = vencedor2Segundo.sumOf { it.distM }
+            val t = vencedor2Segundo.sumOf { it.deltaMs }
+            if (d < 0.5 || t < 500L) return@run "--:--"
+            val paceSegundoBruto = (t / 1000.0 / d) * 1000.0
+            if (paceSegundoBruto < 90.0 || paceSegundoBruto > 1200.0) return@run "--:--"
+            // Aplica mesma EMA do pace principal
+            val alphaSegundo = _modaDebug.value.let {
+                when {
+                    it.votos30s >= 15 -> 0.40
+                    it.votos30s >= 8  -> 0.20
+                    else              -> 0.10
+                }
+            }
+            val emaSegundo = ultimoPaceEmaSegundoInterno?.let { anterior ->
+                paceSegundoBruto * alphaSegundo + anterior * (1.0 - alphaSegundo)
+            } ?: paceSegundoBruto
+            ultimoPaceEmaSegundoInterno = emaSegundo
+            formatarPace(emaSegundo)
+        }
+
         // Emite debug antes do output
         _modaDebug.value = ModaDebugInfo(
-            votosAtivos  = votosAtivos.size,
-            votos60s     = maxVotos1,
-            votos30s     = maxVotos2,
-            gatilhoAtivo = gatilhoAtivo,
-            blend60s     = blend60sAtivo,
-            blend30s     = blend30sAtivo
+            votosAtivos      = votosAtivos.size,
+            votos60s         = maxVotos1,
+            votos30s         = maxVotos2,
+            gatilhoAtivo     = gatilhoAtivo,
+            blend60s         = blend60sAtivo,
+            blend30s         = blend30sAtivo,
+            paceSegundoEma   = paceSegundoStr
         )
 
         // 7. Output: acumulado tipo parcial sobre os vencedores do estágio 2
