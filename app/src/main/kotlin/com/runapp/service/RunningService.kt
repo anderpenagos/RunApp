@@ -719,9 +719,8 @@ class RunningService : Service(), SensorEventListener {
         val votos60s: Int         = 0,
         val votos30s: Int         = 0,
         val gatilhoAtivo: Boolean = false,
-        val blend60s: Boolean     = false,
-        val blend30s: Boolean     = false,
-        val paceSegundoEma: String = "--:--"  // pace dos segundos ganhadores com EMA
+        val blendAtivo: Boolean   = false,   // segundo pace foi incluído no cálculo final
+        val paceSegundoEma: String = "--:--"  // pace refinado do segundo candidato
     )
     private val _modaDebug = MutableStateFlow(ModaDebugInfo())
     val modaDebug: StateFlow<ModaDebugInfo> = _modaDebug.asStateFlow()
@@ -2194,131 +2193,97 @@ class RunningService : Service(), SensorEventListener {
             return null
         }
 
-        // 5. Estágio 1 — bin 60s: agrupamento agressivo contra ruído persistente
-        // Blend de adjacência: se o segundo bin está a ≤30s/km do vencedor,
-        // inclui seus votos no conjunto — corrige casos de fronteira de bin
-        // (pace real partido artificialmente entre dois bins vizinhos).
+        // 5. Bin 60s → refina vencedor e segundo pelo bin 30s → blend se diferença ≤ 30s
+        //
+        // Lógica:
+        //   a) Bin 60s → vencedor e segundo colocado
+        //   b) Aplica bin 30s dentro de cada um → pace refinado real
+        //   c) Diferença refinada ≤ 30s → blend: deltas de ambos no acumulado final
+        //   d) Diferença > 30s → só deltas do vencedor
+        //
+        // Critério sobre paces refinados (não acumulados brutos do bin 60s):
+        // garante comparação entre o que o corredor realmente corre.
         val bins1 = votosAtivos.groupBy {
             kotlin.math.round(it.paceSegKm / BIN_ESTAGIO1_SEG).toInt()
         }
         if (bins1.values.all { it.size == 1 }) {
             _modaDebug.value = ModaDebugInfo(votosAtivos = votosAtivos.size, gatilhoAtivo = gatilhoAtivo)
-            Log.d(TAG, "🗳️ Moda pace v2: dispersão total estágio 1 → fallback")
+            Log.d(TAG, "🗳️ Moda pace v2: dispersão total → fallback")
             return null
         }
-        val maxVotos1 = bins1.values.maxOf { it.size }
-        val binVencedor1 = bins1.filter { it.value.size == maxVotos1 }
-        val paceMediaVencedor1 = binVencedor1.values.flatten().let { votos ->
-            if (votos.isEmpty()) return null
-            val d = votos.sumOf { it.distM }
-            val t = votos.sumOf { it.deltaMs }
-            if (d < 0.1) return null
-            t / 1000.0 / d * 1000.0
-        }
-        // Verifica se segundo bin está a ≤30s/km do vencedor
-        val segundoBin1 = bins1.filter { it.value.size < maxVotos1 }
-            .maxByOrNull { it.value.size }
-        val blendVotos1 = if (segundoBin1 != null) {
-            val paceMediaSegundo1 = segundoBin1.value.let { votos ->
-                val d = votos.sumOf { it.distM }
-                val t = votos.sumOf { it.deltaMs }
-                if (d < 0.1) null else t / 1000.0 / d * 1000.0
-            }
-            if (paceMediaSegundo1 != null &&
-                kotlin.math.abs(paceMediaVencedor1 - paceMediaSegundo1) <= 30.0) {
-                Log.d(TAG, "🔀 Blend estágio 1: vencedor=${formatarPace(paceMediaVencedor1)} " +
-                    "segundo=${formatarPace(paceMediaSegundo1)} → combinados")
-                binVencedor1.values.flatten() + segundoBin1.value
-            } else binVencedor1.values.flatten()
-        } else binVencedor1.values.flatten()
+        val maxVotos1   = bins1.values.maxOf { it.size }
+        val segundoBin1 = bins1.filter { it.value.size < maxVotos1 }.maxByOrNull { it.value.size }
 
-        val blend60sAtivo = blendVotos1.size > binVencedor1.values.flatten().size
-
-        // 6. Estágio 2 — bin 30s: refina dentro do conjunto do estágio 1
-        // Blend de adjacência: se o segundo bin está a ≤15s/km do vencedor,
-        // inclui seus votos no acumulado final.
-        val bins2 = blendVotos1.groupBy {
-            kotlin.math.round(it.paceSegKm / BIN_ESTAGIO2_SEG).toInt()
-        }
-        val maxVotos2 = bins2.values.maxOf { it.size }
-        val binVencedor2 = bins2.filter { it.value.size == maxVotos2 }
-        val paceMediaVencedor2 = binVencedor2.values.flatten().let { votos ->
-            val d = votos.sumOf { it.distM }
-            val t = votos.sumOf { it.deltaMs }
-            if (d < 0.1) return null
-            t / 1000.0 / d * 1000.0
-        }
-        val segundoBin2 = bins2.filter { it.value.size < maxVotos2 }
-            .maxByOrNull { it.value.size }
-        val vencedores2 = if (segundoBin2 != null) {
-            val paceMediaSegundo2 = segundoBin2.value.let { votos ->
-                val d = votos.sumOf { it.distM }
-                val t = votos.sumOf { it.deltaMs }
-                if (d < 0.1) null else t / 1000.0 / d * 1000.0
-            }
-            if (paceMediaSegundo2 != null &&
-                kotlin.math.abs(paceMediaVencedor2 - paceMediaSegundo2) <= 15.0) {
-                Log.d(TAG, "🔀 Blend estágio 2: vencedor=${formatarPace(paceMediaVencedor2)} " +
-                    "segundo=${formatarPace(paceMediaSegundo2)} → combinados")
-                binVencedor2.values.flatten() + segundoBin2.value
-            } else binVencedor2.values.flatten()
-        } else binVencedor2.values.flatten()
-
-        val blend30sAtivo = vencedores2.size > binVencedor2.values.flatten().size
-
-        // ── Pace dos segundos ganhadores (debug) ──────────────────────────────
-        // Pega os segundos bins de cada estágio (independente do blend),
-        // calcula o acumulado e aplica a mesma EMA do pace principal.
-        val paceSegundoStr = run {
-            // Segundo bin estágio 1 → segundo bin estágio 2 dentro dele
-            val votosSegundo1 = segundoBin1?.value ?: return@run "--:--"
-            val bins2Segundo = votosSegundo1.groupBy {
-                kotlin.math.round(it.paceSegKm / BIN_ESTAGIO2_SEG).toInt()
-            }
-            val maxVotos2Segundo = bins2Segundo.values.maxOfOrNull { it.size } ?: return@run "--:--"
-            val vencedor2Segundo = bins2Segundo.filter { it.value.size == maxVotos2Segundo }
-                .values.flatten()
-            val d = vencedor2Segundo.sumOf { it.distM }
-            val t = vencedor2Segundo.sumOf { it.deltaMs }
-            if (d < 0.5 || t < 500L) return@run "--:--"
-            val paceSegundoBruto = (t / 1000.0 / d) * 1000.0
-            if (paceSegundoBruto < 90.0 || paceSegundoBruto > 1200.0) return@run "--:--"
-            // Aplica mesma EMA do pace principal
-            val alphaSegundo = _modaDebug.value.let {
-                when {
-                    it.votos30s >= 15 -> 0.40
-                    it.votos30s >= 8  -> 0.20
-                    else              -> 0.10
-                }
-            }
-            val emaSegundo = ultimoPaceEmaSegundoInterno?.let { anterior ->
-                paceSegundoBruto * alphaSegundo + anterior * (1.0 - alphaSegundo)
-            } ?: paceSegundoBruto
-            ultimoPaceEmaSegundoInterno = emaSegundo
-            formatarPace(emaSegundo)
+        // Função local: aplica bin 30s e retorna (pace refinado, deltas do bin 30s vencedor)
+        fun refinarPelo30s(votos: List<VotoPace>): Pair<Double?, List<VotoPace>> {
+            if (votos.isEmpty()) return Pair(null, emptyList())
+            val bins30 = votos.groupBy { kotlin.math.round(it.paceSegKm / BIN_ESTAGIO2_SEG).toInt() }
+            val max30  = bins30.values.maxOf { it.size }
+            val venc30 = bins30.filter { it.value.size == max30 }.values.flatten()
+            val d = venc30.sumOf { it.distM }
+            val t = venc30.sumOf { it.deltaMs }
+            return if (d < 0.1) Pair(null, emptyList())
+            else Pair(t / 1000.0 / d * 1000.0, venc30)
         }
 
-        // Emite debug antes do output
+        val votosVencedor1                  = bins1.filter { it.value.size == maxVotos1 }.values.flatten()
+        val (paceRefinadoVenc, deltasVenc)  = refinarPelo30s(votosVencedor1)
+        if (paceRefinadoVenc == null || deltasVenc.isEmpty()) {
+            _modaDebug.value = ModaDebugInfo(votosAtivos = votosAtivos.size, gatilhoAtivo = gatilhoAtivo)
+            return null
+        }
+
+        val (paceRefinadoSeg, deltasSeg) = if (segundoBin1 != null)
+            refinarPelo30s(segundoBin1.value)
+        else Pair(null, emptyList<VotoPace>())
+
+        // EMA do segundo pace refinado para o debug
+        val paceSegundoStr = if (paceRefinadoSeg != null && paceRefinadoSeg in 90.0..1200.0) {
+            val alphaSegundo = when {
+                maxVotos1 >= 15 -> 0.40
+                maxVotos1 >= 8  -> 0.20
+                else            -> 0.10
+            }
+            val ema = ultimoPaceEmaSegundoInterno?.let { ant ->
+                paceRefinadoSeg * alphaSegundo + ant * (1.0 - alphaSegundo)
+            } ?: paceRefinadoSeg
+            ultimoPaceEmaSegundoInterno = ema
+            formatarPace(ema)
+        } else {
+            ultimoPaceEmaSegundoInterno = null
+            "--:--"
+        }
+
+        // Critério blend: diferença entre paces refinados ≤ 30s
+        val diferencaRefinada = if (paceRefinadoSeg != null)
+            kotlin.math.abs(paceRefinadoVenc - paceRefinadoSeg) else Double.MAX_VALUE
+        val blendAtivo = diferencaRefinada <= 30.0 && deltasSeg.isNotEmpty()
+
+        val deltasFinais = if (blendAtivo) deltasVenc + deltasSeg else deltasVenc
+
+        Log.d(TAG, "🗳️ Moda: venc=${formatarPace(paceRefinadoVenc)} " +
+            "seg=$paceSegundoStr dif=${String.format("%.1f", diferencaRefinada)}s blend=$blendAtivo")
+
+        // Emite debug
         _modaDebug.value = ModaDebugInfo(
-            votosAtivos      = votosAtivos.size,
-            votos60s         = maxVotos1,
-            votos30s         = maxVotos2,
-            gatilhoAtivo     = gatilhoAtivo,
-            blend60s         = blend60sAtivo,
-            blend30s         = blend30sAtivo,
-            paceSegundoEma   = paceSegundoStr
+            votosAtivos    = votosAtivos.size,
+            votos60s       = maxVotos1,
+            votos30s       = deltasVenc.size,
+            gatilhoAtivo   = gatilhoAtivo,
+            blendAtivo     = blendAtivo,
+            paceSegundoEma = paceSegundoStr
         )
 
-        // 7. Output: acumulado tipo parcial sobre os vencedores do estágio 2
-        val distAcum  = vencedores2.sumOf { it.distM }
-        val tempoAcum = vencedores2.sumOf { it.deltaMs }
+        // Output: acumulado dos deltas finais (vencedor + segundo se blend ativo)
+        val distAcum  = deltasFinais.sumOf { it.distM }
+        val tempoAcum = deltasFinais.sumOf { it.deltaMs }
         if (distAcum < 0.5 || tempoAcum < 500L) return null
         val resultado = (tempoAcum / 1000.0 / distAcum) * 1000.0
         if (resultado < 90.0 || resultado > 1200.0) return null
 
         Log.d(TAG, "🗳️ Moda pace v2: urna=${nVotosAtivos}v " +
-            "bin60→${maxVotos1}v bin30→${maxVotos2}v " +
-            "acum=${String.format("%.1f", distAcum)}m/${tempoAcum}ms " +
+            "bin60→${maxVotos1}v bin30→${deltasVenc.size}v " +
+            "blend=$blendAtivo acum=${String.format("%.1f", distAcum)}m/${tempoAcum}ms " +
             "→ ${formatarPace(resultado)}")
         return resultado
     }
