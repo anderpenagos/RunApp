@@ -436,18 +436,14 @@ class RunningService : Service(), SensorEventListener {
                     modoRecuperacaoGps = true
                     contadorPontosRecuperacao = 0
                     screenOnTimestampMs = SystemClock.elapsedRealtime()
-                    // Limpa apenas os buffers de janela deslizante: misturar pontos
-                    // de minutos atrás com os novos distorceria distJanela/tempoJanela.
-                    // A EMA (ultimoPaceEmaInterno) é PRESERVADA intencionalmente —
-                    // ela é a âncora histórica que impede spikes de pace no desbloqueio.
-                    // O display (_paceAtual) também é preservado: o corredor continua
-                    // vendo o último pace válido em vez de "--:--".
+                    // Preserva urnaVotosPace e ultimoPaceEmaInterno — a Moda continua
+                    // produzindo pace com o histórico acumulado durante tela bloqueada.
+                    // Limpa só buffers de posição GPS que ficam stale com batch mode.
                     ultimasLocalizacoes.clear()
                     bufferPace30s.clear()
                     bufferDeltasPace.clear()
-                    urnaVotosPace.clear()
                     bufferStride5s.clear()
-                    Log.d(TAG, "Tela ligada apos ${tempoTelaApagadaMs / 1000}s - buffers limpos, EMA preservada para evitar spike de pace")
+                    Log.d(TAG, "Tela ligada após ${tempoTelaApagadaMs / 1000}s — urna preservada, EMA preservada")
                 }
             }
         }
@@ -2176,15 +2172,13 @@ class RunningService : Service(), SensorEventListener {
 
         val gatilhoAtivo = kotlin.math.abs(mediaRapida - mediaLenta) >= GATILHO_CADENCIA_SPM
         val nVotosAtivos = if (gatilhoAtivo) {
-            // Trunca urna fisicamente — descarta histórico do ritmo antigo.
-            // Com 3 votos restantes, o novo ritmo precisa de apenas 2 para ganhar maioria.
-            if (urnaVotosPace.size > 3) {
-                val recentes = urnaVotosPace.toList().takeLast(3)
-                urnaVotosPace.clear()
-                urnaVotosPace.addAll(recentes)
-            }
+            // Esvazia urna completamente — novo ritmo começa do zero.
+            // Com urna vazia, a Moda retorna null → fallback 22s por ~3s
+            // até acumular votos suficientes do novo ritmo.
+            urnaVotosPace.clear()
+            ultimoPaceEmaSegundoInterno = null
             Log.d(TAG, "⚡ Gatilho cadência: lenta=${mediaLenta.toInt()} rápida=${mediaRapida.toInt()} " +
-                "spm → urna truncada para ${urnaVotosPace.size}v")
+                "spm → urna esvaziada")
             URNA_VOTOS_GATILHO
         } else URNA_VOTOS_NORMAL
         val votosAtivos = urnaVotosPace.toList().takeLast(nVotosAtivos)
@@ -2312,11 +2306,8 @@ class RunningService : Service(), SensorEventListener {
         val modaTemConsenso = paceModa != null
 
         // ── 2. JANELA 22s (fallback) ─────────────────────────────────────────────
-        // Usado quando: Moda sem consenso OU urna com menos de 17 votos (startup).
-        // Com < 17 votos a urna ainda não tem informação estatística suficiente —
-        // o método antigo é mais confiável nesse período inicial.
-        val urnaAquecida = urnaVotosPace.size >= 17
-        val paceBruto22s: Double? = if (modaTemConsenso && urnaAquecida) null else run {
+        // Só usada quando Moda não tem consenso (dispersão total ou urna vazia).
+        val paceBruto22s: Double? = if (modaTemConsenso) null else run {
             val accuracyAtual = ultimasLocalizacoes.last().accuracy
             val janelaEfetiva = when {
                 accuracyAtual > 20f -> (janelaAtualSegundos * 1.5).toInt().coerceAtMost(33)
@@ -2345,9 +2336,8 @@ class RunningService : Service(), SensorEventListener {
             if (pb < 90.0 || pb > 1200.0) null else pb
         }
 
-        // Pace candidato: Moda se tem consenso E urna aquecida, 22s caso contrário
-        val paceCandidato = (if (modaTemConsenso && urnaAquecida) paceModa else null)
-            ?: paceBruto22s ?: run {
+        // Pace candidato: Moda se tem consenso, 22s caso contrário
+        val paceCandidato = paceModa ?: paceBruto22s ?: run {
             _paceAtual.value = "--:--"
             return
         }
@@ -2403,7 +2393,7 @@ class RunningService : Service(), SensorEventListener {
         val votos30sAtual = _modaDebug.value.votos30s
         val alpha = when {
             msDesdeScreenOn < 20_000L -> 0.05
-            !modaTemConsenso || !urnaAquecida -> 0.20  // fallback 22s — alpha moderado
+            !modaTemConsenso          -> 0.20  // fallback 22s — alpha moderado
             votos30sAtual >= 15       -> 0.40
             votos30sAtual >= 8        -> 0.20
             else                      -> 0.10
@@ -2412,12 +2402,9 @@ class RunningService : Service(), SensorEventListener {
             (paceCandidato * alpha) + (anterior * (1.0 - alpha))
         } ?: paceCandidato
 
-        // Quarentena 10s pós SCREEN_ON: atualiza EMA interna mas não exibe
-        if (msDesdeScreenOn < 10_000L) {
-            ultimoPaceEmaInterno = paceEma
-            return
-        }
-
+        // Pós SCREEN_ON: alpha ultra-baixo por 20s protege contra spikes de GPS.
+        // A urna mantém o histórico — Moda continua produzindo pace estável.
+        // Não suprimimos o display (--:--) — o corredor vê o pace histórico.
         ultimoPaceEmaInterno = paceEma
         ultimoPaceValidoGrafico = paceEma
         _paceAtual.value = formatarPace(paceEma)
