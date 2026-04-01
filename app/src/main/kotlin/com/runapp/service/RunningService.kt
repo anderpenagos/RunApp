@@ -2286,12 +2286,12 @@ class RunningService : Service(), SensorEventListener {
 
         // Emite debug
         _modaDebug.value = ModaDebugInfo(
-            votosAtivos    = votosAtivos.size,
-            votos60s       = maxVotos1,
-            votos30s       = deltasVenc.size,
-            gatilhoAtivo   = gatilhoAtivo,
-            blendAtivo     = blendAtivo,
-            paceSegundoEma = paceSegundoStr
+            votosAtivos          = votosAtivos.size,
+            votos60s             = maxVotos1,
+            votos30s             = deltasVenc.size,
+            gatilhoAtivo         = gatilhoAtivo,
+            blendAtivo           = blendAtivo,
+            paceDebugUrnaReset   = "--:--"  // atualizado no calcularPaceAtual
         )
 
         // Output: acumulado dos deltas finais (vencedor + segundo se blend ativo)
