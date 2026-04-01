@@ -436,17 +436,15 @@ class RunningService : Service(), SensorEventListener {
                     modoRecuperacaoGps = true
                     contadorPontosRecuperacao = 0
                     screenOnTimestampMs = SystemClock.elapsedRealtime()
-                    // Calcula SPM médio dos últimos 10s para detectar mudança de ritmo pós-desbloqueio
-                    val agoraScreenOn = System.currentTimeMillis()
-                    val passosUltimos10s = timestampsPassos.count { agoraScreenOn - it <= 10_000L }
-                    spmMedioAntesDesbloqueio = (passosUltimos10s / 10.0 * 60).toInt()
-                    // Bloqueia aumento de pace por 15s após desbloqueio se SPM não mudar
-                    bloqueioAumentoPaceAteMs = SystemClock.elapsedRealtime() + 15_000L
+                    // Reset âncora: primeiros 7s coletam paces para âncora
+                    bufferPaceAncora.clear()
+                    paceAncoraPosDesbloqueio = null
+                    bloqueioAumentoPaceAteMs = 0L
                     ultimasLocalizacoes.clear()
                     bufferPace30s.clear()
                     bufferDeltasPace.clear()
                     bufferStride5s.clear()
-                    Log.d(TAG, "Tela ligada após ${tempoTelaApagadaMs / 1000}s — SPM=${spmMedioAntesDesbloqueio} bloqueio pace 15s")
+                    Log.d(TAG, "Tela ligada após ${tempoTelaApagadaMs / 1000}s — coletando âncora por 7s")
                 }
             }
         }
@@ -770,13 +768,15 @@ class RunningService : Service(), SensorEventListener {
 
     // FIX 7: Separação entre valor interno de EMA e string da UI.
     private var ultimoPaceEmaInterno: Double? = null
-    // Warmup de 5s no início da corrida — urna precisa acumular votos antes de exibir
-    private var elapsedRealtimeInicioCorrente: Long = 0L
-    // Pós-desbloqueio: SPM médio dos últimos 10s no momento do SCREEN_ON
-    // Usado para bloquear aumento de pace por 15s se SPM não mudou suficientemente
-    private var spmMedioAntesDesbloqueio: Int = 0
+    // Pós-desbloqueio:
+    //   - Primeiros 7s: coleta paces para calcular âncora
+    //   - 7s–20s: se pace subir > 30s/km acima da âncora sem SPM → trava
+    private val bufferPaceAncora  = mutableListOf<Double>()
+    private var paceAncoraPosDesbloqueio: Double? = null
     private var bloqueioAumentoPaceAteMs: Long = 0L
-    private val LIMIAR_SPM_MUDANCA_DESBLOQUEIO = 20  // mudança mínima para permitir pace subir
+    private val JANELA_ANCORAGEM_MS = 7_000L   // 7s para construir âncora
+    private val LIMIAR_AUMENTO_PACE_SEG = 30.0
+    private val LIMIAR_SPM_MUDANCA_DESBLOQUEIO = 20
     
     private val _rotaAtual = MutableStateFlow<List<LatLngPonto>>(emptyList())
     val rotaAtual: StateFlow<List<LatLngPonto>> = _rotaAtual.asStateFlow()
@@ -1126,9 +1126,9 @@ class RunningService : Service(), SensorEventListener {
         // Capturar ambas âncoras no mesmo instante
         timestampInicioWall   = System.currentTimeMillis()     // para display
         elapsedRealtimeInicio = SystemClock.elapsedRealtime()
-        elapsedRealtimeInicioCorrente = SystemClock.elapsedRealtime()
         bloqueioAumentoPaceAteMs = 0L
-        spmMedioAntesDesbloqueio = 0  // para cronômetro
+        paceAncoraPosDesbloqueio = null
+        bufferPaceAncora.clear()  // para cronômetro
         tempoPausadoTotalMs   = 0
         _distanciaMetros.value = 0.0
         _tempoTotalSegundos.value = 0
@@ -2311,10 +2311,12 @@ class RunningService : Service(), SensorEventListener {
             return
         }
 
-        // ── Warmup de 5s — urna precisa acumular votos antes de exibir pace ────
-        val msDesdeInicio = SystemClock.elapsedRealtime() - elapsedRealtimeInicioCorrente
-        if (msDesdeInicio < 5_000L) {
-            aplicarModaPaceV2(distanciaAtual, deltaMsAtual)  // alimenta urna mas não exibe
+        // ── Warmup — urna precisa de 7 votos antes de exibir pace ───────────────
+        // Garante que a Moda tem informação estatística mínima antes de assumir.
+        // Durante o warmup alimenta a urna mas não exibe pace.
+        val urnaComVotos = urnaVotosPace.size >= 7
+        if (!urnaComVotos) {
+            aplicarModaPaceV2(distanciaAtual, deltaMsAtual)  // alimenta urna
             _paceAtual.value = "--:--"
             return
         }
@@ -2425,23 +2427,65 @@ class RunningService : Service(), SensorEventListener {
             (paceCandidato * alpha) + (anterior * (1.0 - alpha))
         } ?: paceCandidato
 
-        // ── Bloqueio de aumento de pace pós-desbloqueio ──────────────────────────
-        // Por 15s após SCREEN_ON, se SPM não mudou suficientemente (< 20 spm),
-        // o pace não pode aumentar (ficar mais lento) acima do último valor EMA.
-        // Impede spikes de pace causados por GPS instável ao reativar.
-        val agora = SystemClock.elapsedRealtime()
-        val paceEmaFinal = if (bloqueioAumentoPaceAteMs > 0 && agora < bloqueioAumentoPaceAteMs) {
-            val spmAtual = _cadencia.value
-            val mudouSpm = kotlin.math.abs(spmAtual - spmMedioAntesDesbloqueio) >= LIMIAR_SPM_MUDANCA_DESBLOQUEIO
-            if (!mudouSpm && ultimoPaceEmaInterno != null && paceEma > ultimoPaceEmaInterno!!) {
-                // SPM não mudou — mantém o pace anterior, não deixa aumentar
-                Log.d(TAG, "🔒 Bloqueio pace pós-desbloqueio: ${formatarPace(paceEma)} → ${formatarPace(ultimoPaceEmaInterno!!)}")
-                ultimoPaceEmaInterno!!
-            } else {
-                if (mudouSpm) bloqueioAumentoPaceAteMs = 0L  // SPM mudou — libera bloqueio
+        // ── Proteção pós-desbloqueio ──────────────────────────────────────────────
+        // Fase 1 (0–7s): coleta paces para construir âncora
+        // Fase 2 (7–20s): se pace subir > 30s/km acima da âncora sem SPM → trava
+        // Liberação: SPM sobe >= 20 spm (ritmo real mudou) OU 20s passaram
+        val agoraElapsed = SystemClock.elapsedRealtime()
+        val msPosScreenOn = if (screenOnTimestampMs > 0) agoraElapsed - screenOnTimestampMs else Long.MAX_VALUE
+
+        val paceEmaFinal = when {
+            msPosScreenOn < 0 || msPosScreenOn > 20_000L -> {
+                // Fora da janela de proteção — limpa estado
+                if (bloqueioAumentoPaceAteMs > 0) {
+                    bloqueioAumentoPaceAteMs = 0L
+                    paceAncoraPosDesbloqueio = null
+                    bufferPaceAncora.clear()
+                }
                 paceEma
             }
-        } else paceEma
+            msPosScreenOn < JANELA_ANCORAGEM_MS -> {
+                // Fase 1: coleta pace para âncora (primeiros 7s)
+                if (paceEma in 90.0..1200.0) bufferPaceAncora.add(paceEma)
+                paceEma  // exibe normalmente durante coleta
+            }
+            else -> {
+                // Fase 2 (7–20s): aplica proteção
+                if (paceAncoraPosDesbloqueio == null && bufferPaceAncora.isNotEmpty()) {
+                    // Finaliza âncora como média dos paces coletados nos primeiros 7s
+                    paceAncoraPosDesbloqueio = bufferPaceAncora.average()
+                    bufferPaceAncora.clear()
+                    Log.d(TAG, "⚓ Âncora pós-desbloqueio: ${formatarPace(paceAncoraPosDesbloqueio!!)}")
+                }
+                val ancora = paceAncoraPosDesbloqueio
+                if (ancora == null) {
+                    paceEma  // sem âncora válida → sem proteção
+                } else {
+                    // Verifica se SPM justifica aumento
+                    val ultimosPassos6 = timestampsPassos.toList().takeLast(6)
+                    val mediaRapida = if (ultimosPassos6.size >= 2) {
+                        val iv = ultimosPassos6.last() - ultimosPassos6.first()
+                        if (iv > 0) (ultimosPassos6.size - 1).toDouble() / iv * 60_000
+                        else _cadencia.value.toDouble()
+                    } else _cadencia.value.toDouble()
+                    val mediaLenta = _cadencia.value.toDouble()
+                    val spmSubiu = kotlin.math.abs(mediaRapida - mediaLenta) >= LIMIAR_SPM_MUDANCA_DESBLOQUEIO
+
+                    if (spmSubiu) {
+                        // SPM mudou → libera proteção
+                        paceAncoraPosDesbloqueio = null
+                        Log.d(TAG, "🔓 Proteção liberada — SPM mudou")
+                        paceEma
+                    } else if (paceEma > ancora + LIMIAR_AUMENTO_PACE_SEG) {
+                        // Pace tentou subir sem SPM → trava na âncora
+                        Log.d(TAG, "🔒 Pace travado: ${formatarPace(paceEma)} → ${formatarPace(ancora)}")
+                        ancora
+                    } else {
+                        paceEma
+                    }
+                }
+            }
+        }
 
         ultimoPaceEmaInterno = paceEmaFinal
         ultimoPaceValidoGrafico = paceEmaFinal
