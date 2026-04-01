@@ -436,14 +436,17 @@ class RunningService : Service(), SensorEventListener {
                     modoRecuperacaoGps = true
                     contadorPontosRecuperacao = 0
                     screenOnTimestampMs = SystemClock.elapsedRealtime()
-                    // Preserva urnaVotosPace e ultimoPaceEmaInterno — a Moda continua
-                    // produzindo pace com o histórico acumulado durante tela bloqueada.
-                    // Limpa só buffers de posição GPS que ficam stale com batch mode.
+                    // Calcula SPM médio dos últimos 10s para detectar mudança de ritmo pós-desbloqueio
+                    val agoraScreenOn = System.currentTimeMillis()
+                    val passosUltimos10s = timestampsPassos.count { agoraScreenOn - it <= 10_000L }
+                    spmMedioAntesDesbloqueio = (passosUltimos10s / 10.0 * 60).toInt()
+                    // Bloqueia aumento de pace por 15s após desbloqueio se SPM não mudar
+                    bloqueioAumentoPaceAteMs = SystemClock.elapsedRealtime() + 15_000L
                     ultimasLocalizacoes.clear()
                     bufferPace30s.clear()
                     bufferDeltasPace.clear()
                     bufferStride5s.clear()
-                    Log.d(TAG, "Tela ligada após ${tempoTelaApagadaMs / 1000}s — urna preservada, EMA preservada")
+                    Log.d(TAG, "Tela ligada após ${tempoTelaApagadaMs / 1000}s — SPM=${spmMedioAntesDesbloqueio} bloqueio pace 15s")
                 }
             }
         }
@@ -767,6 +770,13 @@ class RunningService : Service(), SensorEventListener {
 
     // FIX 7: Separação entre valor interno de EMA e string da UI.
     private var ultimoPaceEmaInterno: Double? = null
+    // Warmup de 5s no início da corrida — urna precisa acumular votos antes de exibir
+    private var elapsedRealtimeInicioCorrente: Long = 0L
+    // Pós-desbloqueio: SPM médio dos últimos 10s no momento do SCREEN_ON
+    // Usado para bloquear aumento de pace por 15s se SPM não mudou suficientemente
+    private var spmMedioAntesDesbloqueio: Int = 0
+    private var bloqueioAumentoPaceAteMs: Long = 0L
+    private val LIMIAR_SPM_MUDANCA_DESBLOQUEIO = 20  // mudança mínima para permitir pace subir
     
     private val _rotaAtual = MutableStateFlow<List<LatLngPonto>>(emptyList())
     val rotaAtual: StateFlow<List<LatLngPonto>> = _rotaAtual.asStateFlow()
@@ -1115,7 +1125,10 @@ class RunningService : Service(), SensorEventListener {
         ultimaLocalizacaoParaAutoPause = null
         // Capturar ambas âncoras no mesmo instante
         timestampInicioWall   = System.currentTimeMillis()     // para display
-        elapsedRealtimeInicio = SystemClock.elapsedRealtime()  // para cronômetro
+        elapsedRealtimeInicio = SystemClock.elapsedRealtime()
+        elapsedRealtimeInicioCorrente = SystemClock.elapsedRealtime()
+        bloqueioAumentoPaceAteMs = 0L
+        spmMedioAntesDesbloqueio = 0  // para cronômetro
         tempoPausadoTotalMs   = 0
         _distanciaMetros.value = 0.0
         _tempoTotalSegundos.value = 0
@@ -2135,33 +2148,35 @@ class RunningService : Service(), SensorEventListener {
      *   7. Dispersão total em qualquer estágio → null (fallback para janela 22s).
      */
     private fun aplicarModaPaceV2(distM: Double, deltaMs: Long): Double? {
-        // 1. Acumula deltas brutos para a micro-janela
+        val agora = System.currentTimeMillis()
+
+        // 1. Tenta acumular novo voto — falha silenciosa se parado (semáforo)
         bufferDeltasPace.addLast(DeltaPaceGps(distM, deltaMs))
         if (bufferDeltasPace.size > 5) bufferDeltasPace.removeFirst()
 
-        // 2. Calcula voto da micro-janela (últimos 3 deltas sobrepostos)
         val deltas = bufferDeltasPace.toList().takeLast(3)
-        if (deltas.size < 2) return null
-        val distTotal  = deltas.sumOf { it.distM }
-        val tempoTotal = deltas.sumOf { it.deltaMs }
-        if (distTotal < 0.5 || tempoTotal < 500L) return null
-        val voto = (tempoTotal / 1000.0 / distTotal) * 1000.0
-        if (voto < 90.0 || voto > 1200.0) return null
+        if (deltas.size >= 2) {
+            val distTotal  = deltas.sumOf { it.distM }
+            val tempoTotal = deltas.sumOf { it.deltaMs }
+            if (distTotal >= 0.5 && tempoTotal >= 500L) {
+                val voto = (tempoTotal / 1000.0 / distTotal) * 1000.0
+                if (voto in 90.0..1200.0) {
+                    // Voto válido — insere na urna
+                    urnaVotosPace.addLast(VotoPace(
+                        paceSegKm   = voto,
+                        timestampMs = agora,
+                        distM       = distTotal,
+                        deltaMs     = tempoTotal
+                    ))
+                    if (urnaVotosPace.size > URNA_VOTOS_NORMAL + 3) urnaVotosPace.removeFirst()
+                }
+            }
+        }
 
-        // 3. Insere voto na urna com deltas originais preservados
-        val agora = System.currentTimeMillis()
-        urnaVotosPace.addLast(VotoPace(
-            paceSegKm   = voto,
-            timestampMs = agora,
-            distM       = distTotal,
-            deltaMs     = tempoTotal
-        ))
-        if (urnaVotosPace.size > URNA_VOTOS_NORMAL + 3) urnaVotosPace.removeFirst()
-
-        // 4. Detecta degrau de cadência — mediaRapida (últimos 3 passos reais)
-        //    vs mediaLenta (_cadencia.value = janela 10s).
-        //    A mediaRapida sobe para o ritmo do tiro no 2º passo — muito mais
-        //    responsiva que comparar ticks de _cadencia que já é média de 10s.
+        // 2. Remove votos expirados por tempo (janela de nVotosAtivos segundos)
+        //    Ao parar num semáforo, nenhum novo voto é adicionado mas os existentes
+        //    expiram naturalmente — pace vai diminuindo até urna esvaziar.
+        // 4. Detecta degrau de cadência
         val mediaLenta = _cadencia.value.toDouble()
         val ultimosPassos = timestampsPassos.toList().takeLast(6)
         val mediaRapida = if (ultimosPassos.size >= 2) {
@@ -2172,16 +2187,16 @@ class RunningService : Service(), SensorEventListener {
 
         val gatilhoAtivo = kotlin.math.abs(mediaRapida - mediaLenta) >= GATILHO_CADENCIA_SPM
         val nVotosAtivos = if (gatilhoAtivo) {
-            // Esvazia urna completamente — novo ritmo começa do zero.
-            // Com urna vazia, a Moda retorna null → fallback 22s por ~3s
-            // até acumular votos suficientes do novo ritmo.
             urnaVotosPace.clear()
             ultimoPaceEmaSegundoInterno = null
             Log.d(TAG, "⚡ Gatilho cadência: lenta=${mediaLenta.toInt()} rápida=${mediaRapida.toInt()} " +
                 "spm → urna esvaziada")
             URNA_VOTOS_GATILHO
         } else URNA_VOTOS_NORMAL
-        val votosAtivos = urnaVotosPace.toList().takeLast(nVotosAtivos)
+
+        // Filtra por tempo: votos mais antigos que nVotosAtivos segundos são ignorados
+        val janelaMs = nVotosAtivos * 1_000L
+        val votosAtivos = urnaVotosPace.toList().filter { agora - it.timestampMs <= janelaMs }
         if (votosAtivos.size < 3) {
             _modaDebug.value = ModaDebugInfo(votosAtivos = votosAtivos.size)
             return null
@@ -2296,6 +2311,14 @@ class RunningService : Service(), SensorEventListener {
             return
         }
 
+        // ── Warmup de 5s — urna precisa acumular votos antes de exibir pace ────
+        val msDesdeInicio = SystemClock.elapsedRealtime() - elapsedRealtimeInicioCorrente
+        if (msDesdeInicio < 5_000L) {
+            aplicarModaPaceV2(distanciaAtual, deltaMsAtual)  // alimenta urna mas não exibe
+            _paceAtual.value = "--:--"
+            return
+        }
+
         val msDesdeScreenOn = if (screenOnTimestampMs > 0)
             SystemClock.elapsedRealtime() - screenOnTimestampMs else Long.MAX_VALUE
 
@@ -2402,12 +2425,27 @@ class RunningService : Service(), SensorEventListener {
             (paceCandidato * alpha) + (anterior * (1.0 - alpha))
         } ?: paceCandidato
 
-        // Pós SCREEN_ON: alpha ultra-baixo por 20s protege contra spikes de GPS.
-        // A urna mantém o histórico — Moda continua produzindo pace estável.
-        // Não suprimimos o display (--:--) — o corredor vê o pace histórico.
-        ultimoPaceEmaInterno = paceEma
-        ultimoPaceValidoGrafico = paceEma
-        _paceAtual.value = formatarPace(paceEma)
+        // ── Bloqueio de aumento de pace pós-desbloqueio ──────────────────────────
+        // Por 15s após SCREEN_ON, se SPM não mudou suficientemente (< 20 spm),
+        // o pace não pode aumentar (ficar mais lento) acima do último valor EMA.
+        // Impede spikes de pace causados por GPS instável ao reativar.
+        val agora = SystemClock.elapsedRealtime()
+        val paceEmaFinal = if (bloqueioAumentoPaceAteMs > 0 && agora < bloqueioAumentoPaceAteMs) {
+            val spmAtual = _cadencia.value
+            val mudouSpm = kotlin.math.abs(spmAtual - spmMedioAntesDesbloqueio) >= LIMIAR_SPM_MUDANCA_DESBLOQUEIO
+            if (!mudouSpm && ultimoPaceEmaInterno != null && paceEma > ultimoPaceEmaInterno!!) {
+                // SPM não mudou — mantém o pace anterior, não deixa aumentar
+                Log.d(TAG, "🔒 Bloqueio pace pós-desbloqueio: ${formatarPace(paceEma)} → ${formatarPace(ultimoPaceEmaInterno!!)}")
+                ultimoPaceEmaInterno!!
+            } else {
+                if (mudouSpm) bloqueioAumentoPaceAteMs = 0L  // SPM mudou — libera bloqueio
+                paceEma
+            }
+        } else paceEma
+
+        ultimoPaceEmaInterno = paceEmaFinal
+        ultimoPaceValidoGrafico = paceEmaFinal
+        _paceAtual.value = formatarPace(paceEmaFinal)
     }
 
     private fun calcularPaceMedia() {
