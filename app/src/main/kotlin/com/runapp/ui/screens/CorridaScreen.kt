@@ -1234,7 +1234,7 @@ private fun MetricasFullscreen(
                 val d = state.modaDebug
                 val gatilhoStr = if (d.gatilhoAtivo) " ⚡" else ""
                 val blendStr = if (d.blendAtivo) " 🔀" else ""
-                val resetStr = if (d.paceDebugUrnaReset != "--:--") "  R:${d.paceDebugUrnaReset}" else ""
+                //val resetStr = if (d.paceDebugUrnaReset != "--:--") "  R:${d.paceDebugUrnaReset}" else ""
                 Row(
                     modifier = androidx.compose.ui.Modifier
                         .fillMaxWidth()
