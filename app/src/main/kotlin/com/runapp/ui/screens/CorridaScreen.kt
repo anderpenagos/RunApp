@@ -1242,9 +1242,9 @@ private fun MetricasFullscreen(
                     horizontalArrangement = Arrangement.Center
                 ) {
                     Text(
-                        text = "urna:${d.votosAtivos}v  60s:${d.votos60s}v  30s:${d.votos30s}v$resetStr$blendStr$gatilhoStr",
+                        text = "urna:${d.votosAtivos}v  60s:${d.votos60s}v  30s:${d.votos30s}v$blendStr$gatilhoStr",
                         color = Color.White.copy(alpha = 0.45f),
-                        fontSize = 11.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Normal
                     )
                 }
