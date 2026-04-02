@@ -1202,6 +1202,31 @@ class RunningService : Service(), SensorEventListener {
 
         estaCorrendo = false
 
+        // Drena votos restantes da urna — atualiza paceNoPonto dos últimos pontos
+        // para que o gráfico final reflita o pace real até o fim da corrida.
+        val agora = System.currentTimeMillis()
+        val votosRestantes = urnaVotosPace.toList().filter { agora - it.timestampMs <= URNA_VOTOS_NORMAL * 1_000L }
+        if (votosRestantes.isNotEmpty() && rota.isNotEmpty()) {
+            Log.d(TAG, "🏁 Drenando ${votosRestantes.size} votos restantes da urna")
+            // Calcula pace final com os votos restantes usando o pipeline da Moda
+            val bins1 = votosRestantes.groupBy { kotlin.math.round(it.paceSegKm / BIN_ESTAGIO1_SEG).toInt() }
+            if (!bins1.values.all { it.size == 1 }) {
+                val maxV1 = bins1.values.maxOf { it.size }
+                val venc1 = bins1.filter { it.value.size == maxV1 }.values.flatten()
+                val bins2 = venc1.groupBy { kotlin.math.round(it.paceSegKm / BIN_ESTAGIO2_SEG).toInt() }
+                val maxV2 = bins2.values.maxOf { it.size }
+                val venc2 = bins2.filter { it.value.size == maxV2 }.values.flatten()
+                val d = venc2.sumOf { it.distM }; val t = venc2.sumOf { it.deltaMs }
+                if (d >= 0.5 && t >= 500L) {
+                    val paceFinal = (t / 1000.0 / d) * 1000.0
+                    if (paceFinal in 90.0..1200.0) {
+                        ultimoPaceValidoGrafico = paceFinal
+                        Log.d(TAG, "🏁 Pace final da urna: ${formatarPace(paceFinal)}")
+                    }
+                }
+            }
+        }
+
         // Emite a rota COMPLETA (Room + buffer) para o ViewModel usar no GPX.
         // Assíncrono — o ViewModel coleta via StateFlow após o stop.
         serviceScope.launch(Dispatchers.IO) {
@@ -2174,10 +2199,12 @@ class RunningService : Service(), SensorEventListener {
 
         val gatilhoAtivo = kotlin.math.abs(mediaRapida - mediaLenta) >= GATILHO_CADENCIA_SPM
         val nVotosAtivos = if (gatilhoAtivo) {
+            val umMaisAntigo = urnaVotosPace.toList().take(1)
             urnaVotosPace.clear()
+            urnaVotosPace.addAll(umMaisAntigo)
             ultimoPaceEmaSegundoInterno = null
             Log.d(TAG, "⚡ Gatilho cadência: lenta=${mediaLenta.toInt()} rápida=${mediaRapida.toInt()} " +
-                "spm → urna esvaziada")
+                "spm → urna reset para ${urnaVotosPace.size}v")
             URNA_VOTOS_GATILHO
         } else URNA_VOTOS_NORMAL
 
@@ -2297,13 +2324,16 @@ class RunningService : Service(), SensorEventListener {
             return
         }
 
-        // ── Warmup — urna precisa de 7 votos antes de exibir pace ───────────────
-        // Garante que a Moda tem informação estatística mínima antes de assumir.
-        // Durante o warmup alimenta a urna mas não exibe pace.
+        // ── Warmup — urna precisa de 7 votos antes de calcular via Moda ────────────
         val urnaComVotos = urnaVotosPace.size >= 7
         if (!urnaComVotos) {
             aplicarModaPaceV2(distanciaAtual, deltaMsAtual)  // alimenta urna
-            _paceAtual.value = "--:--"
+            // Exibe último pace válido se existir, senão --:--
+            // O gráfico trata paceNoPonto=-1.0 como inválido e interpola com o primeiro válido
+            if (ultimoPaceEmaInterno == null) {
+                _paceAtual.value = "--:--"
+            }
+            // Se já tem pace anterior, mantém o display — não altera _paceAtual
             return
         }
 
@@ -2349,7 +2379,8 @@ class RunningService : Service(), SensorEventListener {
 
         // Pace candidato: Moda se tem consenso, 22s caso contrário
         val paceCandidato = paceModa ?: paceBruto22s ?: run {
-            _paceAtual.value = "--:--"
+            // Sem pace calculável — mantém último valor válido
+            ultimoPaceEmaInterno?.let { _paceAtual.value = formatarPace(it) }
             return
         }
 
@@ -2378,18 +2409,16 @@ class RunningService : Service(), SensorEventListener {
                 val limiteStride = if (modaTemConsenso) 2.2 else 1.9
                 val stride = distJanela5s / passosJanela5s
                 if (janelaQuente && stride > limiteStride) {
-                    Log.d(TAG, "🚫 Regra A: stride=${String.format("%.2f", stride)}m > ${limiteStride}m " +
-                        "(consenso=$modaTemConsenso) → bloqueado")
-                    _paceAtual.value = "--:--"
+                    Log.d(TAG, "🚫 Regra A: stride=${String.format("%.2f", stride)}m > ${limiteStride}m → bloqueado")
+                    ultimoPaceEmaInterno?.let { _paceAtual.value = formatarPace(it) }
                     return
                 }
             } else if (velocidadeGps > 0.5f) {
-                // REGRA B — checagem normal independente de consenso
+                // REGRA B
                 val limiteAccuracy = if (modoRecuperacaoGps) 25f else 15f
                 if (location.accuracy > limiteAccuracy || velocidadeGps > 10.0f) {
-                    Log.d(TAG, "🚫 Regra B: accuracy=${location.accuracy}m speed=${velocidadeGps}m/s " +
-                        "(consenso=$modaTemConsenso) → bloqueado")
-                    _paceAtual.value = "--:--"
+                    Log.d(TAG, "🚫 Regra B: accuracy=${location.accuracy}m speed=${velocidadeGps}m/s → bloqueado")
+                    ultimoPaceEmaInterno?.let { _paceAtual.value = formatarPace(it) }
                     return
                 }
             }
@@ -2421,12 +2450,12 @@ class RunningService : Service(), SensorEventListener {
         val agoraElapsed = SystemClock.elapsedRealtime()
         val msPosScreenOn = if (screenOnTimestampMs > 0) agoraElapsed - screenOnTimestampMs else Long.MAX_VALUE
 
-        if (!urnaDebugResetFeito && msPosScreenOn in 17_000L..90_000L) {
-            val doisMaisAntigos = urnaVotosPace.toList().take(2)
+        if (!urnaDebugResetFeito && msPosScreenOn in 45_000L..90_000L) {
+            val umMaisAntigo = urnaVotosPace.toList().take(1)
             urnaVotosPace.clear()
-            urnaVotosPace.addAll(doisMaisAntigos)
+            urnaVotosPace.addAll(umMaisAntigo)
             urnaDebugResetFeito = true
-            Log.d(TAG, "🔄 Urna reset pós-desbloqueio: conservados ${doisMaisAntigos.size} votos antigos")
+            Log.d(TAG, "🔄 Urna reset pós-desbloqueio (45s): conservado ${umMaisAntigo.size} voto antigo")
         }
 
         ultimoPaceEmaInterno = paceEma
