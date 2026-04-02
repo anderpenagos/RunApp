@@ -436,19 +436,12 @@ class RunningService : Service(), SensorEventListener {
                     modoRecuperacaoGps = true
                     contadorPontosRecuperacao = 0
                     screenOnTimestampMs = SystemClock.elapsedRealtime()
-                    bufferPaceAncora.clear()
-                    paceAncoraPosDesbloqueio = null
-                    bloqueioAumentoPaceAteMs = 0L
-                    // Reset debug urna alternativa
-                    urnaDebugReset.clear()
-                    urnaDebugReset.addAll(urnaVotosPace)  // cópia da urna atual
-                    urnaDebugResetFeito = false
-                    ultimoPaceEmaDebugReset = ultimoPaceEmaInterno
+                    urnaDebugResetFeito = false  // reset flag — urna será limpa aos 17s
                     ultimasLocalizacoes.clear()
                     bufferPace30s.clear()
                     bufferDeltasPace.clear()
                     bufferStride5s.clear()
-                    Log.d(TAG, "Tela ligada após ${tempoTelaApagadaMs / 1000}s — coletando âncora por 7s")
+                    Log.d(TAG, "Tela ligada após ${tempoTelaApagadaMs / 1000}s — urna preservada, reset em 17s")
                 }
             }
         }
@@ -720,16 +713,11 @@ class RunningService : Service(), SensorEventListener {
         val votos60s: Int         = 0,
         val votos30s: Int         = 0,
         val gatilhoAtivo: Boolean = false,
-        val blendAtivo: Boolean   = false,
-        val paceDebugUrnaReset: String = "--:--"  // pace com urna resetada aos 2 votos antigos após 17s
+        val blendAtivo: Boolean   = false
     )
     private val _modaDebug = MutableStateFlow(ModaDebugInfo())
     val modaDebug: StateFlow<ModaDebugInfo> = _modaDebug.asStateFlow()
     private var ultimoPaceEmaSegundoInterno: Double? = null
-    // Debug pós-desbloqueio: urna alternativa com reset aos 2 votos mais antigos após 17s
-    private val urnaDebugReset        = ArrayDeque<VotoPace>(30)
-    private var urnaDebugResetFeito   = false
-    private var ultimoPaceEmaDebugReset: Double? = null
     private data class PaceSnapshot(val timestampMs: Long, val paceSegKm: Double)
     private val bufferPace30s = ArrayDeque<PaceSnapshot>(35)
 
@@ -776,15 +764,8 @@ class RunningService : Service(), SensorEventListener {
 
     // FIX 7: Separação entre valor interno de EMA e string da UI.
     private var ultimoPaceEmaInterno: Double? = null
-    // Pós-desbloqueio:
-    //   - Primeiros 7s: coleta paces para calcular âncora
-    //   - 7s–20s: se pace subir > 30s/km acima da âncora sem SPM → trava
-    private val bufferPaceAncora  = mutableListOf<Double>()
-    private var paceAncoraPosDesbloqueio: Double? = null
-    private var bloqueioAumentoPaceAteMs: Long = 0L
-    private val JANELA_ANCORAGEM_MS = 7_000L   // 7s para construir âncora
-    private val LIMIAR_AUMENTO_PACE_SEG = 30.0
-    private val LIMIAR_SPM_MUDANCA_DESBLOQUEIO = 20
+    // Pós-desbloqueio: reset da urna após 17s
+    private var urnaDebugResetFeito = false
     
     private val _rotaAtual = MutableStateFlow<List<LatLngPonto>>(emptyList())
     val rotaAtual: StateFlow<List<LatLngPonto>> = _rotaAtual.asStateFlow()
@@ -1134,12 +1115,7 @@ class RunningService : Service(), SensorEventListener {
         // Capturar ambas âncoras no mesmo instante
         timestampInicioWall   = System.currentTimeMillis()     // para display
         elapsedRealtimeInicio = SystemClock.elapsedRealtime()
-        bloqueioAumentoPaceAteMs = 0L
-        paceAncoraPosDesbloqueio = null
-        bufferPaceAncora.clear()
-        urnaDebugReset.clear()
-        urnaDebugResetFeito = false
-        ultimoPaceEmaDebugReset = null  // para cronômetro
+        urnaDebugResetFeito = false  // para cronômetro
         tempoPausadoTotalMs   = 0
         _distanciaMetros.value = 0.0
         _tempoTotalSegundos.value = 0
@@ -1800,10 +1776,10 @@ class RunningService : Service(), SensorEventListener {
         val pontoNovo = LatLngPonto(
             lat = latK,
             lng = lngK,
-            alt = altMediana,       // altitude filtrada (moda/mediana) — melhor para GPX e elevação
+            alt = altMediana,
             tempo = agora,
             accuracy = location.accuracy,
-            paceNoPonto = ultimoPaceValidoGrafico,
+            paceNoPonto = if (urnaVotosPace.size >= 7) ultimoPaceValidoGrafico else -1.0,
             cadenciaNoPonto = _cadencia.value
         )
 
@@ -2290,8 +2266,7 @@ class RunningService : Service(), SensorEventListener {
             votos60s             = maxVotos1,
             votos30s             = deltasVenc.size,
             gatilhoAtivo         = gatilhoAtivo,
-            blendAtivo           = blendAtivo,
-            paceDebugUrnaReset   = "--:--"  // atualizado no calcularPaceAtual
+            blendAtivo           = blendAtivo
         )
 
         // Output: acumulado dos deltas finais (vencedor + segundo se blend ativo)
@@ -2438,110 +2413,25 @@ class RunningService : Service(), SensorEventListener {
             (paceCandidato * alpha) + (anterior * (1.0 - alpha))
         } ?: paceCandidato
 
-        // ── Proteção pós-desbloqueio ──────────────────────────────────────────────
-        // Fase 1 (0–7s):   coleta paces para âncora, exibe normalmente
-        // Fase 2 (7–80s):  se pace > âncora + 30s sem SPM subir 20 spm → trava
-        // Liberação:       SPM sobe >= 20 spm OU 80s passaram
+        // ── Proteção pós-desbloqueio — urna reset após 17s ───────────────────────
+        // Nos primeiros 17s após SCREEN_ON: urna funciona normalmente com histórico.
+        // Aos 17s: conserva só os 2 votos mais antigos e continua acumulando novos.
+        // Isso força a Moda a reconstruir o consenso com os dados reais pós-desbloqueio,
+        // eliminando votos contaminados pelo GPS instável ao reativar.
         val agoraElapsed = SystemClock.elapsedRealtime()
         val msPosScreenOn = if (screenOnTimestampMs > 0) agoraElapsed - screenOnTimestampMs else Long.MAX_VALUE
 
-        // ── Debug: pace com urna alternativa (reset aos 2 votos antigos após 17s) ──
-        val paceDebugUrnaResetStr = if (screenOnTimestampMs > 0 && msPosScreenOn <= 90_000L) {
-            // Alimenta urnaDebugReset com mesmo voto que a urna principal
-            val ultimoVoto = urnaVotosPace.lastOrNull()
-            if (ultimoVoto != null && (urnaDebugReset.isEmpty() ||
-                    urnaDebugReset.last().timestampMs != ultimoVoto.timestampMs)) {
-                urnaDebugReset.addLast(ultimoVoto)
-                if (urnaDebugReset.size > URNA_VOTOS_NORMAL + 3) urnaDebugReset.removeFirst()
-            }
-            // Após 17s: conserva só os 2 mais antigos e continua acumulando novos
-            if (!urnaDebugResetFeito && msPosScreenOn >= 17_000L) {
-                val doisMaisAntigos = urnaDebugReset.toList().take(2)
-                urnaDebugReset.clear()
-                urnaDebugReset.addAll(doisMaisAntigos)
-                urnaDebugResetFeito = true
-                ultimoPaceEmaDebugReset = null  // reseta EMA junto
-                Log.d(TAG, "🔄 Debug urna reset: conservados ${doisMaisAntigos.size} votos antigos")
-            }
-            // Calcula pace da urna alternativa com o mesmo pipeline
-            val agora2 = System.currentTimeMillis()
-            val janelaMs2 = URNA_VOTOS_NORMAL * 1_000L
-            val votosDebug = urnaDebugReset.filter { agora2 - it.timestampMs <= janelaMs2 }
-            if (votosDebug.size >= 3) {
-                val bins1d = votosDebug.groupBy { kotlin.math.round(it.paceSegKm / BIN_ESTAGIO1_SEG).toInt() }
-                if (!bins1d.values.all { it.size == 1 }) {
-                    val max1d = bins1d.values.maxOf { it.size }
-                    val venc1d = bins1d.filter { it.value.size == max1d }.values.flatten()
-                    val (paceRefD, deltasD) = run {
-                        val bins30d = venc1d.groupBy { kotlin.math.round(it.paceSegKm / BIN_ESTAGIO2_SEG).toInt() }
-                        val max30d = bins30d.values.maxOf { it.size }
-                        val v30d = bins30d.filter { it.value.size == max30d }.values.flatten()
-                        val d = v30d.sumOf { it.distM }; val t = v30d.sumOf { it.deltaMs }
-                        if (d < 0.1) Pair(null, emptyList()) else Pair(t / 1000.0 / d * 1000.0, v30d)
-                    }
-                    if (paceRefD != null && paceRefD in 90.0..1200.0) {
-                        val alphaD = if (votos30sAtual >= 15) 0.40 else if (votos30sAtual >= 8) 0.20 else 0.10
-                        val emaD = ultimoPaceEmaDebugReset?.let { it * (1 - alphaD) + paceRefD * alphaD } ?: paceRefD
-                        ultimoPaceEmaDebugReset = emaD
-                        formatarPace(emaD)
-                    } else "--:--"
-                } else "--:--"
-            } else "--:--"
-        } else {
-            urnaDebugReset.clear(); urnaDebugResetFeito = false; ultimoPaceEmaDebugReset = null
-            "--:--"
+        if (!urnaDebugResetFeito && msPosScreenOn in 17_000L..90_000L) {
+            val doisMaisAntigos = urnaVotosPace.toList().take(2)
+            urnaVotosPace.clear()
+            urnaVotosPace.addAll(doisMaisAntigos)
+            urnaDebugResetFeito = true
+            Log.d(TAG, "🔄 Urna reset pós-desbloqueio: conservados ${doisMaisAntigos.size} votos antigos")
         }
 
-        val paceEmaFinal = when {
-            msPosScreenOn > 80_000L -> {
-                // Após 80s — limpa proteção
-                if (paceAncoraPosDesbloqueio != null) {
-                    paceAncoraPosDesbloqueio = null
-                    bufferPaceAncora.clear()
-                }
-                paceEma
-            }
-            msPosScreenOn < JANELA_ANCORAGEM_MS -> {
-                // Fase 1 (0–7s): coleta pace para âncora
-                if (paceEma in 90.0..1200.0) bufferPaceAncora.add(paceEma)
-                paceEma
-            }
-            else -> {
-                // Fase 2 (7–80s): aplica proteção
-                if (paceAncoraPosDesbloqueio == null && bufferPaceAncora.isNotEmpty()) {
-                    paceAncoraPosDesbloqueio = bufferPaceAncora.average()
-                    bufferPaceAncora.clear()
-                    Log.d(TAG, "⚓ Âncora pós-desbloqueio: ${formatarPace(paceAncoraPosDesbloqueio!!)}")
-                }
-                val ancora = paceAncoraPosDesbloqueio
-                if (ancora == null) {
-                    paceEma
-                } else {
-                    val ultimosPassos6 = timestampsPassos.toList().takeLast(6)
-                    val mediaRapida = if (ultimosPassos6.size >= 2) {
-                        val iv = ultimosPassos6.last() - ultimosPassos6.first()
-                        if (iv > 0) (ultimosPassos6.size - 1).toDouble() / iv * 60_000
-                        else _cadencia.value.toDouble()
-                    } else _cadencia.value.toDouble()
-                    val spmSubiu = kotlin.math.abs(mediaRapida - _cadencia.value.toDouble()) >= LIMIAR_SPM_MUDANCA_DESBLOQUEIO
-                    if (spmSubiu) {
-                        paceAncoraPosDesbloqueio = null
-                        Log.d(TAG, "🔓 Proteção liberada — SPM mudou")
-                        paceEma
-                    } else if (paceEma > ancora + LIMIAR_AUMENTO_PACE_SEG) {
-                        Log.d(TAG, "🔒 Pace travado: ${formatarPace(paceEma)} → ${formatarPace(ancora)}")
-                        ancora
-                    } else paceEma
-                }
-            }
-        }
-
-        // Emite debug com pace alternativo
-        _modaDebug.value = _modaDebug.value.copy(paceDebugUrnaReset = paceDebugUrnaResetStr)
-
-        ultimoPaceEmaInterno = paceEmaFinal
-        ultimoPaceValidoGrafico = paceEmaFinal
-        _paceAtual.value = formatarPace(paceEmaFinal)
+        ultimoPaceEmaInterno = paceEma
+        ultimoPaceValidoGrafico = paceEma
+        _paceAtual.value = formatarPace(paceEma)
     }
 
     private fun calcularPaceMedia() {
