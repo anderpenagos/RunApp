@@ -1007,7 +1007,7 @@ private fun prepararDados(rota: List<LatLngPonto>): DadosGrafico {
     }
 
     val paces = rota.mapIndexed { i, pt ->
-        if (isGpsSpike[i]) -1.0 else pt.paceNoPonto
+        if (isGpsSpike[i] || pt.paceNoPonto !in 60.0..1200.0) -1.0 else pt.paceNoPonto
     }
     val pacesValidos = paces.filter { it in 60.0..1200.0 }
     val pMin = pacesValidos.minOrNull() ?: 300.0

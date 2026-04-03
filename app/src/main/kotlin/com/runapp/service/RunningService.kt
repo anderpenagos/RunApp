@@ -2199,12 +2199,12 @@ class RunningService : Service(), SensorEventListener {
 
         val gatilhoAtivo = kotlin.math.abs(mediaRapida - mediaLenta) >= GATILHO_CADENCIA_SPM
         val nVotosAtivos = if (gatilhoAtivo) {
-            val umMaisAntigo = urnaVotosPace.toList().take(1)
+            val doisMaisRecentes = urnaVotosPace.toList().takeLast(2)
             urnaVotosPace.clear()
-            urnaVotosPace.addAll(umMaisAntigo)
+            urnaVotosPace.addAll(doisMaisRecentes)
             ultimoPaceEmaSegundoInterno = null
             Log.d(TAG, "⚡ Gatilho cadência: lenta=${mediaLenta.toInt()} rápida=${mediaRapida.toInt()} " +
-                "spm → urna reset para ${urnaVotosPace.size}v")
+                "spm → urna reset para ${urnaVotosPace.size}v (mais recentes)")
             URNA_VOTOS_GATILHO
         } else URNA_VOTOS_NORMAL
 
@@ -2450,12 +2450,12 @@ class RunningService : Service(), SensorEventListener {
         val agoraElapsed = SystemClock.elapsedRealtime()
         val msPosScreenOn = if (screenOnTimestampMs > 0) agoraElapsed - screenOnTimestampMs else Long.MAX_VALUE
 
-        if (!urnaDebugResetFeito && msPosScreenOn in 45_000L..90_000L) {
-            val umMaisAntigo = urnaVotosPace.toList().take(1)
+        if (!urnaDebugResetFeito && msPosScreenOn in 35_000L..90_000L) {
+            val doisMaisAntigos = urnaVotosPace.toList().take(2)
             urnaVotosPace.clear()
-            urnaVotosPace.addAll(umMaisAntigo)
+            urnaVotosPace.addAll(doisMaisAntigos)
             urnaDebugResetFeito = true
-            Log.d(TAG, "🔄 Urna reset pós-desbloqueio (45s): conservado ${umMaisAntigo.size} voto antigo")
+            Log.d(TAG, "🔄 Urna reset pós-desbloqueio (35s): conservados ${doisMaisAntigos.size} votos mais antigos")
         }
 
         ultimoPaceEmaInterno = paceEma
