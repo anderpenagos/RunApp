@@ -2450,12 +2450,12 @@ class RunningService : Service(), SensorEventListener {
         val agoraElapsed = SystemClock.elapsedRealtime()
         val msPosScreenOn = if (screenOnTimestampMs > 0) agoraElapsed - screenOnTimestampMs else Long.MAX_VALUE
 
-        if (!urnaDebugResetFeito && msPosScreenOn in 35_000L..90_000L) {
+        if (!urnaDebugResetFeito && msPosScreenOn in 25_000L..90_000L) {
             val doisMaisAntigos = urnaVotosPace.toList().take(2)
             urnaVotosPace.clear()
             urnaVotosPace.addAll(doisMaisAntigos)
             urnaDebugResetFeito = true
-            Log.d(TAG, "🔄 Urna reset pós-desbloqueio (35s): conservados ${doisMaisAntigos.size} votos mais antigos")
+            Log.d(TAG, "🔄 Urna reset pós-desbloqueio (25s): conservados ${doisMaisAntigos.size} votos mais antigos")
         }
 
         ultimoPaceEmaInterno = paceEma
