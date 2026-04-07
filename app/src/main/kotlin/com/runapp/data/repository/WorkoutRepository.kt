@@ -215,7 +215,7 @@ class WorkoutRepository(private val api: IntervalsApi) {
             val paceMinSecsPerMeter = if (limitePercent < 900)
                 thresholdSecsPerMeter / (limitePercent / 100.0)
             else
-                0.0
+                thresholdSecsPerMeter / 1.5  // Z7+: 150% da velocidade threshold (~2:30/km teto prático
 
             zonasProcessadas.add(PaceZone(
                 id    = index + 1,

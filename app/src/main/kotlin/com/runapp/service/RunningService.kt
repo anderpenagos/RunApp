@@ -208,7 +208,18 @@ class RunningService : Service(), SensorEventListener {
         atualizarNotificacao()
     }
 
-    fun setIndexPassoAtivo(index: Int) { indexPassoAtivo = index }
+    fun setIndexPassoAtivo(index: Int) {
+        if (index != indexPassoAtivo && treinoAtivo != null) {
+            val doisRecentes = urnaVotosPace.toList().takeLast(2)
+            urnaVotosPace.clear()
+            urnaVotosPace.addAll(doisRecentes)
+            urnaAmplitude.clear()
+            ultimoPaceEmaAmplitude = null
+            urnaEstruturadaResetFeito = false
+            Log.d(TAG, "⏭️ Passo $indexPassoAtivo→$index — urna reset (${doisRecentes.size}v recentes)")
+        }
+        indexPassoAtivo = index
+    }
     fun getTreinoAtivo(): WorkoutEvent? = treinoAtivo
     fun getPassosAtivos(): List<PassoExecucao> = passosAtivos
     fun getIndexPassoAtivo(): Int = indexPassoAtivo
@@ -764,8 +775,12 @@ class RunningService : Service(), SensorEventListener {
 
     // FIX 7: Separação entre valor interno de EMA e string da UI.
     private var ultimoPaceEmaInterno: Double? = null
-    // Pós-desbloqueio: reset da urna após 17s
+    // Pós-desbloqueio: reset da urna após 20s (corrida livre) ou troca de passo (estruturado)
     private var urnaDebugResetFeito = false
+    // Treino estruturado: urna de bins de amplitude do pace alvo
+    private var urnaEstruturadaResetFeito = false
+    private val urnaAmplitude = ArrayDeque<VotoPace>(10)  // máx 7 votos na faixa alvo
+    private var ultimoPaceEmaAmplitude: Double? = null
     
     private val _rotaAtual = MutableStateFlow<List<LatLngPonto>>(emptyList())
     val rotaAtual: StateFlow<List<LatLngPonto>> = _rotaAtual.asStateFlow()
@@ -1116,6 +1131,9 @@ class RunningService : Service(), SensorEventListener {
         timestampInicioWall   = System.currentTimeMillis()     // para display
         elapsedRealtimeInicio = SystemClock.elapsedRealtime()
         urnaDebugResetFeito = false  // para cronômetro
+        urnaEstruturadaResetFeito = false
+        urnaAmplitude.clear()
+        ultimoPaceEmaAmplitude = null
         tempoPausadoTotalMs   = 0
         _distanciaMetros.value = 0.0
         _tempoTotalSegundos.value = 0
@@ -2185,10 +2203,8 @@ class RunningService : Service(), SensorEventListener {
             }
         }
 
-        // 2. Remove votos expirados por tempo (janela de nVotosAtivos segundos)
-        //    Ao parar num semáforo, nenhum novo voto é adicionado mas os existentes
-        //    expiram naturalmente — pace vai diminuindo até urna esvaziar.
-        // 4. Detecta degrau de cadência
+        // Gatilho de cadência: só em corrida livre.
+        // Em treino estruturado o gatilho é a troca de passo (setIndexPassoAtivo).
         val mediaLenta = _cadencia.value.toDouble()
         val ultimosPassos = timestampsPassos.toList().takeLast(6)
         val mediaRapida = if (ultimosPassos.size >= 2) {
@@ -2197,7 +2213,8 @@ class RunningService : Service(), SensorEventListener {
             else mediaLenta
         } else mediaLenta
 
-        val gatilhoAtivo = kotlin.math.abs(mediaRapida - mediaLenta) >= GATILHO_CADENCIA_SPM
+        val gatilhoAtivo = treinoAtivo == null &&
+            kotlin.math.abs(mediaRapida - mediaLenta) >= GATILHO_CADENCIA_SPM
         val nVotosAtivos = if (gatilhoAtivo) {
             val doisMaisRecentes = urnaVotosPace.toList().takeLast(2)
             urnaVotosPace.clear()
@@ -2340,10 +2357,63 @@ class RunningService : Service(), SensorEventListener {
         val msDesdeScreenOn = if (screenOnTimestampMs > 0)
             SystemClock.elapsedRealtime() - screenOnTimestampMs else Long.MAX_VALUE
 
-        // ── 1. MODA v2 (micro-janela 3s + urna 21 votos + bin 30s) ──────────────
-        // Primeira fonte de pace — mais estável que a janela 22s.
-        // Retorna null se urna vazia (início/recovery) ou dispersão total.
-        val paceModa = aplicarModaPaceV2(distanciaAtual, deltaMsAtual)
+        // ── 1. PIPELINE TREINO ESTRUTURADO ───────────────────────────────────────
+        // Se há passo ativo com pace alvo definido, tenta calcular pace via
+        // bins de amplitude da faixa alvo (urna de 7 votos).
+        // Gatilho de limpeza: troca de passo (feito em setIndexPassoAtivo).
+        // Sem gatilho SPM em treinos estruturados.
+        val passoAtivo = if (treinoAtivo != null && indexPassoAtivo >= 0)
+            passosAtivos.getOrNull(indexPassoAtivo) else null
+        val paceModa: Double?
+
+        if (passoAtivo != null && passoAtivo.paceAlvoMin != "--:--" && passoAtivo.paceAlvoMax != "--:--") {
+            // Converte pace alvo para s/km
+            fun parseSegKm(p: String): Double {
+                val partes = p.split(":")
+                return partes[0].toDoubleOrNull()?.times(60)?.plus(partes[1].toDoubleOrNull() ?: 0.0) ?: 0.0
+            }
+            val paceRapidoSegKm = parseSegKm(passoAtivo.paceAlvoMin)  // número menor = mais rápido
+            val paceLentoSegKm  = parseSegKm(passoAtivo.paceAlvoMax)  // número maior = mais lento
+            val amplitude       = paceLentoSegKm - paceRapidoSegKm
+
+            // Alimenta urna amplitude com voto se pace atual cair na faixa alvo
+            val modaGeral = aplicarModaPaceV2(distanciaAtual, deltaMsAtual)
+            val votoAtual = urnaVotosPace.lastOrNull()
+            if (votoAtual != null && votoAtual.paceSegKm in paceRapidoSegKm..paceLentoSegKm) {
+                urnaAmplitude.addLast(votoAtual)
+                if (urnaAmplitude.size > 7) urnaAmplitude.removeFirst()
+            }
+
+            // Filtra urna amplitude por tempo (janela 7s)
+            val agoraMs = System.currentTimeMillis()
+            val votosAmplitude = urnaAmplitude.filter { agoraMs - it.timestampMs <= 7_000L }
+
+            paceModa = if (votosAmplitude.isNotEmpty()) {
+                // Bins internos: 10s para amplitude < 58s, 30s para amplitude >= 58s
+                val binInterno = if (amplitude < 58.0) 10.0 else 30.0
+                val binsAmp = votosAmplitude.groupBy {
+                    kotlin.math.round(it.paceSegKm / binInterno).toInt()
+                }
+                val maxV = binsAmp.values.maxOf { it.size }
+                val vencAmp = binsAmp.filter { it.value.size == maxV }.values.flatten()
+                val d = vencAmp.sumOf { it.distM }
+                val t = vencAmp.sumOf { it.deltaMs }
+                if (d >= 0.5 && t >= 500L) {
+                    val resultado = (t / 1000.0 / d) * 1000.0
+                    if (resultado in 90.0..1200.0) {
+                        Log.d(TAG, "🎯 Pace amplitude: bin=${binInterno}s votos=${votosAmplitude.size} → ${formatarPace(resultado)}")
+                        resultado
+                    } else modaGeral
+                } else modaGeral
+            } else {
+                // Sem votos na faixa alvo → usa pipeline normal com urna de 7 votos
+                Log.d(TAG, "🎯 Sem votos na faixa alvo → fallback pipeline normal")
+                modaGeral
+            }
+        } else {
+            // ── CORRIDA LIVRE: pipeline normal com gatilho SPM ───────────────────
+            paceModa = aplicarModaPaceV2(distanciaAtual, deltaMsAtual)
+        }
         val modaTemConsenso = paceModa != null
 
         // ── 2. JANELA 22s (fallback) ─────────────────────────────────────────────
@@ -2450,7 +2520,7 @@ class RunningService : Service(), SensorEventListener {
         val agoraElapsed = SystemClock.elapsedRealtime()
         val msPosScreenOn = if (screenOnTimestampMs > 0) agoraElapsed - screenOnTimestampMs else Long.MAX_VALUE
 
-        if (!urnaDebugResetFeito && msPosScreenOn in 25_000L..90_000L) {
+        if (!urnaDebugResetFeito && msPosScreenOn in 20_000L..90_000L) {
             val doisMaisAntigos = urnaVotosPace.toList().take(2)
             urnaVotosPace.clear()
             urnaVotosPace.addAll(doisMaisAntigos)
