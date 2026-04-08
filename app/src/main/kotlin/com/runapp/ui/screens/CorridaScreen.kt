@@ -1234,7 +1234,10 @@ private fun MetricasFullscreen(
                 val d = state.modaDebug
                 val gatilhoStr = if (d.gatilhoAtivo) " ⚡" else ""
                 val blendStr = if (d.blendAtivo) " 🔀" else ""
-                //val resetStr = if (d.paceDebugUrnaReset != "--:--") "  R:${d.paceDebugUrnaReset}" else ""
+                val debugText = if (d.votosAmplitude > 0)
+                    "amp:${d.votosAmplitude}v  urna:${d.votosAtivos}v$blendStr$gatilhoStr"
+                else
+                    "urna:${d.votosAtivos}v  60s:${d.votos60s}v  30s:${d.votos30s}v$blendStr$gatilhoStr"
                 Row(
                     modifier = androidx.compose.ui.Modifier
                         .fillMaxWidth()
@@ -1242,9 +1245,9 @@ private fun MetricasFullscreen(
                     horizontalArrangement = Arrangement.Center
                 ) {
                     Text(
-                        text = "urna:${d.votosAtivos}v  60s:${d.votos60s}v  30s:${d.votos30s}v$blendStr$gatilhoStr",
+                        text = debugText,
                         color = Color.White.copy(alpha = 0.45f),
-                        fontSize = 13.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Normal
                     )
                 }
