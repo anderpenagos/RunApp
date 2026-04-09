@@ -2198,7 +2198,8 @@ class RunningService : Service(), SensorEventListener {
                         distM       = distTotal,
                         deltaMs     = tempoTotal
                     ))
-                    if (urnaVotosPace.size > URNA_VOTOS_NORMAL + 3) urnaVotosPace.removeFirst()
+                    val limiteUrna = if (treinoAtivo != null) 11 + 2 else URNA_VOTOS_NORMAL + 3
+                    if (urnaVotosPace.size > limiteUrna) urnaVotosPace.removeFirst()
                 }
             }
         }
@@ -2342,7 +2343,7 @@ class RunningService : Service(), SensorEventListener {
         }
 
         // ── Warmup — urna precisa de 7 votos antes de calcular via Moda ────────────
-        val urnaComVotos = urnaVotosPace.size >= 7
+        val urnaComVotos = urnaVotosPace.size >= 3
         if (!urnaComVotos) {
             aplicarModaPaceV2(distanciaAtual, deltaMsAtual)  // alimenta urna
             // Exibe último pace válido se existir, senão --:--
@@ -2402,11 +2403,12 @@ class RunningService : Service(), SensorEventListener {
             _modaDebug.value = _modaDebug.value.copy(votosAmplitude = votosAmplitude.size)
 
             paceModa = if (votosAmplitude.isNotEmpty()) {
-                val binInterno = if (amplitude < 58.0) 10.0 else 30.0
+                val binInterno = if (amplitude < 58.0) 10.0 else 20.0
                 val binsAmp = votosAmplitude.groupBy {
                     kotlin.math.round(it.paceSegKm / binInterno).toInt()
                 }
                 val maxV    = binsAmp.values.maxOf { it.size }
+                // Inclui todos os bins empatados no acumulado final
                 val vencAmp = binsAmp.filter { it.value.size == maxV }.values.flatten()
                 val d = vencAmp.sumOf { it.distM }
                 val t = vencAmp.sumOf { it.deltaMs }
@@ -2532,7 +2534,7 @@ class RunningService : Service(), SensorEventListener {
         val agoraElapsed = SystemClock.elapsedRealtime()
         val msPosScreenOn = if (screenOnTimestampMs > 0) agoraElapsed - screenOnTimestampMs else Long.MAX_VALUE
 
-        if (!urnaDebugResetFeito && msPosScreenOn in 24_000L..90_000L) {
+        if (!urnaDebugResetFeito && msPosScreenOn in 17_000L..90_000L) {
             val doisMaisAntigos = urnaVotosPace.toList().take(2)
             urnaVotosPace.clear()
             urnaVotosPace.addAll(doisMaisAntigos)
