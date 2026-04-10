@@ -919,10 +919,7 @@ private fun CartaoParciais(splits: List<SplitParcial>) {
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text("KM", modifier = Modifier.width(40.dp), fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
-                Text("PACE", modifier = Modifier.width(56.dp), fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
-                Text("DIST", modifier = Modifier.width(50.dp), fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
-                Text("SPM", modifier = Modifier.width(44.dp), fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
-                Text("D+", fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
+                Text("PACE", fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
             }
             HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
             Spacer(modifier = Modifier.height(4.dp))
@@ -941,10 +938,7 @@ private fun CartaoParciais(splits: List<SplitParcial>) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("${s.km}", modifier = Modifier.width(40.dp), fontSize = 13.sp, color = Color.White.copy(alpha = 0.7f))
-                    Text(s.paceFormatado, modifier = Modifier.width(56.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = corPaceRow)
-                    Text("%.2f km".format(s.distanciaKm), modifier = Modifier.width(50.dp), fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f))
-                    Text(if (s.cadenciaMedia > 0) "${s.cadenciaMedia}" else "—", modifier = Modifier.width(44.dp), fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f))
-                    Text(if (s.ganhoElevacaoM > 0) "+${s.ganhoElevacaoM}m" else "—", fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f))
+                    Text(s.paceFormatado, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = corPaceRow)
                 }
             }
         }
