@@ -871,14 +871,80 @@ private fun CartaoVoltas(voltas: List<com.runapp.data.model.VoltaAnalise>) {
 
 @Composable
 private fun CartaoParciais(splits: List<SplitParcial>) {
+    if (splits.isEmpty()) return
+    val pacesValidos = splits.map { it.paceSegKm }.filter { it in 60.0..1200.0 }
+    val paceMin = pacesValidos.minOrNull() ?: 240.0
+    val paceMax = pacesValidos.maxOrNull() ?: 600.0
+    val paceRange = (paceMax - paceMin).coerceAtLeast(1.0)
+
     Card(colors = CardDefaults.cardColors(containerColor = CorCard), shape = RoundedCornerShape(12.dp)) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Parciais por km", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Gráfico de barras — barra mais alta = km mais rápido
+            val barCount = splits.size
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(60.dp)
+            ) {
+                val barWidth = size.width / barCount
+                val barSpacing = barWidth * 0.15f
+                splits.forEachIndexed { i, split ->
+                    val pace = split.paceSegKm.coerceIn(paceMin, paceMax)
+                    // Invertido: pace rápido (menor) = barra mais alta
+                    val ratio = ((paceMax - pace) / paceRange).toFloat().coerceIn(0.05f, 1f)
+                    val barH = size.height * ratio
+                    val x = i * barWidth + barSpacing / 2
+                    // Verde = rápido, laranja = lento
+                    val cor = androidx.compose.ui.graphics.lerp(
+                        Color(0xFF4CAF50), Color(0xFFFF6B35),
+                        (1f - ratio).coerceIn(0f, 1f)
+                    )
+                    drawRect(
+                        color = cor,
+                        topLeft = androidx.compose.ui.geometry.Offset(x, size.height - barH),
+                        size = androidx.compose.ui.geometry.Size(barWidth - barSpacing, barH)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Tabela detalhada por km
+            // Cabeçalho
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("KM", modifier = Modifier.width(40.dp), fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
+                Text("PACE", modifier = Modifier.width(56.dp), fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
+                Text("DIST", modifier = Modifier.width(50.dp), fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
+                Text("SPM", modifier = Modifier.width(44.dp), fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
+                Text("D+", fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
+            }
+            HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+            Spacer(modifier = Modifier.height(4.dp))
+
             splits.forEach { s ->
-                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                    Text("${s.km} km", modifier = Modifier.width(60.dp), fontSize = 13.sp, color = Color.White.copy(alpha = 0.7f))
-                    Text(s.paceFormatado, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = CorPace)
+                val isFastest = s.paceSegKm == paceMin
+                val isSlowest = s.paceSegKm == paceMax
+                val corPaceRow = when {
+                    isFastest -> Color(0xFF4CAF50)
+                    isSlowest -> Color(0xFFFF6B35)
+                    else      -> CorPace
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("${s.km}", modifier = Modifier.width(40.dp), fontSize = 13.sp, color = Color.White.copy(alpha = 0.7f))
+                    Text(s.paceFormatado, modifier = Modifier.width(56.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = corPaceRow)
+                    Text("%.2f km".format(s.distanciaKm), modifier = Modifier.width(50.dp), fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f))
+                    Text(if (s.cadenciaMedia > 0) "${s.cadenciaMedia}" else "—", modifier = Modifier.width(44.dp), fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f))
+                    Text(if (s.ganhoElevacaoM > 0) "+${s.ganhoElevacaoM}m" else "—", fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f))
                 }
             }
         }

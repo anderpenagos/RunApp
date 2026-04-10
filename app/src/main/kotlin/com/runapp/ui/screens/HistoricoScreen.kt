@@ -48,19 +48,16 @@ fun HistoricoScreen(
     val state by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Launcher para abrir o seletor de compartilhamento do Android
     val shareLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { /* resultado ignorado — não precisamos fazer nada após compartilhar */ }
+    ) { }
 
-    // Launcher para selecionar a pasta de backup (SAF — sem permissão de armazenamento)
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) viewModel.importarBackup(uri)
     }
 
-    // Exibe snackbar quando há mensagem de feedback
     LaunchedEffect(state.mensagem) {
         state.mensagem?.let {
             snackbarHostState.showSnackbar(it)
@@ -140,12 +137,9 @@ fun HistoricoScreen(
                 .padding(padding)
         ) {
             when {
-                // ── Carregando ────────────────────────────────────────────
                 state.carregando -> {
                     CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                 }
-
-                // ── Lista vazia ───────────────────────────────────────────
                 state.corridas.isEmpty() -> {
                     Column(
                         modifier = Modifier
@@ -155,11 +149,11 @@ fun HistoricoScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Icon(
-                        imageVector = Icons.Default.DirectionsRun,
-                        contentDescription = null,
-                        modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.3f)
-                    )
+                            imageVector = Icons.Default.DirectionsRun,
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.3f)
+                        )
                         Text(
                             "Nenhuma corrida salva ainda",
                             style = MaterialTheme.typography.titleMedium,
@@ -173,8 +167,6 @@ fun HistoricoScreen(
                         )
                     }
                 }
-
-                // ── Lista de corridas ─────────────────────────────────────
                 else -> {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -197,7 +189,7 @@ fun HistoricoScreen(
                                         )
                                     }
                                 },
-                                onUpload  = { viewModel.uploadParaIntervals(corrida) },
+                                onUpload = { viewModel.uploadParaIntervals(corrida) },
                                 onDeletar = { viewModel.deletarCorrida(corrida) }
                             )
                         }
@@ -226,8 +218,6 @@ private fun CorridaHistoricoCard(
             .animateContentSize()
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-
-            // ── Cabeçalho: data + nome ────────────────────────────────────
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -246,7 +236,6 @@ private fun CorridaHistoricoCard(
                         modifier = Modifier.padding(top = 2.dp)
                     )
                 }
-                // Indicador de upload já enviado
                 if (corrida.enviadoIntervals) {
                     Text("Intervals", style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary)
@@ -255,7 +244,6 @@ private fun CorridaHistoricoCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // ── Métricas melhoradas — sem "pontos GPS" (dado técnico), com D+ e SPM ──
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
@@ -269,7 +257,6 @@ private fun CorridaHistoricoCard(
                     MetricaMini("spm", "${corrida.cadenciaMedia}spm")
             }
 
-            // ── Mini splits sparkline — só mostra se tiver splits ─────────
             if (corrida.splitsParciais.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(8.dp))
                 SplitsSparkline(splits = corrida.splitsParciais)
@@ -277,12 +264,10 @@ private fun CorridaHistoricoCard(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
 
-            // ── Ações ─────────────────────────────────────────────────────
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Compartilhar GPX
                 OutlinedButton(
                     onClick = onCompartilhar,
                     modifier = Modifier.weight(1f),
@@ -293,7 +278,6 @@ private fun CorridaHistoricoCard(
                     Text("GPX", style = MaterialTheme.typography.labelMedium)
                 }
 
-                // Upload Intervals.icu
                 OutlinedButton(
                     onClick = onUpload,
                     enabled = !uploadEmAndamento,
@@ -309,7 +293,6 @@ private fun CorridaHistoricoCard(
                     Text("Intervals", style = MaterialTheme.typography.labelMedium)
                 }
 
-                // Deletar
                 OutlinedButton(
                     onClick = { confirmarDelete = true },
                     modifier = Modifier.weight(1f),
@@ -326,7 +309,6 @@ private fun CorridaHistoricoCard(
         }
     }
 
-    // Diálogo de confirmação de exclusão
     if (confirmarDelete) {
         AlertDialog(
             onDismissRequest = { confirmarDelete = false },
@@ -363,25 +345,25 @@ private fun MetricaMini(label: String, valor: String) {
     }
 }
 
-/** Formata "2025-02-14T10:30:00" → "14/02/2025  10:30" */
 private fun formatarData(iso: String): String {
     return runCatching {
         val dt = LocalDateTime.parse(iso)
-        val fmt = DateTimeFormatter.ofPattern("dd/MM/yyyy  HH:mm", Locale("pt", "BR"))
+        val fmt = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale("pt", "BR"))
         dt.format(fmt)
     }.getOrDefault(iso)
 }
 
 /**
  * Gráfico de barras minimalista mostrando o pace de cada km completo.
- * Barra mais alta = km mais lento. Cor verde para pace bom, laranja/vermelho para lento.
- * Serve como "preview" rápido do ritmo da corrida sem abrir o detalhe.
+ * Barra mais alta = km mais RÁPIDO. Cor verde para pace rápido, laranja para lento.
  */
 @Composable
 private fun SplitsSparkline(splits: List<SplitParcial>) {
     if (splits.isEmpty()) return
+
     val paceMin = splits.minOf { it.paceSegKm }.coerceAtLeast(60.0)
     val paceMax = splits.maxOf { it.paceSegKm }.coerceAtLeast(paceMin + 1.0)
+    val paceRange = (paceMax - paceMin).coerceAtLeast(1.0)
 
     Column {
         Row(
@@ -403,13 +385,12 @@ private fun SplitsSparkline(splits: List<SplitParcial>) {
             val barWidth = size.width / splits.size
             val barSpacing = barWidth * 0.15f
             splits.forEachIndexed { i, split ->
-                // Normaliza: pace mais lento = barra mais alta
-                val ratio = ((split.paceSegKm - paceMin) / (paceMax - paceMin)).toFloat()
-                    .coerceIn(0.1f, 1f)
+                // Invertido: pace rápido (menor s/km) = barra mais alta
+                val ratio = ((paceMax - split.paceSegKm) / paceRange).toFloat().coerceIn(0.1f, 1f)
                 val barHeight = size.height * ratio
                 val x = i * barWidth + barSpacing / 2
-                // Gradiente: verde para pace rápido, laranja para lento
-                val cor = lerp(Color(0xFF4CAF50), Color(0xFFFF6B35), ratio)
+                // Verde = rápido, laranja = lento
+                val cor = lerp(Color(0xFF4CAF50), Color(0xFFFF6B35), 1f - ratio)
                 drawRect(
                     color = cor,
                     topLeft = Offset(x, size.height - barHeight),
@@ -417,7 +398,6 @@ private fun SplitsSparkline(splits: List<SplitParcial>) {
                 )
             }
         }
-        // Labels: só mostra o primeiro, meio e último km para não poluir
         Row(modifier = Modifier.fillMaxWidth()) {
             Text("1km", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
@@ -437,7 +417,6 @@ private fun SplitsSparkline(splits: List<SplitParcial>) {
     }
 }
 
-/** Interpola linearmente entre duas cores */
 private fun lerp(a: Color, b: Color, t: Float): Color = Color(
     red   = a.red   + (b.red   - a.red)   * t,
     green = a.green + (b.green - a.green) * t,

@@ -393,14 +393,16 @@ class RunningService : Service(), SensorEventListener {
     // Ativando modoRecuperacaoGps aqui, o filtro de velocidade já existente
     // descarta esses pontos silenciosamente até o GPS estabilizar.
     private var screenOffTimestampMs = 0L
-    private var screenOnTimestampMs  = 0L   // último SCREEN_ON — para logar os 30s seguintes
+    private var screenOnTimestampMs  = 0L
+    private var urnaScreenOffResetFeito = false  // reset 17s após SCREEN_OFF
 
     private val screenOnReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> {
-                    // Registra quando a tela apagou para calcular quanto tempo ficou bloqueada
                     screenOffTimestampMs = SystemClock.elapsedRealtime()
+                    urnaScreenOffResetFeito = false  // agendado reset em 17s
+                    Log.d(TAG, "📱 Tela apagada — reset urna agendado em 17s")
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     if (!estaCorrendo || estaPausado) return
@@ -1131,6 +1133,7 @@ class RunningService : Service(), SensorEventListener {
         elapsedRealtimeInicio = SystemClock.elapsedRealtime()
         urnaDebugResetFeito = false  // para cronômetro
         urnaEstruturadaResetFeito = false
+        urnaScreenOffResetFeito = false
         timestampTrocaPasso = 0L
         urnaAmplitude.clear()
         ultimoPaceEmaAmplitude = null
@@ -2534,6 +2537,22 @@ class RunningService : Service(), SensorEventListener {
         val agoraElapsed = SystemClock.elapsedRealtime()
         val msPosScreenOn = if (screenOnTimestampMs > 0) agoraElapsed - screenOnTimestampMs else Long.MAX_VALUE
 
+        // ── Reset 17s após SCREEN_OFF ─────────────────────────────────────────────
+        // Conserva 2 votos mais recentes — GPS em batch mode pode ter acumulado
+        // votos de posições antigas; limpeza garante reconstrução com dados frescos.
+        if (!urnaScreenOffResetFeito && screenOffTimestampMs > 0) {
+            val msPosScreenOff = SystemClock.elapsedRealtime() - screenOffTimestampMs
+            if (msPosScreenOff >= 17_000L) {
+                val doisRecentes = urnaVotosPace.toList().takeLast(2)
+                urnaVotosPace.clear()
+                urnaVotosPace.addAll(doisRecentes)
+                urnaAmplitude.clear()
+                urnaScreenOffResetFeito = true
+                Log.d(TAG, "📱 Reset urna 17s pós SCREEN_OFF: ${doisRecentes.size}v recentes conservados")
+            }
+        }
+
+        // ── Reset 17s após SCREEN_ON ──────────────────────────────────────────────
         if (!urnaDebugResetFeito && msPosScreenOn in 17_000L..90_000L) {
             val doisMaisAntigos = urnaVotosPace.toList().take(2)
             urnaVotosPace.clear()
