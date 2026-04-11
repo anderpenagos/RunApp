@@ -140,9 +140,10 @@ fun DetalheAtividadeScreen(
             }
 
             if (zonas.any { it.percentagem > 0f }) { item { CartaoZonas(zonas) } }
-            
-            if (corrida.splitsParciais.isNotEmpty() && corrida.voltasAnalise.isEmpty()) { 
-                item { CartaoParciais(corrida.splitsParciais) } 
+
+            // ── Parciais por km — sempre visível se existir ───────────────────
+            if (corrida.splitsParciais.isNotEmpty()) {
+                item { CartaoParciais(corrida.splitsParciais) }
             }
 
             // ── Análise do Coach (Gemini 2.5 Flash) ──────────────────────────
@@ -876,69 +877,70 @@ private fun CartaoParciais(splits: List<SplitParcial>) {
     val paceMin = pacesValidos.minOrNull() ?: 240.0
     val paceMax = pacesValidos.maxOrNull() ?: 600.0
     val paceRange = (paceMax - paceMin).coerceAtLeast(1.0)
+    val corBarra = Color(0xFF4FC3F7)  // azul claro consistente com as voltas
 
     Card(colors = CardDefaults.cardColors(containerColor = CorCard), shape = RoundedCornerShape(12.dp)) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Parciais por km", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Gráfico de barras — barra mais alta = km mais rápido
-            val barCount = splits.size
-            Canvas(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(60.dp)
-            ) {
-                val barWidth = size.width / barCount
-                val barSpacing = barWidth * 0.15f
-                splits.forEachIndexed { i, split ->
-                    val pace = split.paceSegKm.coerceIn(paceMin, paceMax)
-                    // Invertido: pace rápido (menor) = barra mais alta
-                    val ratio = ((paceMax - pace) / paceRange).toFloat().coerceIn(0.05f, 1f)
-                    val barH = size.height * ratio
-                    val x = i * barWidth + barSpacing / 2
-                    // Verde = rápido, laranja = lento
-                    val cor = androidx.compose.ui.graphics.lerp(
-                        Color(0xFF4CAF50), Color(0xFFFF6B35),
-                        (1f - ratio).coerceIn(0f, 1f)
-                    )
-                    drawRect(
-                        color = cor,
-                        topLeft = androidx.compose.ui.geometry.Offset(x, size.height - barH),
-                        size = androidx.compose.ui.geometry.Size(barWidth - barSpacing, barH)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Tabela detalhada por km
             // Cabeçalho
             Row(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
+                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("KM", modifier = Modifier.width(40.dp), fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
-                Text("PACE", fontSize = 10.sp, color = Color.White.copy(alpha = 0.45f), fontWeight = FontWeight.Bold)
+                Text("Km",    modifier = Modifier.width(36.dp), fontSize = 10.sp, color = Color.White.copy(alpha = 0.35f))
+                Text("Ritmo", modifier = Modifier.width(52.dp), fontSize = 10.sp, color = Color.White.copy(alpha = 0.35f))
+                Spacer(modifier = Modifier.weight(1f))
             }
-            HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
-            Spacer(modifier = Modifier.height(4.dp))
+            Box(modifier = Modifier.fillMaxWidth().height(0.5.dp).background(Color.White.copy(alpha = 0.08f)))
+            Spacer(modifier = Modifier.height(6.dp))
 
             splits.forEach { s ->
-                val isFastest = s.paceSegKm == paceMin
-                val isSlowest = s.paceSegKm == paceMax
-                val corPaceRow = when {
+                val pace = s.paceSegKm.coerceIn(paceMin, paceMax)
+                // Barra mais longa = pace mais rápido
+                val ratio = ((paceMax - pace) / paceRange).toFloat().coerceIn(0.05f, 1f)
+                val isFastest = s.paceSegKm <= paceMin + 1.0
+                val isSlowest = s.paceSegKm >= paceMax - 1.0
+                val corPace = when {
                     isFastest -> Color(0xFF4CAF50)
                     isSlowest -> Color(0xFFFF6B35)
-                    else      -> CorPace
+                    else      -> Color.White
                 }
+
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("${s.km}", modifier = Modifier.width(40.dp), fontSize = 13.sp, color = Color.White.copy(alpha = 0.7f))
-                    Text(s.paceFormatado, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = corPaceRow)
+                    // Número do km
+                    Text(
+                        text = "${s.km}",
+                        modifier = Modifier.width(36.dp),
+                        fontSize = 13.sp,
+                        color = Color.White.copy(alpha = 0.55f)
+                    )
+                    // Pace
+                    Text(
+                        text = s.paceFormatado,
+                        modifier = Modifier.width(52.dp),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = corPace
+                    )
+                    // Barra horizontal
+                    Box(modifier = Modifier.weight(1f)) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(ratio)
+                                .height(10.dp)
+                                .background(
+                                    corBarra.copy(alpha = 0.75f),
+                                    RoundedCornerShape(3.dp)
+                                )
+                        )
+                    }
                 }
             }
         }
