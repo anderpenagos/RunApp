@@ -27,8 +27,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
@@ -79,8 +82,10 @@ fun GravacaoCorridaScreen(
     DisposableEffect(Unit) { onDispose { cameraExecutor.shutdown() } }
 
     LaunchedEffect(gravando) {
-        tempoGravacao = 0
-        while (gravando) { delay(1000L); tempoGravacao++ }
+        if (gravando) {
+            tempoGravacao = 0
+            while (gravando) { delay(1000L); tempoGravacao++ }
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -233,14 +238,38 @@ fun GravacaoCorridaScreen(
     val ratio = (vel / 30f).coerceIn(0f, 1f)
     Box(modifier, contentAlignment = Alignment.Center) {
         androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
-            val s = 9.dp.toPx(); val p = s / 2 + 6.dp.toPx()
-            val r = android.graphics.RectF(p, p, size.width - p, size.height - p)
-            val rect = androidx.compose.ui.geometry.Rect(r.left, r.top, r.right, r.bottom)
-            val style150 = androidx.compose.ui.graphics.drawscope.Stroke(s, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-            drawArc(Color.White.copy(alpha = 0.15f), 150f, 240f, false, rect, style = style150)
+            val strokeWidth = 9.dp.toPx()
+            val padding = strokeWidth / 2 + 6.dp.toPx()
+            
+            // Definindo o tamanho e a posição do arco manualmente (necessário para drawArc)
+            val arcSize = Size(size.width - 2 * padding, size.height - 2 * padding)
+            val topLeft = Offset(padding, padding)
+            
+            val arcStyle = Stroke(width = strokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+
+            // Fundo do velocímetro (Cinza transparente)
+            drawArc(
+                color = Color.White.copy(alpha = 0.15f),
+                startAngle = 150f,
+                sweepAngle = 240f,
+                useCenter = false,
+                topLeft = topLeft,
+                size = arcSize,
+                style = arcStyle
+            )
+
+            // Progresso do velocímetro
             if (ratio > 0f) {
                 val cor = androidx.compose.ui.graphics.lerp(Color(0xFF29B6F6), Color(0xFF66BB6A), ratio)
-                drawArc(cor, 150f, 240f * ratio, false, rect, style = style150)
+                drawArc(
+                    color = cor,
+                    startAngle = 150f,
+                    sweepAngle = 240f * ratio,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = arcSize,
+                    style = arcStyle
+                )
             }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -266,5 +295,11 @@ fun GravacaoCorridaScreen(
 
 private fun velocidadeDesPace(p: String): Float {
     if (p == "--:--") return 0f
-    return runCatching { p.split(":").let { 3600f / (it[0].toFloat() * 60 + it[1].toFloat()) } }.getOrDefault(0f)
+    return runCatching { 
+        val partes = p.split(":")
+        if (partes.size < 2) return 0f
+        val minutos = partes[0].toFloat()
+        val segundos = partes[1].toFloat()
+        if (minutos == 0f && segundos == 0f) 0f else 3600f / (minutos * 60 + segundos)
+    }.getOrDefault(0f)
 }
