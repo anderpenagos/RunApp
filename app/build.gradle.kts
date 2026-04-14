@@ -84,6 +84,13 @@ dependencies {
     // Image loading
     implementation(libs.coil.compose)
 
+    // CameraX
+    val cameraxVersion = "1.3.4"
+    implementation("androidx.camera:camera-core:$cameraxVersion")
+    implementation("androidx.camera:camera-camera2:$cameraxVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+    implementation("androidx.camera:camera-view:$cameraxVersion")
+
     debugImplementation(libs.androidx.ui.tooling)
 
     // Room — persistência GPS para recovery e histórico

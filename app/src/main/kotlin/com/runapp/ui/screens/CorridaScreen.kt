@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.PlayArrow
@@ -447,6 +448,16 @@ fun CorridaScreen(
     // Ao fechar: mapa destruído de novo → zero GPU quando não visível.
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     var mapaVisivel by remember { mutableStateOf(false) }
+    var gravacaoVisivel by remember { mutableStateOf(false) }
+
+    // Tela de gravação — fullscreen com câmera
+    if (gravacaoVisivel) {
+        GravacaoCorridaScreen(
+            state    = state,
+            onVoltar = { gravacaoVisivel = false }
+        )
+        return
+    }
 
     // Fecha mapa automaticamente ao iniciar a corrida (PREPARANDO → CORRENDO)
     var faseAnterior by remember { mutableStateOf(state.fase) }
@@ -600,13 +611,14 @@ fun CorridaScreen(
                 )
             ) {
                 MetricasFullscreen(
-                    state        = state,
-                    onAbrirMapa  = { mapaVisivel = true },
-                    onPausar     = { viewModel.pausar() },
-                    onRetomar    = { viewModel.retomar() },
-                    onFinalizar  = { viewModel.finalizarCorrida() },
-                    onPularPasso = { viewModel.pularPasso() },
-                    onVoltarPasso = { viewModel.voltarPasso() }
+                    state           = state,
+                    onAbrirMapa     = { mapaVisivel = true },
+                    onAbrirGravacao = { gravacaoVisivel = true },
+                    onPausar        = { viewModel.pausar() },
+                    onRetomar       = { viewModel.retomar() },
+                    onFinalizar     = { viewModel.finalizarCorrida() },
+                    onPularPasso    = { viewModel.pularPasso() },
+                    onVoltarPasso   = { viewModel.voltarPasso() }
                 )
             }
 
@@ -1049,12 +1061,13 @@ private fun haversineMetros(lat1: Double, lon1: Double, lat2: Double, lon2: Doub
 @Composable
 private fun MetricasFullscreen(
     state: com.runapp.ui.viewmodel.CorridaUiState,
-    onAbrirMapa:  () -> Unit,
-    onPausar:     () -> Unit,
-    onRetomar:    () -> Unit,
-    onFinalizar:  () -> Unit,
-    onPularPasso: () -> Unit,
-    onVoltarPasso: () -> Unit
+    onAbrirMapa:      () -> Unit,
+    onAbrirGravacao:  () -> Unit,
+    onPausar:         () -> Unit,
+    onRetomar:        () -> Unit,
+    onFinalizar:      () -> Unit,
+    onPularPasso:     () -> Unit,
+    onVoltarPasso:    () -> Unit
 ) {
     Box(
         modifier = androidx.compose.ui.Modifier
@@ -1252,6 +1265,21 @@ private fun MetricasFullscreen(
                     )
                 }
             }
+        }
+
+        // ── Botão câmera (canto inferior esquerdo) ─────────────────────
+        IconButton(
+            onClick = onAbrirGravacao,
+            modifier = androidx.compose.ui.Modifier
+                .align(Alignment.BottomStart)
+                .padding(bottom = 120.dp, start = 16.dp)
+                .background(Color(0xFF2A2A2A), CircleShape)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Videocam,
+                contentDescription = "Gravar vídeo",
+                tint = Color.White.copy(alpha = 0.7f)
+            )
         }
 
         // ── Botão mapa (canto inferior direito, acima dos controles) ───────

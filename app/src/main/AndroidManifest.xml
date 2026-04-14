@@ -32,6 +32,13 @@
          ao usuário diretamente via Intent sem abrir as configurações manualmente. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Câmera -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"
+        android:minSdkVersion="34" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
     <!-- Áudio -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
