@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.MediaRecorder
@@ -20,7 +21,6 @@ import android.provider.MediaStore
 import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
-import java.io.IOException
 
 class GravacaoService : Service() {
 
@@ -52,13 +52,11 @@ class GravacaoService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // 1. Verifica se o comando é para parar
         if (intent?.action == ACTION_PARAR) {
             pararGravacao()
             return START_NOT_STICKY
         }
 
-        // 2. Cria o canal e a notificação de Foreground
         criarCanal()
         
         val stopIntent = Intent(this, GravacaoService::class.java).apply { action = ACTION_PARAR }
@@ -72,7 +70,8 @@ class GravacaoService : Service() {
             .setContentText("A gravação está ativa. Toque para encerrar.")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
-            .addAction(android.R.drawable.ic_media_stop, "PARAR AGORA", stopPendingIntent)
+            // AQUI ESTAVA O ERRO - TROCAMOS PARA ic_media_pause
+            .addAction(android.R.drawable.ic_media_pause, "PARAR AGORA", stopPendingIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
@@ -82,7 +81,6 @@ class GravacaoService : Service() {
             startForeground(NOTIF_ID, notif)
         }
 
-        // 3. Inicia a gravação propriamente dita
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
         val data = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
         val audioOk = intent?.getBooleanExtra(EXTRA_AUDIO_OK, false) ?: false
@@ -98,11 +96,7 @@ class GravacaoService : Service() {
         val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mgr.getMediaProjection(resultCode, data)
 
-        // Configura as dimensões da tela
-        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val metrics = resources.displayMetrics
-        
-        // Garante que largura e altura sejam pares (necessário para alguns codecs)
         var w = metrics.widthPixels
         var h = metrics.heightPixels
         if (w % 2 != 0) w--
@@ -133,7 +127,7 @@ class GravacaoService : Service() {
                 if (audioOk) setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setVideoSize(w, h)
                 setVideoFrameRate(30)
-                setVideoEncodingBitRate(8_000_000) // 8Mbps para boa qualidade
+                setVideoEncodingBitRate(8_000_000)
                 setOutputFile(fd)
                 prepare()
             }
@@ -146,7 +140,6 @@ class GravacaoService : Service() {
 
             mediaRecorder?.start()
             gravando = true
-            Log.d(TAG, "Gravação iniciada")
         } catch (e: Exception) {
             Log.e(TAG, "Falha ao iniciar recorder", e)
             pararGravacao()
@@ -160,7 +153,7 @@ class GravacaoService : Service() {
         try {
             mediaRecorder?.stop()
         } catch (e: Exception) {
-            Log.e(TAG, "Erro ao parar (talvez vídeo muito curto)", e)
+            Log.e(TAG, "Erro ao parar", e)
         } finally {
             mediaRecorder?.release()
             virtualDisplay?.release()
