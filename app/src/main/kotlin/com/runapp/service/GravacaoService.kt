@@ -25,7 +25,7 @@ class GravacaoService : Service() {
     var onFinalizado: ((String?) -> Unit)? = null
 
     companion object {
-        const val ACTION_STOP = "STOP_RECORDING_ACTION"
+        const val ACTION_STOP = "STOP_ACTION"
         const val CANAL_ID = "gravacao_canal"
     }
 
@@ -53,18 +53,13 @@ class GravacaoService : Service() {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(canal)
         }
-
         val stopIntent = Intent(this, GravacaoService::class.java).apply { action = ACTION_STOP }
         val stopPending = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
-
         val notif = NotificationCompat.Builder(this, CANAL_ID)
             .setContentTitle("Gravando Corrida")
-            .setContentText("A gravação está ativa")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .addAction(android.R.drawable.ic_media_pause, "PARAR", stopPending)
-            .setOngoing(true)
-            .build()
-
+            .setOngoing(true).build()
         startForeground(9001, notif)
     }
 
@@ -106,11 +101,15 @@ class GravacaoService : Service() {
     }
 
     fun encerrarTudo() {
-        try { mediaRecorder?.stop() } catch (e: Exception) {}
-        mediaRecorder?.release()
+        try {
+            mediaRecorder?.stop()
+            mediaRecorder?.release()
+        } catch (e: Exception) { Log.e("Service", "Erro stop") }
+        
         virtualDisplay?.release()
         mediaProjection?.stop()
         pfd?.close()
+        
         onFinalizado?.invoke(nomeArquivo)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()

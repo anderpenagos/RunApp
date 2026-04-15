@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.media.projection.MediaProjectionManager
 import android.os.IBinder
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -64,7 +65,6 @@ fun GravacaoCorridaScreen(
     var gravando by remember { mutableStateOf(false) }
     var arquivoSalvo by remember { mutableStateOf<String?>(null) }
 
-    // Conexão apenas para receber o nome do arquivo quando terminar
     val serviceConnection = remember {
         object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -86,22 +86,21 @@ fun GravacaoCorridaScreen(
                 putExtra("result_code", result.resultCode)
                 putExtra("projection_data", result.data)
             }
-            context.startForegroundService(intent)
+            ContextCompat.startForegroundService(context, intent)
             context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
             gravando = true
         }
     }
 
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { r -> cameraOk = r[Manifest.permission.CAMERA] == true }
+
     LaunchedEffect(Unit) {
-        if (PermissionChecker.checkSelfPermission(context, Manifest.permission.CAMERA) != PermissionChecker.PERMISSION_GRANTED) {
-            // Se precisar pedir permissão aqui, mas assumimos que o app já pediu antes
-            cameraOk = true 
-        } else { cameraOk = true }
+        permLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        
-        // 1. CÂMERA DE FUNDO
         if (cameraOk) {
             AndroidView(
                 factory = { ctx ->
@@ -109,8 +108,10 @@ fun GravacaoCorridaScreen(
                     ProcessCameraProvider.getInstance(ctx).addListener({
                         val prov = ProcessCameraProvider.getInstance(ctx).get()
                         val prev = Preview.Builder().build().also { it.setSurfaceProvider(pv.surfaceProvider) }
-                        prov.unbindAll()
-                        prov.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, prev)
+                        try {
+                            prov.unbindAll()
+                            prov.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, prev)
+                        } catch(e: Exception) { Log.e("Câmera", "Erro bind", e) }
                     }, ContextCompat.getMainExecutor(ctx))
                     pv
                 },
@@ -118,69 +119,40 @@ fun GravacaoCorridaScreen(
             )
         }
 
-        // 2. HUD DE DADOS (Gravado no vídeo)
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.7f)))))
         
-        Column(
-            modifier = Modifier
-                .fillMaxWidth().align(Alignment.BottomCenter)
-                .padding(start = 24.dp, end = 24.dp, bottom = 112.dp)
-        ) {
+        Column(Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(horizontal = 24.dp, vertical = 112.dp)) {
             HudGrande("%.2f".format(state.distanciaMetros / 1000.0).replace(".", ","), "Km", "Distance")
-            Spacer(Modifier.height(8.dp))
             HudGrande(if (state.paceAtual == "--:--") "--' --\"" else state.paceAtual, "", "Pace")
-            Spacer(Modifier.height(12.dp))
-            
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Velocimetro(velocidadeDesPace(state.paceAtual), Modifier.size(130.dp))
                 Spacer(Modifier.width(20.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column {
                     HudPequeno("Tempo", state.tempoFormatado)
                     HudPequeno("Pace médio", state.paceMedia)
                 }
             }
         }
 
-        // 3. BOTÕES (Ocultos no vídeo final)
         if (!gravando) {
-            IconButton(
-                onClick = onVoltar,
-                modifier = Modifier.align(Alignment.TopStart).padding(16.dp).size(40.dp).background(Color.Black.copy(0.4f), CircleShape)
-            ) { Icon(Icons.Default.ArrowBack, null, tint = Color.White) }
-
-            Box(
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp).size(72.dp).clip(CircleShape).background(Color.Red)
-                    .clickable {
-                        val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                        projectionLauncher.launch(mgr.createScreenCaptureIntent())
-                    },
-                contentAlignment = Alignment.Center
-            ) {
+            IconButton(onClick = onVoltar, modifier = Modifier.align(Alignment.TopStart).padding(16.dp).size(40.dp).background(Color.Black.copy(0.4f), CircleShape)) {
+                Icon(Icons.Default.ArrowBack, null, tint = Color.White)
+            }
+            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp).size(72.dp).clip(CircleShape).background(Color.Red).clickable {
+                val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                projectionLauncher.launch(mgr.createScreenCaptureIntent())
+            }, contentAlignment = Alignment.Center) {
                 Icon(Icons.Default.FiberManualRecord, null, tint = Color.White, modifier = Modifier.size(40.dp))
             }
         } else {
-            // BOTÃO PARAR - APARECE NA TELA, MAS SOME NO VÍDEO FINAL
-            Popup(
-                alignment = Alignment.BottomEnd,
-                properties = PopupProperties(securePolicy = SecureFlagPolicy.SecureOn)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .padding(bottom = 40.dp, end = 20.dp)
-                        .size(110.dp, 60.dp)
-                        .background(Color.Red, RoundedCornerShape(30.dp))
-                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
-                            val stopIntent = Intent(context, GravacaoService::class.java).apply {
-                                action = GravacaoService.ACTION_STOP
-                            }
-                            context.startService(stopIntent)
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
+            Popup(alignment = Alignment.BottomEnd, properties = PopupProperties(securePolicy = SecureFlagPolicy.SecureOn)) {
+                Box(Modifier.padding(bottom = 40.dp, end = 20.dp).size(110.dp, 60.dp).background(Color.Red, RoundedCornerShape(30.dp)).clickable {
+                    val stopIntent = Intent(context, GravacaoService::class.java).apply { action = "STOP_ACTION" }
+                    context.startService(stopIntent)
+                }, contentAlignment = Alignment.Center) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Stop, null, tint = Color.White, modifier = Modifier.size(28.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("PARAR", color = Color.White, fontWeight = FontWeight.ExtraBold)
+                        Text("PARAR", color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -199,9 +171,7 @@ fun GravacaoCorridaScreen(
 private fun HudGrande(valor: String, unidade: String, label: String) {
     Row(verticalAlignment = Alignment.Bottom) {
         Text(valor, fontSize = 60.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        if (unidade.isNotEmpty()) {
-            Text(unidade, fontSize = 22.sp, color = Color.White.copy(0.7f), modifier = Modifier.padding(bottom = 8.dp, start = 4.dp))
-        }
+        if (unidade.isNotEmpty()) Text(unidade, fontSize = 22.sp, color = Color.White.copy(0.7f), modifier = Modifier.padding(bottom = 8.dp, start = 4.dp))
     }
     Text(label.uppercase(), fontSize = 12.sp, color = Color.White.copy(0.5f))
 }
