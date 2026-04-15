@@ -35,11 +35,11 @@ class GravacaoService : Service() {
     private fun iniciarNotif() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            nm.createNotificationChannel(NotificationChannel("rec", "Rec", NotificationManager.IMPORTANCE_LOW))
+            nm.createNotificationChannel(NotificationChannel("rec", "Gravando", NotificationManager.IMPORTANCE_LOW))
         }
         val stopIn = Intent(this, GravacaoService::class.java).apply { action = "com.runapp.STOP" }
-        val stopPe = PendingIntent.getService(this, 0, stopIn, PendingIntent.FLAG_IMMUTABLE)
-        val notif = NotificationCompat.Builder(this, "rec").setContentTitle("Gravando").setSmallIcon(android.R.drawable.ic_media_play)
+        val stopPe = PendingIntent.getService(this, 0, stopIn, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val notif = NotificationCompat.Builder(this, "rec").setContentTitle("RunApp Gravando").setSmallIcon(android.R.drawable.ic_media_play)
             .addAction(android.R.drawable.ic_media_pause, "PARAR", stopPe).setOngoing(true).build()
         startForeground(9001, notif)
     }
@@ -74,9 +74,17 @@ class GravacaoService : Service() {
     }
 
     fun encerrarTudo() {
-        try { mediaRecorder?.stop() } catch (e: Exception) {}
-        mediaRecorder?.release(); virtualDisplay?.release(); mediaProjection?.stop(); pfd?.close()
+        try {
+            mediaRecorder?.stop()
+            mediaRecorder?.release()
+        } catch (e: Exception) { Log.e("Service", "Erro ao parar recorder") }
+        virtualDisplay?.release()
+        mediaProjection?.stop()
+        pfd?.close()
+        
+        // Garante que o callback aconteça na Main Thread para atualizar a UI
         Handler(Looper.getMainLooper()).post { onFinalizado?.invoke(nomeArquivo) }
-        stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 }
