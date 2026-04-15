@@ -1,8 +1,12 @@
 package com.runapp.ui.screens
 
 import android.Manifest
-import android.content.ContentValues
-import android.provider.MediaStore
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.media.projection.MediaProjectionManager
+import android.os.IBinder
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -40,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.content.PermissionChecker
+import com.runapp.service.GravacaoService
 import com.runapp.ui.viewmodel.CorridaUiState
 import kotlinx.coroutines.delay
 import java.util.concurrent.Executors
@@ -55,6 +60,7 @@ fun GravacaoCorridaScreen(
     val context        = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
+    // ── Permissões ──────────────────────────────────────────────────────────
     var cameraOk by remember { mutableStateOf(false) }
     var audioOk  by remember { mutableStateOf(false) }
 
@@ -72,24 +78,66 @@ fun GravacaoCorridaScreen(
         if (!cc || !ca) permLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
     }
 
-    var gravando      by remember { mutableStateOf(false) }
-    var tempoGravacao by remember { mutableStateOf(0) }
-    var arquivoSalvo  by remember { mutableStateOf<String?>(null) }
-    var recording     by remember { mutableStateOf<Recording?>(null) }
-    var videoCapture  by remember { mutableStateOf<VideoCapture<Recorder>?>(null) }
+    // ── Estado ──────────────────────────────────────────────────────────────
+    var gravando       by remember { mutableStateOf(false) }
+    var tempoGravacao  by remember { mutableStateOf(0) }
+    var arquivoSalvo   by remember { mutableStateOf<String?>(null) }
+    var servicoBound   by remember { mutableStateOf(false) }
+    var gravacaoService by remember { mutableStateOf<GravacaoService?>(null) }
 
-    val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
-    DisposableEffect(Unit) { onDispose { cameraExecutor.shutdown() } }
-
-    LaunchedEffect(gravando) {
-        if (gravando) {
-            tempoGravacao = 0
-            while (gravando) { delay(1000L); tempoGravacao++ }
+    // ── Bind ao GravacaoService ─────────────────────────────────────────────
+    val serviceConnection = remember {
+        object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                val b = binder as? GravacaoService.LocalBinder ?: return
+                gravacaoService = b.getService().also { svc ->
+                    svc.onGravacaoFinalizada = { nome ->
+                        gravando = false
+                        arquivoSalvo = nome
+                    }
+                }
+                servicoBound = true
+            }
+            override fun onServiceDisconnected(name: ComponentName?) {
+                servicoBound = false
+                gravacaoService = null
+            }
         }
     }
 
+    DisposableEffect(Unit) {
+        val intent = Intent(context, GravacaoService::class.java)
+        context.startService(intent)
+        context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        onDispose {
+            if (servicoBound) context.unbindService(serviceConnection)
+        }
+    }
+
+    // ── Launcher para permissão de captura de tela ──────────────────────────
+    val mediaProjectionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
+            gravacaoService?.iniciarGravacao(result.resultCode, result.data!!, audioOk)
+            gravando = true
+        }
+    }
+
+    // Cronômetro de gravação
+    LaunchedEffect(gravando) {
+        tempoGravacao = 0
+        while (gravando) { delay(1000L); tempoGravacao++ }
+    }
+
+    // ── Camera executor ─────────────────────────────────────────────────────
+    val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+    DisposableEffect(Unit) { onDispose { cameraExecutor.shutdown() } }
+
+    // ── Layout ───────────────────────────────────────────────────────────────
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
+        // Preview câmera fullscreen
         if (cameraOk) {
             AndroidView(
                 factory = { ctx ->
@@ -100,15 +148,10 @@ fun GravacaoCorridaScreen(
                     ProcessCameraProvider.getInstance(ctx).addListener({
                         val provider = ProcessCameraProvider.getInstance(ctx).get()
                         val preview  = Preview.Builder().build().also { it.setSurfaceProvider(pv.surfaceProvider) }
-                        val recorder = Recorder.Builder()
-                            .setQualitySelector(QualitySelector.from(Quality.HD, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
-                            .build()
-                        val vc = VideoCapture.withOutput(recorder)
-                        videoCapture = vc
                         try {
                             provider.unbindAll()
-                            provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, vc)
-                            Log.d(TAG, "Camera OK")
+                            provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview)
+                            Log.d(TAG, "Camera preview OK")
                         } catch (e: Exception) { Log.e(TAG, "Erro camera", e) }
                     }, ContextCompat.getMainExecutor(ctx))
                     pv
@@ -117,18 +160,24 @@ fun GravacaoCorridaScreen(
             )
         }
 
+        // Gradiente inferior para legibilidade
         Box(
             modifier = Modifier
                 .fillMaxWidth().fillMaxHeight(0.65f).align(Alignment.BottomCenter)
                 .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f))))
         )
 
+        // ── HUD métricas — sempre visível (aparece no vídeo) ────────────────
         Column(
             modifier = Modifier
                 .fillMaxWidth().align(Alignment.BottomCenter)
                 .padding(start = 24.dp, end = 24.dp, bottom = 112.dp)
         ) {
-            HudGrande("%.2f".format(state.distanciaMetros / 1000.0).replace(".", ","), "Km", "Distance")
+            HudGrande(
+                valor   = "%.2f".format(state.distanciaMetros / 1000.0).replace(".", ","),
+                unidade = "Km",
+                label   = "Distance"
+            )
             Spacer(Modifier.height(12.dp))
             val paceDisplay = state.paceAtual.let { p ->
                 if (p == "--:--") "--' --\""
@@ -147,81 +196,96 @@ fun GravacaoCorridaScreen(
             }
         }
 
-        arquivoSalvo?.let {
-            Box(Modifier.align(Alignment.TopCenter).padding(top = 60.dp)
-                .background(Color(0xFF1B5E20).copy(alpha = 0.9f), RoundedCornerShape(8.dp))
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-            ) { Text("✅ Salvo em Movies/RunApp/$it.mp4", color = Color.White, fontSize = 13.sp) }
-        }
+        // ── Controles — OCULTOS durante gravação para não aparecer no vídeo ─
+        if (!gravando) {
+            // Botão voltar
+            IconButton(
+                onClick = { onVoltar() },
+                modifier = Modifier
+                    .align(Alignment.TopStart).padding(12.dp)
+                    .size(40.dp).background(Color.Black.copy(alpha = 0.45f), CircleShape)
+            ) { Icon(Icons.Default.ArrowBack, null, tint = Color.White) }
 
-        IconButton(
-            onClick = { if (gravando) { recording?.stop(); recording = null }; onVoltar() },
-            modifier = Modifier.align(Alignment.TopStart).padding(12.dp)
-                .size(40.dp).background(Color.Black.copy(alpha = 0.45f), CircleShape)
-        ) { Icon(Icons.Default.ArrowBack, null, tint = Color.White) }
-
-        Column(
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (gravando) IndicadorGravando(tempoGravacao)
-
+            // Botão gravar
             Box(
-                modifier = Modifier.size(68.dp).clip(CircleShape)
+                modifier = Modifier
+                    .align(Alignment.BottomCenter).padding(bottom = 32.dp)
+                    .size(68.dp).clip(CircleShape)
                     .background(Color.Black.copy(alpha = 0.5f)),
                 contentAlignment = Alignment.Center
             ) {
                 IconButton(
                     onClick = {
-                        val vc = videoCapture ?: return@IconButton
-                        if (gravando) {
-                            recording?.stop(); recording = null; gravando = false
-                        } else {
-                            val nome = "corrida_${System.currentTimeMillis()}"
-                            val cv = ContentValues().apply {
-                                put(MediaStore.Video.Media.DISPLAY_NAME, "$nome.mp4")
-                                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/RunApp")
-                            }
-                            val out = MediaStoreOutputOptions.Builder(
-                                context.contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                            ).setContentValues(cv).build()
-
-                            val prep = vc.output.prepareRecording(context, out)
-                            val recFinal = if (audioOk) prep.withAudioEnabled() else prep
-                            recording = recFinal.start(ContextCompat.getMainExecutor(context)) { ev ->
-                                when (ev) {
-                                    is VideoRecordEvent.Start    -> Log.d(TAG, "Gravando")
-                                    is VideoRecordEvent.Finalize ->
-                                        if (!ev.hasError()) arquivoSalvo = nome
-                                        else Log.e(TAG, "Erro: ${ev.error}")
-                                    else -> {}
-                                }
-                            }
-                            gravando = true
-                        }
+                        val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
+                                as MediaProjectionManager
+                        mediaProjectionLauncher.launch(mgr.createScreenCaptureIntent())
                     },
                     modifier = Modifier.size(68.dp)
                 ) {
-                    Icon(
-                        if (gravando) Icons.Default.Stop else Icons.Default.FiberManualRecord,
-                        null,
-                        tint = if (gravando) Color.White else Color(0xFFEF5350),
-                        modifier = Modifier.size(34.dp)
-                    )
+                    Icon(Icons.Default.FiberManualRecord, null,
+                        tint = Color(0xFFEF5350), modifier = Modifier.size(34.dp))
                 }
+            }
+        } else {
+            // ── Gravando: só botão STOP pequeno e semi-transparente no canto ─
+            // (pequeno o suficiente para não obscurecer as métricas)
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 36.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                IndicadorGravando(tempoGravacao)
+                Box(
+                    modifier = Modifier
+                        .size(44.dp).clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.45f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    IconButton(
+                        onClick = {
+                            gravacaoService?.pararGravacao()
+                            gravando = false
+                        },
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Icon(Icons.Default.Stop, null,
+                            tint = Color.White.copy(alpha = 0.8f),
+                            modifier = Modifier.size(22.dp))
+                    }
+                }
+            }
+        }
+
+        // Notificação de vídeo salvo
+        arquivoSalvo?.let { nome ->
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter).padding(top = 16.dp)
+                    .background(Color(0xFF1B5E20).copy(alpha = 0.92f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Text("✅ Vídeo salvo em Galeria > RunApp", color = Color.White, fontSize = 13.sp)
+            }
+            // Volta automaticamente após 3s
+            LaunchedEffect(nome) {
+                delay(3000L)
+                onVoltar()
             }
         }
     }
 }
+
+// ── Componentes ──────────────────────────────────────────────────────────────
 
 @Composable private fun HudGrande(valor: String, unidade: String, label: String) {
     Row(verticalAlignment = Alignment.Bottom) {
         Text(valor, fontSize = 60.sp, fontWeight = FontWeight.Bold, color = Color.White, lineHeight = 60.sp)
         if (unidade.isNotEmpty()) {
             Spacer(Modifier.width(6.dp))
-            Text(unidade, fontSize = 22.sp, color = Color.White.copy(alpha = 0.8f), modifier = Modifier.padding(bottom = 8.dp))
+            Text(unidade, fontSize = 22.sp, color = Color.White.copy(alpha = 0.8f),
+                modifier = Modifier.padding(bottom = 8.dp))
         }
     }
     Text(label, fontSize = 13.sp, color = Color.White.copy(alpha = 0.55f))
@@ -239,37 +303,14 @@ fun GravacaoCorridaScreen(
     Box(modifier, contentAlignment = Alignment.Center) {
         androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
             val strokeWidth = 9.dp.toPx()
-            val padding = strokeWidth / 2 + 6.dp.toPx()
-            
-            // Definindo o tamanho e a posição do arco manualmente (necessário para drawArc)
-            val arcSize = Size(size.width - 2 * padding, size.height - 2 * padding)
-            val topLeft = Offset(padding, padding)
-            
-            val arcStyle = Stroke(width = strokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-
-            // Fundo do velocímetro (Cinza transparente)
-            drawArc(
-                color = Color.White.copy(alpha = 0.15f),
-                startAngle = 150f,
-                sweepAngle = 240f,
-                useCenter = false,
-                topLeft = topLeft,
-                size = arcSize,
-                style = arcStyle
-            )
-
-            // Progresso do velocímetro
+            val padding     = strokeWidth / 2 + 6.dp.toPx()
+            val arcSize     = Size(size.width - 2 * padding, size.height - 2 * padding)
+            val topLeft     = Offset(padding, padding)
+            val arcStyle    = Stroke(strokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            drawArc(Color.White.copy(alpha = 0.15f), 150f, 240f, false, topLeft, arcSize, style = arcStyle)
             if (ratio > 0f) {
                 val cor = androidx.compose.ui.graphics.lerp(Color(0xFF29B6F6), Color(0xFF66BB6A), ratio)
-                drawArc(
-                    color = cor,
-                    startAngle = 150f,
-                    sweepAngle = 240f * ratio,
-                    useCenter = false,
-                    topLeft = topLeft,
-                    size = arcSize,
-                    style = arcStyle
-                )
+                drawArc(cor, 150f, 240f * ratio, false, topLeft, arcSize, style = arcStyle)
             }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -281,25 +322,27 @@ fun GravacaoCorridaScreen(
 
 @Composable private fun IndicadorGravando(t: Int) {
     val pulse = rememberInfiniteTransition(label = "p")
-    val a by pulse.animateFloat(1f, 0.25f, infiniteRepeatable(tween(700, easing = LinearEasing), RepeatMode.Reverse), label = "a")
+    val a by pulse.animateFloat(1f, 0.3f,
+        infiniteRepeatable(tween(700, easing = LinearEasing), RepeatMode.Reverse), label = "a")
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(20.dp))
-            .padding(horizontal = 14.dp, vertical = 6.dp)
+        modifier = Modifier
+            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 10.dp, vertical = 5.dp)
     ) {
-        Box(Modifier.size(8.dp).background(Color(0xFFEF5350).copy(alpha = a), CircleShape))
-        Spacer(Modifier.width(6.dp))
-        Text("%02d:%02d".format(t / 60, t % 60), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Box(Modifier.size(7.dp).background(Color(0xFFEF5350).copy(alpha = a), CircleShape))
+        Spacer(Modifier.width(5.dp))
+        Text("%02d:%02d".format(t / 60, t % 60), color = Color.White,
+            fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
 private fun velocidadeDesPace(p: String): Float {
     if (p == "--:--") return 0f
-    return runCatching { 
+    return runCatching {
         val partes = p.split(":")
         if (partes.size < 2) return 0f
-        val minutos = partes[0].toFloat()
-        val segundos = partes[1].toFloat()
-        if (minutos == 0f && segundos == 0f) 0f else 3600f / (minutos * 60 + segundos)
+        val s = partes[0].toFloat() * 60 + partes[1].toFloat()
+        if (s <= 0f) 0f else 3600f / s
     }.getOrDefault(0f)
 }

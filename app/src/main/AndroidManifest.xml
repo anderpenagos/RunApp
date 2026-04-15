@@ -78,6 +78,15 @@
             android:exported="false"
             android:foregroundServiceType="location|health" />
 
+        <!-- Foreground Service de gravação de tela (MediaProjection).
+             Android 10+ exige foregroundServiceType="mediaProjection" para que o
+             MediaProjectionManager.getMediaProjection() funcione em background.
+             FOREGROUND_SERVICE_MEDIA_PROJECTION (API 34+) já declarado nas permissões. -->
+        <service
+            android:name=".service.GravacaoService"
+            android:foregroundServiceType="mediaProjection"
+            android:exported="false" />
+
         <!--
             FileProvider — necessário para compartilhar arquivos GPX com outros apps
             (Strava, WhatsApp, email, etc.) sem expor o caminho real do arquivo.
