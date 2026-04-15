@@ -63,12 +63,6 @@ fun GravacaoCorridaScreen(
     var cameraOk by remember { mutableStateOf(false) }
     var gravando by remember { mutableStateOf(false) }
     var arquivoSalvo by remember { mutableStateOf<String?>(null) }
-    var tempoSegundos by remember { mutableStateOf(0) }
-
-    // Cronômetro (Não sai no vídeo)
-    LaunchedEffect(gravando) {
-        if (gravando) { tempoSegundos = 0; while (gravando) { delay(1000); tempoSegundos++ } }
-    }
 
     val serviceConnection = remember {
         object : ServiceConnection {
@@ -97,61 +91,69 @@ fun GravacaoCorridaScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        // 1. CÂMERA
-        if (cameraOk) {
-            AndroidView(
-                factory = { ctx ->
-                    val pv = PreviewView(ctx).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
-                    val providerFuture = ProcessCameraProvider.getInstance(ctx)
-                    providerFuture.addListener({
-                        val provider = providerFuture.get()
-                        val prev = Preview.Builder().build().also { it.setSurfaceProvider(pv.surfaceProvider) }
-                        try {
-                            provider.unbindAll()
-                            provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, prev)
-                        } catch (e: Exception) { Log.e("Camera", "Erro", e) }
-                    }, ContextCompat.getMainExecutor(ctx))
-                    pv
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        }
+        // 1. CÂMERA (CORRIGIDA)
+        AndroidView(
+            factory = { ctx ->
+                val pv = PreviewView(ctx).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
+                val providerFuture = ProcessCameraProvider.getInstance(ctx)
+                providerFuture.addListener({
+                    val provider = providerFuture.get()
+                    val prev = Preview.Builder().build().also { it.setSurfaceProvider(pv.surfaceProvider) }
+                    try {
+                        provider.unbindAll()
+                        provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, prev)
+                    } catch (e: Exception) { Log.e("Camera", "Erro bind", e) }
+                }, ContextCompat.getMainExecutor(ctx))
+                pv
+            },
+            modifier = Modifier.fillMaxSize()
+        )
 
-        // 2. INDICADOR DE GRAVAÇÃO (Invisível no vídeo)
-        if (gravando) {
-            Popup(alignment = Alignment.TopCenter, properties = PopupProperties(securePolicy = SecureFlagPolicy.SecureOn)) {
-                Row(Modifier.padding(top = 40.dp).background(Color.Black.copy(0.5f), RoundedCornerShape(20.dp)).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    val alpha by rememberInfiniteTransition().animateFloat(1f, 0f, infiniteRepeatable(tween(500), RepeatMode.Reverse))
-                    Box(Modifier.size(10.dp).background(Color.Red.copy(alpha = alpha), CircleShape))
-                    Spacer(Modifier.width(8.dp))
-                    Text("%02d:%02d".format(tempoSegundos / 60, tempoSegundos % 60), color = Color.White, fontWeight = FontWeight.Bold)
-                }
-            }
-        }
+        // Gradiente sutil para leitura
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.4f)))))
 
-        // 3. HUD DE DADOS (Original)
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.7f)))))
-        
-        Column(Modifier.align(Alignment.BottomCenter).padding(start = 24.dp, end = 24.dp, bottom = 112.dp)) {
+        // --- HUD DE DADOS (LAYOUT FIEL À IMAGEM 2) ---
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 24.dp, bottom = 48.dp),
+            verticalArrangement = Arrangement.Bottom,
+            horizontalAlignment = Alignment.Start
+        ) {
+            // Distância
             HudGrande("%.2f".format(state.distanciaMetros / 1000.0).replace(".", ","), "Km", "Distance")
-            Spacer(Modifier.height(12.dp))
-            HudGrande(if (state.paceAtual == "--:--") "--' --\"" else state.paceAtual, "", "Pace")
-            Spacer(Modifier.height(12.dp))
+            
+            Spacer(Modifier.height(24.dp))
+            
+            // Pace
+            val paceDisplay = if (state.paceAtual == "--:--") "--' --\"" else {
+                val p = state.paceAtual.split(":")
+                if (p.size == 2) "${p[0]}' ${p[1]}\"" else state.paceAtual
+            }
+            HudGrande(paceDisplay, "", "Pace")
+            
+            Spacer(Modifier.height(40.dp))
+            
+            // Linha Inferior: Velocímetro + Dados Pequenos
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Velocimetro(velocidadeDesPace(state.paceAtual), Modifier.size(130.dp))
-                Spacer(Modifier.width(20.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                
+                Spacer(Modifier.width(24.dp))
+                
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     HudPequeno("Tempo", state.tempoFormatado)
                     HudPequeno("Pace médio", state.paceMedia)
+                    if (state.cadencia > 0) HudPequeno("Cadência", "${state.cadencia} spm")
                 }
             }
         }
 
-        // 4. BOTÕES (Ocultos no vídeo)
+        // 4. BOTÕES (Ocultos no vídeo via SecureOn)
         if (!gravando) {
-            IconButton(onClick = onVoltar, modifier = Modifier.align(Alignment.TopStart).padding(16.dp).size(40.dp).background(Color.Black.copy(0.4f), CircleShape)) {
+            IconButton(onClick = onVoltar, modifier = Modifier.align(Alignment.TopStart).padding(16.dp).size(40.dp).background(Color.Black.copy(0.3f), CircleShape)) {
                 Icon(Icons.Default.ArrowBack, null, tint = Color.White)
             }
+            // Botão Iniciar (Centralizado embaixo)
             Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp).size(72.dp).clip(CircleShape).background(Color.Red).clickable {
                 val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 projectionLauncher.launch(mgr.createScreenCaptureIntent())
@@ -159,42 +161,48 @@ fun GravacaoCorridaScreen(
                 Icon(Icons.Default.FiberManualRecord, null, tint = Color.White, modifier = Modifier.size(40.dp))
             }
         } else {
+            // Botão Parar (Canto inferior direito, invisível no vídeo)
             Popup(alignment = Alignment.BottomEnd, properties = PopupProperties(securePolicy = SecureFlagPolicy.SecureOn)) {
                 Box(Modifier.padding(bottom = 40.dp, end = 20.dp).size(110.dp, 60.dp).background(Color.Red, RoundedCornerShape(30.dp)).clickable {
-                    val intent = Intent(context, GravacaoService::class.java).apply { action = "com.runapp.STOP" }
-                    context.startService(intent)
+                    val stopIntent = Intent(context, GravacaoService::class.java).apply { action = "com.runapp.STOP" }
+                    context.startService(stopIntent)
                 }, contentAlignment = Alignment.Center) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Stop, null, tint = Color.White, modifier = Modifier.size(28.dp))
+                        Spacer(Modifier.width(4.dp))
                         Text("PARAR", color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
 
-        arquivoSalvo?.let {
-            LaunchedEffect(it) { delay(3000L); onVoltar() }
+        if (arquivoSalvo != null) {
             Box(Modifier.align(Alignment.TopCenter).padding(20.dp).background(Color(0xFF1B5E20), RoundedCornerShape(8.dp)).padding(16.dp)) {
-                Text("✅ Vídeo salvo com sucesso!", color = Color.White)
+                Text("✅ Vídeo salvo na galeria!", color = Color.White)
             }
+            LaunchedEffect(arquivoSalvo) { delay(3000L); arquivoSalvo = null }
         }
     }
 }
 
 @Composable
 private fun HudGrande(valor: String, unidade: String, label: String) {
-    Row(verticalAlignment = Alignment.Bottom) {
-        Text(valor, fontSize = 60.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        if (unidade.isNotEmpty()) Text(unidade, fontSize = 22.sp, color = Color.White.copy(0.7f), modifier = Modifier.padding(bottom = 8.dp, start = 4.dp))
+    Column(horizontalAlignment = Alignment.Start) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(valor, fontSize = 72.sp, fontWeight = FontWeight.Bold, color = Color.White, lineHeight = 72.sp)
+            if (unidade.isNotEmpty()) {
+                Text(unidade, fontSize = 24.sp, color = Color.White, modifier = Modifier.padding(bottom = 12.dp, start = 6.dp))
+            }
+        }
+        Text(label, fontSize = 14.sp, color = Color.White.copy(0.8f))
     }
-    Text(label.uppercase(), fontSize = 12.sp, color = Color.White.copy(0.5f))
 }
 
 @Composable
 private fun HudPequeno(label: String, valor: String) {
     Column {
-        Text(label.uppercase(), fontSize = 10.sp, color = Color.White.copy(0.5f))
-        Text(valor, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+        Text(label, fontSize = 12.sp, color = Color.White.copy(0.7f))
+        Text(valor, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
     }
 }
 
@@ -204,13 +212,15 @@ private fun Velocimetro(vel: Float, modifier: Modifier) {
     Box(modifier, contentAlignment = Alignment.Center) {
         androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
             val sw = 9.dp.toPx()
-            val pad = sw / 2 + 6.dp.toPx()
+            val pad = sw / 2 + 4.dp.toPx()
             val arcSize = Size(size.width - 2 * pad, size.height - 2 * pad)
-            val st = Stroke(sw, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-            drawArc(Color.White.copy(0.15f), 150f, 240f, false, Offset(pad, pad), arcSize, style = st)
-            drawArc(androidx.compose.ui.graphics.lerp(Color(0xFF29B6F6), Color(0xFF66BB6A), ratio), 150f, 240f * ratio, false, Offset(pad, pad), arcSize, style = st)
+            drawArc(Color.White.copy(0.2f), 150f, 240f, false, Offset(pad, pad), arcSize, style = Stroke(sw, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+            drawArc(Color(0xFF29B6F6), 150f, 240f * ratio, false, Offset(pad, pad), arcSize, style = Stroke(sw, cap = androidx.compose.ui.graphics.StrokeCap.Round))
         }
-        Text(vel.roundToInt().toString(), fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(vel.roundToInt().toString(), fontSize = 38.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Text("KM/H", fontSize = 10.sp, color = Color.White.copy(0.6f))
+        }
     }
 }
 

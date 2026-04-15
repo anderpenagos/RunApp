@@ -50,14 +50,17 @@ class GravacaoService : Service() {
         val m = resources.displayMetrics
         val w = if (m.widthPixels % 2 == 0) m.widthPixels else m.widthPixels - 1
         val h = if (m.heightPixels % 2 == 0) m.heightPixels else m.heightPixels - 1
+        
         nomeArquivo = "run_${System.currentTimeMillis()}"
         val cv = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, "$nomeArquivo.mp4")
             put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/RunApp")
             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
         }
+        
         val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv) ?: return
         pfd = contentResolver.openFileDescriptor(uri, "w")
+        
         mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
         mediaRecorder?.apply {
             setVideoSource(MediaRecorder.VideoSource.SURFACE)
@@ -74,16 +77,12 @@ class GravacaoService : Service() {
     }
 
     fun encerrarTudo() {
-        try {
-            mediaRecorder?.stop()
-            mediaRecorder?.release()
-        } catch (e: Exception) { Log.e("Service", "Erro ao parar recorder") }
-        virtualDisplay?.release()
-        mediaProjection?.stop()
-        pfd?.close()
+        try { mediaRecorder?.stop(); mediaRecorder?.release() } catch (e: Exception) { Log.e("Service", "Erro stop") }
+        virtualDisplay?.release(); mediaProjection?.stop(); pfd?.close()
         
-        // Garante que o callback aconteça na Main Thread para atualizar a UI
+        // Callback para a UI avisar que salvou
         Handler(Looper.getMainLooper()).post { onFinalizado?.invoke(nomeArquivo) }
+        
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
