@@ -724,6 +724,9 @@ class CorridaViewModel(
         if (tempoTotal >= tempoTotalPascos && !treinoConcluidoAnunciado && passos.isNotEmpty()) {
             treinoConcluidoAnunciado = true
             audioCoach.anunciarTreinoConcluido()
+            // Avisa o Service que o treino estruturado terminou — pace volta ao pipeline
+            // normal (corrida livre) sem continuar filtrando pela amplitude do último passo.
+            runningService?.marcarTreinoFinalizado()
             // Remove pace alvo — coach não avisa mais sobre ritmo
             _uiState.value = state.copy(
                 passoAtualIndex = indexAtivo,

@@ -200,6 +200,10 @@ class RunningService : Service(), SensorEventListener {
     private var treinoAtivo: WorkoutEvent? = null
     private var passosAtivos: List<PassoExecucao> = emptyList()
     private var indexPassoAtivo: Int = -1
+    // Flag levantado pelo ViewModel quando TODOS os passos do treino estruturado
+    // foram concluídos. Garante que calcularPaceAtual caia no pipeline normal
+    // (corrida livre) em vez de continuar esperando o pace do último passo.
+    private var treinoEstruturadoConcluido = false
 
     fun setDadosTreino(treino: WorkoutEvent, passos: List<PassoExecucao>) {
         treinoAtivo = treino
@@ -216,6 +220,24 @@ class RunningService : Service(), SensorEventListener {
             Log.d(TAG, "⏭️ Passo $indexPassoAtivo→$index — reset urna agendado em 3s")
         }
         indexPassoAtivo = index
+    }
+
+    /**
+     * Chamado pelo ViewModel quando o treino estruturado é concluído (todos os passos finalizados).
+     *
+     * Levanta [treinoEstruturadoConcluido] para que [calcularPaceAtual] ignore o passo
+     * ainda registrado em [indexPassoAtivo] e caia no pipeline normal de corrida livre,
+     * sem continuar filtrando a urna de amplitude pelo pace do último passo.
+     *
+     * Limpa também a urna de amplitude para evitar que votos antigos da faixa alvo
+     * contaminem os primeiros segundos após a conclusão do treino.
+     */
+    fun marcarTreinoFinalizado() {
+        treinoEstruturadoConcluido = true
+        urnaAmplitude.clear()
+        ultimoPaceEmaAmplitude = null
+        _modaDebug.value = _modaDebug.value.copy(votosAmplitude = 0)
+        Log.d(TAG, "✅ Treino estruturado concluído — pace voltará ao pipeline normal (corrida livre)")
     }
     fun getTreinoAtivo(): WorkoutEvent? = treinoAtivo
     fun getPassosAtivos(): List<PassoExecucao> = passosAtivos
@@ -1135,6 +1157,7 @@ class RunningService : Service(), SensorEventListener {
         urnaEstruturadaResetFeito = false
         urnaScreenOffResetFeito = false
         timestampTrocaPasso = 0L
+        treinoEstruturadoConcluido = false
         urnaAmplitude.clear()
         ultimoPaceEmaAmplitude = null
         tempoPausadoTotalMs   = 0
@@ -2362,7 +2385,7 @@ class RunningService : Service(), SensorEventListener {
             SystemClock.elapsedRealtime() - screenOnTimestampMs else Long.MAX_VALUE
 
         // ── 1. PIPELINE TREINO ESTRUTURADO ───────────────────────────────────────
-        val passoAtivo = if (treinoAtivo != null && indexPassoAtivo >= 0)
+        val passoAtivo = if (treinoAtivo != null && indexPassoAtivo >= 0 && !treinoEstruturadoConcluido)
             passosAtivos.getOrNull(indexPassoAtivo) else null
         val paceModa: Double?
 
