@@ -13,7 +13,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.video.*
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -47,7 +46,6 @@ import androidx.core.content.PermissionChecker
 import com.runapp.service.GravacaoService
 import com.runapp.ui.viewmodel.CorridaUiState
 import kotlinx.coroutines.delay
-import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 private const val TAG = "GravacaoCorridaScreen"
@@ -74,70 +72,79 @@ fun GravacaoCorridaScreen(
     LaunchedEffect(Unit) {
         val cc = PermissionChecker.checkSelfPermission(context, Manifest.permission.CAMERA) == PermissionChecker.PERMISSION_GRANTED
         val ca = PermissionChecker.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PermissionChecker.PERMISSION_GRANTED
-        cameraOk = cc; audioOk = ca
-        if (!cc || !ca) permLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
+        cameraOk = cc
+        audioOk  = ca
+        if (!cc || !ca) permLauncher.launch(
+            arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        )
     }
 
     // ── Estado ──────────────────────────────────────────────────────────────
-    var gravando       by remember { mutableStateOf(false) }
-    var tempoGravacao  by remember { mutableStateOf(0) }
-    var arquivoSalvo   by remember { mutableStateOf<String?>(null) }
-    var servicoBound   by remember { mutableStateOf(false) }
-    var gravacaoService by remember { mutableStateOf<GravacaoService?>(null) }
+    var gravando      by remember { mutableStateOf(false) }
+    var tempoGravacao by remember { mutableStateOf(0) }
+    var arquivoSalvo  by remember { mutableStateOf<String?>(null) }
 
-    // ── Bind ao GravacaoService ─────────────────────────────────────────────
+    // Referência ao serviço — só existe enquanto gravando
+    var gravacaoService by remember { mutableStateOf<GravacaoService?>(null) }
     val serviceConnection = remember {
         object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-                val b = binder as? GravacaoService.LocalBinder ?: return
-                gravacaoService = b.getService().also { svc ->
-                    svc.onGravacaoFinalizada = { nome ->
-                        gravando = false
-                        arquivoSalvo = nome
-                    }
+                val svc = (binder as? GravacaoService.LocalBinder)?.getService() ?: return
+                svc.onFinalizado = { nome ->
+                    gravando = false
+                    arquivoSalvo = nome
+                    gravacaoService = null
                 }
-                servicoBound = true
+                gravacaoService = svc
             }
             override fun onServiceDisconnected(name: ComponentName?) {
-                servicoBound = false
                 gravacaoService = null
             }
         }
     }
 
+    // Cleanup ao sair da tela
     DisposableEffect(Unit) {
-        val intent = Intent(context, GravacaoService::class.java)
-        context.startService(intent)
-        context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
         onDispose {
-            if (servicoBound) context.unbindService(serviceConnection)
+            // Se ainda gravando ao sair, para tudo
+            gravacaoService?.pararGravacao()
+            runCatching { context.unbindService(serviceConnection) }
         }
     }
 
-    // ── Launcher para permissão de captura de tela ──────────────────────────
-    val mediaProjectionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
-            gravacaoService?.iniciarGravacao(result.resultCode, result.data!!, audioOk)
-            gravando = true
-        }
-    }
-
-    // Cronômetro de gravação
+    // Cronômetro
     LaunchedEffect(gravando) {
         tempoGravacao = 0
         while (gravando) { delay(1000L); tempoGravacao++ }
     }
 
-    // ── Camera executor ─────────────────────────────────────────────────────
-    val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
-    DisposableEffect(Unit) { onDispose { cameraExecutor.shutdown() } }
+    // ── Launcher MediaProjection ────────────────────────────────────────────
+    val projectionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
+            // Inicia o serviço com os dados de projeção
+            val serviceIntent = Intent(context, GravacaoService::class.java).apply {
+                putExtra(GravacaoService.EXTRA_RESULT_CODE, result.resultCode)
+                putExtra(GravacaoService.EXTRA_DATA, result.data)
+                putExtra(GravacaoService.EXTRA_AUDIO_OK, audioOk)
+            }
+            // startForegroundService obrigatório para Android 8+
+            ContextCompat.startForegroundService(context, serviceIntent)
+            // Bind para obter referência e poder parar depois
+            context.bindService(
+                Intent(context, GravacaoService::class.java),
+                serviceConnection,
+                Context.BIND_AUTO_CREATE
+            )
+            gravando = true
+        }
+    }
 
     // ── Layout ───────────────────────────────────────────────────────────────
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        // Preview câmera fullscreen
+        // Preview câmera — sem VideoCapture, só Preview
         if (cameraOk) {
             AndroidView(
                 factory = { ctx ->
@@ -146,13 +153,18 @@ fun GravacaoCorridaScreen(
                         scaleType          = PreviewView.ScaleType.FILL_CENTER
                     }
                     ProcessCameraProvider.getInstance(ctx).addListener({
-                        val provider = ProcessCameraProvider.getInstance(ctx).get()
-                        val preview  = Preview.Builder().build().also { it.setSurfaceProvider(pv.surfaceProvider) }
-                        try {
+                        runCatching {
+                            val provider = ProcessCameraProvider.getInstance(ctx).get()
+                            val preview  = Preview.Builder().build()
+                                .also { it.setSurfaceProvider(pv.surfaceProvider) }
                             provider.unbindAll()
-                            provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview)
+                            provider.bindToLifecycle(
+                                lifecycleOwner,
+                                CameraSelector.DEFAULT_BACK_CAMERA,
+                                preview
+                            )
                             Log.d(TAG, "Camera preview OK")
-                        } catch (e: Exception) { Log.e(TAG, "Erro camera", e) }
+                        }.onFailure { Log.e(TAG, "Erro camera", it) }
                     }, ContextCompat.getMainExecutor(ctx))
                     pv
                 },
@@ -160,23 +172,24 @@ fun GravacaoCorridaScreen(
             )
         }
 
-        // Gradiente inferior para legibilidade
+        // Gradiente para legibilidade das métricas
         Box(
             modifier = Modifier
                 .fillMaxWidth().fillMaxHeight(0.65f).align(Alignment.BottomCenter)
-                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f))))
+                .background(
+                    Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f)))
+                )
         )
 
-        // ── HUD métricas — sempre visível (aparece no vídeo) ────────────────
+        // ── HUD — sempre visível (aparece na gravação de tela) ──────────────
         Column(
             modifier = Modifier
                 .fillMaxWidth().align(Alignment.BottomCenter)
                 .padding(start = 24.dp, end = 24.dp, bottom = 112.dp)
         ) {
             HudGrande(
-                valor   = "%.2f".format(state.distanciaMetros / 1000.0).replace(".", ","),
-                unidade = "Km",
-                label   = "Distance"
+                "%.2f".format(state.distanciaMetros / 1000.0).replace(".", ","),
+                "Km", "Distance"
             )
             Spacer(Modifier.height(12.dp))
             val paceDisplay = state.paceAtual.let { p ->
@@ -196,17 +209,15 @@ fun GravacaoCorridaScreen(
             }
         }
 
-        // ── Controles — OCULTOS durante gravação para não aparecer no vídeo ─
+        // ── Controles ocultos durante gravação ──────────────────────────────
         if (!gravando) {
-            // Botão voltar
             IconButton(
-                onClick = { onVoltar() },
+                onClick = onVoltar,
                 modifier = Modifier
                     .align(Alignment.TopStart).padding(12.dp)
                     .size(40.dp).background(Color.Black.copy(alpha = 0.45f), CircleShape)
             ) { Icon(Icons.Default.ArrowBack, null, tint = Color.White) }
 
-            // Botão gravar
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter).padding(bottom = 32.dp)
@@ -218,17 +229,19 @@ fun GravacaoCorridaScreen(
                     onClick = {
                         val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
                                 as MediaProjectionManager
-                        mediaProjectionLauncher.launch(mgr.createScreenCaptureIntent())
+                        projectionLauncher.launch(mgr.createScreenCaptureIntent())
                     },
                     modifier = Modifier.size(68.dp)
                 ) {
-                    Icon(Icons.Default.FiberManualRecord, null,
-                        tint = Color(0xFFEF5350), modifier = Modifier.size(34.dp))
+                    Icon(
+                        Icons.Default.FiberManualRecord, null,
+                        tint = Color(0xFFEF5350),
+                        modifier = Modifier.size(34.dp)
+                    )
                 }
             }
         } else {
-            // ── Gravando: só botão STOP pequeno e semi-transparente no canto ─
-            // (pequeno o suficiente para não obscurecer as métricas)
+            // Botão stop + timer — pequeno, canto inferior direito
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -246,20 +259,23 @@ fun GravacaoCorridaScreen(
                     IconButton(
                         onClick = {
                             gravacaoService?.pararGravacao()
+                            runCatching { context.unbindService(serviceConnection) }
                             gravando = false
                         },
                         modifier = Modifier.size(44.dp)
                     ) {
-                        Icon(Icons.Default.Stop, null,
+                        Icon(
+                            Icons.Default.Stop, null,
                             tint = Color.White.copy(alpha = 0.8f),
-                            modifier = Modifier.size(22.dp))
+                            modifier = Modifier.size(22.dp)
+                        )
                     }
                 }
             }
         }
 
-        // Notificação de vídeo salvo
-        arquivoSalvo?.let { nome ->
+        // Confirmação de vídeo salvo
+        arquivoSalvo?.let {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter).padding(top = 16.dp)
@@ -268,11 +284,7 @@ fun GravacaoCorridaScreen(
             ) {
                 Text("✅ Vídeo salvo em Galeria > RunApp", color = Color.White, fontSize = 13.sp)
             }
-            // Volta automaticamente após 3s
-            LaunchedEffect(nome) {
-                delay(3000L)
-                onVoltar()
-            }
+            LaunchedEffect(it) { delay(3000L); onVoltar() }
         }
     }
 }
@@ -302,15 +314,15 @@ fun GravacaoCorridaScreen(
     val ratio = (vel / 30f).coerceIn(0f, 1f)
     Box(modifier, contentAlignment = Alignment.Center) {
         androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
-            val strokeWidth = 9.dp.toPx()
-            val padding     = strokeWidth / 2 + 6.dp.toPx()
-            val arcSize     = Size(size.width - 2 * padding, size.height - 2 * padding)
-            val topLeft     = Offset(padding, padding)
-            val arcStyle    = Stroke(strokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-            drawArc(Color.White.copy(alpha = 0.15f), 150f, 240f, false, topLeft, arcSize, style = arcStyle)
+            val sw  = 9.dp.toPx()
+            val pad = sw / 2 + 6.dp.toPx()
+            val tl  = Offset(pad, pad)
+            val sz  = Size(size.width - 2 * pad, size.height - 2 * pad)
+            val st  = Stroke(sw, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            drawArc(Color.White.copy(alpha = 0.15f), 150f, 240f, false, tl, sz, style = st)
             if (ratio > 0f) {
                 val cor = androidx.compose.ui.graphics.lerp(Color(0xFF29B6F6), Color(0xFF66BB6A), ratio)
-                drawArc(cor, 150f, 240f * ratio, false, topLeft, arcSize, style = arcStyle)
+                drawArc(cor, 150f, 240f * ratio, false, tl, sz, style = st)
             }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
