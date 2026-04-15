@@ -15,26 +15,13 @@ import android.media.projection.MediaProjectionManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import java.io.IOException
 
-/**
- * ForegroundService para gravação de tela.
- *
- * AndroidManifest.xml — dentro de <application>:
- *   <service
- *       android:name=".service.GravacaoService"
- *       android:foregroundServiceType="mediaProjection"
- *       android:exported="false" />
- *
- * Permissões:
- *   <uses-permission android:name="android.permission.RECORD_AUDIO" />
- *   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
- *   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
- */
 class GravacaoService : Service() {
 
     inner class LocalBinder : Binder() {
@@ -45,6 +32,7 @@ class GravacaoService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var mediaRecorder: MediaRecorder? = null
     private var virtualDisplay: VirtualDisplay? = null
+    private var pfd: ParcelFileDescriptor? = null
     private var nomeArquivo: String? = null
 
     var gravando = false
@@ -52,59 +40,57 @@ class GravacaoService : Service() {
     var onFinalizado: ((String?) -> Unit)? = null
 
     companion object {
-        private const val TAG           = "GravacaoService"
-        private const val CANAL_ID      = "gravacao_canal"
-        private const val NOTIF_ID      = 9001
-        const val ACTION_PARAR          = "com.runapp.PARAR_GRAVACAO"
-        const val EXTRA_RESULT_CODE     = "result_code"
-        const val EXTRA_DATA            = "projection_data"
-        const val EXTRA_AUDIO_OK        = "audio_ok"
+        private const val TAG = "GravacaoService"
+        private const val CANAL_ID = "gravacao_canal"
+        private const val NOTIF_ID = 9001
+        const val ACTION_PARAR = "com.runapp.PARAR_GRAVACAO"
+        const val EXTRA_RESULT_CODE = "result_code"
+        const val EXTRA_DATA = "projection_data"
+        const val EXTRA_AUDIO_OK = "audio_ok"
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 1. Verifica se o comando é para parar
         if (intent?.action == ACTION_PARAR) {
             pararGravacao()
             return START_NOT_STICKY
         }
 
+        // 2. Cria o canal e a notificação de Foreground
         criarCanal()
-
-        val stopIntent = PendingIntent.getService(
-            this, 0,
-            Intent(this, GravacaoService::class.java).apply { action = ACTION_PARAR },
+        
+        val stopIntent = Intent(this, GravacaoService::class.java).apply { action = ACTION_PARAR }
+        val stopPendingIntent = PendingIntent.getService(
+            this, 0, stopIntent, 
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val notif = NotificationCompat.Builder(this, CANAL_ID)
-            .setContentTitle("RunApp — gravando")
-            .setContentText("Toque para parar a gravação")
+            .setContentTitle("RunApp — Gravando Corrida")
+            .setContentText("A gravação está ativa. Toque para encerrar.")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
-            .addAction(android.R.drawable.ic_media_pause, "Parar", stopIntent)
+            .addAction(android.R.drawable.ic_media_stop, "PARAR AGORA", stopPendingIntent)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIF_ID, notif,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
+            startForeground(NOTIF_ID, notif, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
         } else {
             startForeground(NOTIF_ID, notif)
         }
 
+        // 3. Inicia a gravação propriamente dita
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
-        val data       = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
-        val audioOk    = intent?.getBooleanExtra(EXTRA_AUDIO_OK, false) ?: false
+        val data = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
+        val audioOk = intent?.getBooleanExtra(EXTRA_AUDIO_OK, false) ?: false
 
-        if (resultCode == -1 || data == null) {
-            Log.e(TAG, "Dados de projeção inválidos")
-            stopSelf()
-            return START_NOT_STICKY
+        if (resultCode != -1 && data != null) {
+            iniciarGravacao(resultCode, data, audioOk)
         }
 
-        iniciarGravacao(resultCode, data, audioOk)
         return START_NOT_STICKY
     }
 
@@ -112,30 +98,16 @@ class GravacaoService : Service() {
         val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mgr.getMediaProjection(resultCode, data)
 
-        // Dimensões excluindo status bar e nav bar
+        // Configura as dimensões da tela
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val w: Int; val h: Int; val dpi: Int
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val bounds = wm.currentWindowMetrics.bounds
-            val insets = wm.currentWindowMetrics.windowInsets
-                .getInsetsIgnoringVisibility(
-                    android.view.WindowInsets.Type.systemBars()
-                )
-            w   = bounds.width()
-            h   = bounds.height() - insets.top - insets.bottom
-            dpi = resources.displayMetrics.densityDpi
-        } else {
-            val m = android.util.DisplayMetrics()
-            @Suppress("DEPRECATION") wm.defaultDisplay.getMetrics(m)
-            // Status bar height via recursos
-            val sbRes = resources.getIdentifier("status_bar_height", "dimen", "android")
-            val sbH   = if (sbRes > 0) resources.getDimensionPixelSize(sbRes) else 72
-            w   = m.widthPixels
-            h   = m.heightPixels - sbH
-            dpi = m.densityDpi
-        }
-
-        Log.d(TAG, "Dimensões gravação: ${w}x${h} dpi=$dpi")
+        val metrics = resources.displayMetrics
+        
+        // Garante que largura e altura sejam pares (necessário para alguns codecs)
+        var w = metrics.widthPixels
+        var h = metrics.heightPixels
+        if (w % 2 != 0) w--
+        if (h % 2 != 0) h--
+        val dpi = metrics.densityDpi
 
         val nome = "corrida_${System.currentTimeMillis()}"
         nomeArquivo = nome
@@ -146,66 +118,38 @@ class GravacaoService : Service() {
             put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/RunApp")
         }
 
-        val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv)
-        if (uri == null) {
-            Log.e(TAG, "Falha ao criar URI no MediaStore")
-            stopSelf(); return
-        }
+        val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv) ?: return
+        pfd = contentResolver.openFileDescriptor(uri, "w")
+        val fd = pfd?.fileDescriptor ?: return
 
-        val pfd = contentResolver.openFileDescriptor(uri, "w")
-        if (pfd == null) {
-            Log.e(TAG, "Falha ao abrir FileDescriptor")
-            stopSelf(); return
-        }
-
-        val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
-            MediaRecorder(this)
-        else
-            @Suppress("DEPRECATION") MediaRecorder()
-
+        mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
+        
         try {
-            rec.apply {
+            mediaRecorder?.apply {
                 if (audioOk) setAudioSource(MediaRecorder.AudioSource.MIC)
                 setVideoSource(MediaRecorder.VideoSource.SURFACE)
                 setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-                if (audioOk) {
-                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                    setAudioEncodingBitRate(128_000)
-                    setAudioSamplingRate(44100)
-                }
+                if (audioOk) setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setVideoSize(w, h)
                 setVideoFrameRate(30)
-                setVideoEncodingBitRate(6_000_000)
-                setOutputFile(pfd.fileDescriptor)
+                setVideoEncodingBitRate(8_000_000) // 8Mbps para boa qualidade
+                setOutputFile(fd)
                 prepare()
             }
-        } catch (e: IOException) {
-            Log.e(TAG, "Erro prepare MediaRecorder", e)
-            rec.release()
-            pfd.close()
-            stopSelf(); return
-        }
 
-        mediaRecorder = rec
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "GravacaoRunApp", w, h, dpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                mediaRecorder?.surface, null, null
+            )
 
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "GravacaoCorrida", w, h, dpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            rec.surface, null, null
-        )
-
-        try {
-            rec.start()
+            mediaRecorder?.start()
             gravando = true
-            Log.d(TAG, "▶️ Gravação iniciada: $nome.mp4")
+            Log.d(TAG, "Gravação iniciada")
         } catch (e: Exception) {
-            Log.e(TAG, "Erro ao iniciar MediaRecorder", e)
-            rec.release()
-            virtualDisplay?.release()
-            mediaProjection?.stop()
-            pfd.close()
-            stopSelf()
+            Log.e(TAG, "Falha ao iniciar recorder", e)
+            pararGravacao()
         }
     }
 
@@ -213,33 +157,37 @@ class GravacaoService : Service() {
         if (!gravando) return
         gravando = false
 
-        runCatching { mediaRecorder?.stop() }.onFailure { Log.e(TAG, "Erro stop recorder", it) }
-        runCatching { mediaRecorder?.release() }
-        runCatching { virtualDisplay?.release() }
-        runCatching { mediaProjection?.stop() }
+        try {
+            mediaRecorder?.stop()
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro ao parar (talvez vídeo muito curto)", e)
+        } finally {
+            mediaRecorder?.release()
+            virtualDisplay?.release()
+            mediaProjection?.stop()
+            pfd?.close()
+            
+            mediaRecorder = null
+            virtualDisplay = null
+            mediaProjection = null
+            pfd = null
+        }
 
-        mediaRecorder  = null
-        virtualDisplay = null
-        mediaProjection = null
-
-        Log.d(TAG, "⏹️ Gravação encerrada: ${nomeArquivo}.mp4")
         onFinalizado?.invoke(nomeArquivo)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     override fun onDestroy() {
+        pararGravacao()
         super.onDestroy()
-        if (gravando) pararGravacao()
     }
 
     private fun criarCanal() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val canal = NotificationChannel(
-                CANAL_ID, "Gravação de vídeo", NotificationManager.IMPORTANCE_LOW
-            ).apply { description = "Controle de gravação de corrida" }
-            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-                .createNotificationChannel(canal)
+            val canal = NotificationChannel(CANAL_ID, "Gravação", NotificationManager.IMPORTANCE_LOW)
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            nm.createNotificationChannel(canal)
         }
     }
 }
