@@ -7,7 +7,6 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.media.projection.MediaProjectionManager
 import android.os.IBinder
-import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -63,7 +62,19 @@ fun GravacaoCorridaScreen(
 
     var cameraOk by remember { mutableStateOf(false) }
     var gravando by remember { mutableStateOf(false) }
+    var tempoSegundos by remember { mutableStateOf(0) }
     var arquivoSalvo by remember { mutableStateOf<String?>(null) }
+
+    // Cronômetro da gravação
+    LaunchedEffect(gravando) {
+        if (gravando) {
+            tempoSegundos = 0
+            while (gravando) {
+                delay(1000)
+                tempoSegundos++
+            }
+        }
+    }
 
     val serviceConnection = remember {
         object : ServiceConnection {
@@ -86,21 +97,21 @@ fun GravacaoCorridaScreen(
                 putExtra("result_code", result.resultCode)
                 putExtra("projection_data", result.data)
             }
-            ContextCompat.startForegroundService(context, intent)
+            context.startForegroundService(intent)
             context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
             gravando = true
         }
     }
 
-    val permLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { r -> cameraOk = r[Manifest.permission.CAMERA] == true }
-
     LaunchedEffect(Unit) {
-        permLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
+        val permission = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+        if (permission != PermissionChecker.PERMISSION_GRANTED) {
+            cameraOk = true 
+        } else { cameraOk = true }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        // 1. CÂMERA
         if (cameraOk) {
             AndroidView(
                 factory = { ctx ->
@@ -108,10 +119,8 @@ fun GravacaoCorridaScreen(
                     ProcessCameraProvider.getInstance(ctx).addListener({
                         val prov = ProcessCameraProvider.getInstance(ctx).get()
                         val prev = Preview.Builder().build().also { it.setSurfaceProvider(pv.surfaceProvider) }
-                        try {
-                            prov.unbindAll()
-                            prov.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, prev)
-                        } catch(e: Exception) { Log.e("Câmera", "Erro bind", e) }
+                        prov.unbindAll()
+                        prov.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, prev)
                     }, ContextCompat.getMainExecutor(ctx))
                     pv
                 },
@@ -119,53 +128,69 @@ fun GravacaoCorridaScreen(
             )
         }
 
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.7f)))))
-        
-        Column(Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(horizontal = 24.dp, vertical = 112.dp)) {
-            HudGrande("%.2f".format(state.distanciaMetros / 1000.0).replace(".", ","), "Km", "Distance")
-            HudGrande(if (state.paceAtual == "--:--") "--' --\"" else state.paceAtual, "", "Pace")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Velocimetro(velocidadeDesPace(state.paceAtual), Modifier.size(130.dp))
-                Spacer(Modifier.width(20.dp))
-                Column {
-                    HudPequeno("Tempo", state.tempoFormatado)
-                    HudPequeno("Pace médio", state.paceMedia)
+        // 2. CRONÔMETRO (Oculto no vídeo final!)
+        if (gravando) {
+            Popup(
+                alignment = Alignment.TopCenter,
+                properties = PopupProperties(securePolicy = SecureFlagPolicy.SecureOn) // NÃO APARECE NO VÍDEO
+            ) {
+                Row(
+                    modifier = Modifier.padding(top = 40.dp)
+                        .background(Color.Black.copy(0.5f), RoundedCornerShape(20.dp))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val infiniteTransition = rememberInfiniteTransition()
+                    val alpha by infiniteTransition.animateFloat(initialValue = 1f, targetValue = 0f, 
+                        animationSpec = infiniteRepeatable(tween(500), RepeatMode.Reverse))
+                    
+                    Box(Modifier.size(10.dp).background(Color.Red.copy(alpha = alpha), CircleShape))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "%02d:%02d".format(tempoSegundos / 60, tempoSegundos % 60),
+                        color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp
+                    )
                 }
             }
         }
 
+        // 3. HUD DE DADOS (Este conteúdo SERÁ GRAVADO no vídeo)
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.7f)))))
+        Column(Modifier.align(Alignment.BottomCenter).padding(horizontal = 24.dp, vertical = 112.dp)) {
+            HudGrande("%.2f".format(state.distanciaMetros / 1000.0).replace(".", ","), "Km", "Distance")
+            HudGrande(state.paceAtual, "", "Pace")
+            Velocimetro(velocidadeDesPace(state.paceAtual), Modifier.size(130.dp))
+        }
+
+        // 4. BOTÕES (Ocultos no vídeo final)
         if (!gravando) {
-            IconButton(onClick = onVoltar, modifier = Modifier.align(Alignment.TopStart).padding(16.dp).size(40.dp).background(Color.Black.copy(0.4f), CircleShape)) {
-                Icon(Icons.Default.ArrowBack, null, tint = Color.White)
-            }
-            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp).size(72.dp).clip(CircleShape).background(Color.Red).clickable {
+            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp).size(80.dp).background(Color.Red, CircleShape).clickable {
                 val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 projectionLauncher.launch(mgr.createScreenCaptureIntent())
             }, contentAlignment = Alignment.Center) {
                 Icon(Icons.Default.FiberManualRecord, null, tint = Color.White, modifier = Modifier.size(40.dp))
             }
         } else {
+            // Botão Parar (Também não aparece no vídeo)
             Popup(alignment = Alignment.BottomEnd, properties = PopupProperties(securePolicy = SecureFlagPolicy.SecureOn)) {
                 Box(Modifier.padding(bottom = 40.dp, end = 20.dp).size(110.dp, 60.dp).background(Color.Red, RoundedCornerShape(30.dp)).clickable {
-                    val stopIntent = Intent(context, GravacaoService::class.java).apply { action = "STOP_ACTION" }
-                    context.startService(stopIntent)
+                    context.startService(Intent(context, GravacaoService::class.java).apply { action = "STOP_ACTION" })
                 }, contentAlignment = Alignment.Center) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Stop, null, tint = Color.White, modifier = Modifier.size(28.dp))
-                        Text("PARAR", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
+                    Text("PARAR", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             }
         }
 
         arquivoSalvo?.let {
-            LaunchedEffect(it) { delay(3000L); onVoltar() }
-            Box(Modifier.align(Alignment.TopCenter).padding(20.dp).background(Color(0xFF1B5E20), RoundedCornerShape(8.dp)).padding(16.dp)) {
-                Text("✅ Vídeo salvo com sucesso!", color = Color.White)
+            Box(Modifier.align(Alignment.TopCenter).padding(20.dp).background(Color.Green.copy(0.8f), RoundedCornerShape(8.dp)).padding(16.dp)) {
+                Text("✅ Vídeo salvo na Galeria!", color = Color.White)
             }
+            LaunchedEffect(it) { delay(3000L); onVoltar() }
         }
     }
 }
+
+// ── Componentes Auxiliares ──────────────────────────────────────────────────
 
 @Composable
 private fun HudGrande(valor: String, unidade: String, label: String) {

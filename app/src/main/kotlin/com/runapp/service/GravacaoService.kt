@@ -7,10 +7,12 @@ import android.hardware.display.VirtualDisplay
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.*
 import android.provider.MediaStore
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import java.io.File
 
 class GravacaoService : Service() {
 
@@ -20,13 +22,13 @@ class GravacaoService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var mediaRecorder: MediaRecorder? = null
     private var virtualDisplay: VirtualDisplay? = null
-    private var pfd: ParcelFileDescriptor? = null
     private var nomeArquivo: String? = null
     var onFinalizado: ((String?) -> Unit)? = null
+    var gravando = false
 
     companion object {
         const val ACTION_STOP = "STOP_ACTION"
-        const val CANAL_ID = "gravacao_canal"
+        const val CANAL_ID = "gravacao_canal_v3"
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -49,16 +51,15 @@ class GravacaoService : Service() {
 
     private fun iniciarNotificacao() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val canal = NotificationChannel(CANAL_ID, "Gravação", NotificationManager.IMPORTANCE_LOW)
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            nm.createNotificationChannel(canal)
+            nm.createNotificationChannel(NotificationChannel(CANAL_ID, "Gravação", NotificationManager.IMPORTANCE_LOW))
         }
         val stopIntent = Intent(this, GravacaoService::class.java).apply { action = ACTION_STOP }
         val stopPending = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
         val notif = NotificationCompat.Builder(this, CANAL_ID)
-            .setContentTitle("Gravando Corrida")
+            .setContentTitle("RunApp: Gravando Tela")
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .addAction(android.R.drawable.ic_media_pause, "PARAR", stopPending)
+            .addAction(android.R.drawable.ic_media_pause, "PARAR AGORA", stopPending)
             .setOngoing(true).build()
         startForeground(9001, notif)
     }
@@ -72,45 +73,68 @@ class GravacaoService : Service() {
         val h = if (metrics.heightPixels % 2 == 0) metrics.heightPixels else metrics.heightPixels - 1
 
         nomeArquivo = "run_${System.currentTimeMillis()}"
+        
+        // Criando o arquivo no MediaStore
         val cv = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, "$nomeArquivo.mp4")
             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
             put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/RunApp")
+            put(MediaStore.Video.Media.IS_PENDING, 1)
         }
 
-        val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv) ?: return
-        pfd = contentResolver.openFileDescriptor(uri, "w")
-        val fd = pfd?.fileDescriptor ?: return
+        val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val uri = contentResolver.insert(collection, cv) ?: return
 
-        mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
-        mediaRecorder?.apply {
-            setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            setVideoSize(w, h)
-            setVideoFrameRate(30)
-            setVideoEncodingBitRate(8_000_000)
-            setOutputFile(fd)
-            prepare()
+        try {
+            val pfd = contentResolver.openFileDescriptor(uri, "w") ?: return
             
-            virtualDisplay = mediaProjection?.createVirtualDisplay("RunRec", w, h, metrics.densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, surface, null, null)
+            mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
+            mediaRecorder?.apply {
+                setVideoSource(MediaRecorder.VideoSource.SURFACE)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+                setVideoSize(w, h)
+                setVideoFrameRate(30)
+                setVideoEncodingBitRate(6_000_000)
+                setOutputFile(pfd.fileDescriptor)
+                prepare()
+                
+                virtualDisplay = mediaProjection?.createVirtualDisplay("RunRec", w, h, metrics.densityDpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, surface, null, null)
+                
+                start()
+                gravando = true
+            }
             
-            start()
+            // Atualiza o estado para que o arquivo não seja mais "pendente" ao final
+            Handler(Looper.getMainLooper()).postDelayed({
+                val updateCv = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+                contentResolver.update(uri, updateCv, null, null)
+            }, 1000)
+
+        } catch (e: Exception) {
+            Log.e("Service", "Erro na gravação", e)
+            encerrarTudo()
         }
     }
 
     fun encerrarTudo() {
+        if (!gravando) return
+        gravando = false
         try {
             mediaRecorder?.stop()
+            mediaRecorder?.reset()
             mediaRecorder?.release()
-        } catch (e: Exception) { Log.e("Service", "Erro stop") }
+        } catch (e: Exception) { Log.e("Service", "Vídeo curto demais") }
         
         virtualDisplay?.release()
         mediaProjection?.stop()
-        pfd?.close()
         
-        onFinalizado?.invoke(nomeArquivo)
+        // Avisa a tela que acabou
+        Handler(Looper.getMainLooper()).post {
+            onFinalizado?.invoke(nomeArquivo)
+        }
+        
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
