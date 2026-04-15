@@ -16,8 +16,6 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -40,12 +38,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
-import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.core.content.ContextCompat
 import androidx.core.content.PermissionChecker
 import com.runapp.service.GravacaoService
@@ -53,156 +49,316 @@ import com.runapp.ui.viewmodel.CorridaUiState
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
+private const val TAG = "GravacaoCorridaScreen"
+
 @Composable
 fun GravacaoCorridaScreen(
     state: CorridaUiState,
     onVoltar: () -> Unit
 ) {
-    val context = LocalContext.current
+    val context        = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+
+    // ── Permissões ───────────────────────────────────────────────────────────
     var cameraOk by remember { mutableStateOf(false) }
-    var gravando by remember { mutableStateOf(false) }
-    var arquivoSalvo by remember { mutableStateOf<String?>(null) }
+    var audioOk  by remember { mutableStateOf(false) }
+
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { r ->
+        cameraOk = r[Manifest.permission.CAMERA] == true
+        audioOk  = r[Manifest.permission.RECORD_AUDIO] == true
+    }
+
+    LaunchedEffect(Unit) {
+        val cc = PermissionChecker.checkSelfPermission(context, Manifest.permission.CAMERA) == PermissionChecker.PERMISSION_GRANTED
+        val ca = PermissionChecker.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PermissionChecker.PERMISSION_GRANTED
+        cameraOk = cc
+        audioOk  = ca
+        if (!cc || !ca) permLauncher.launch(
+            arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        )
+    }
+
+    // ── Estado ───────────────────────────────────────────────────────────────
+    var gravando      by remember { mutableStateOf(false) }
+    var tempoGravacao by remember { mutableStateOf(0) }
+    var arquivoSalvo  by remember { mutableStateOf<String?>(null) }
+    var gravacaoService by remember { mutableStateOf<GravacaoService?>(null) }
 
     val serviceConnection = remember {
         object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 val svc = (binder as? GravacaoService.LocalBinder)?.getService() ?: return
-                svc.onFinalizado = { nome -> gravando = false; arquivoSalvo = nome }
+                svc.onFinalizado = { nome ->
+                    gravando = false
+                    arquivoSalvo = nome
+                    gravacaoService = null
+                }
+                gravacaoService = svc
+                Log.d(TAG, "Service conectado, gravando=${svc.gravando}")
             }
-            override fun onServiceDisconnected(name: ComponentName?) {}
+            override fun onServiceDisconnected(name: ComponentName?) {
+                gravacaoService = null
+            }
         }
     }
 
-    val projectionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+    DisposableEffect(Unit) {
+        onDispose {
+            gravacaoService?.pararGravacao()
+            runCatching { context.unbindService(serviceConnection) }
+        }
+    }
+
+    // Cronômetro de gravação
+    LaunchedEffect(gravando) {
+        tempoGravacao = 0
+        while (gravando) { delay(1000L); tempoGravacao++ }
+    }
+
+    // ── Launcher MediaProjection ─────────────────────────────────────────────
+    val projectionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
-            val intent = Intent(context, GravacaoService::class.java).apply {
-                putExtra("result_code", result.resultCode)
-                putExtra("projection_data", result.data)
+            val si = Intent(context, GravacaoService::class.java).apply {
+                putExtra(GravacaoService.EXTRA_RESULT_CODE, result.resultCode)
+                putExtra(GravacaoService.EXTRA_DATA, result.data)
+                putExtra(GravacaoService.EXTRA_AUDIO_OK, audioOk)
             }
-            ContextCompat.startForegroundService(context, intent)
-            context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+            ContextCompat.startForegroundService(context, si)
+            // Pequeno delay para serviço iniciar antes do bind
+            context.bindService(
+                Intent(context, GravacaoService::class.java),
+                serviceConnection,
+                Context.BIND_AUTO_CREATE
+            )
             gravando = true
         }
     }
 
-    LaunchedEffect(Unit) {
-        cameraOk = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PermissionChecker.PERMISSION_GRANTED
-    }
-
+    // ── Layout ────────────────────────────────────────────────────────────────
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        // 1. CÂMERA (CORRIGIDA)
-        AndroidView(
-            factory = { ctx ->
-                val pv = PreviewView(ctx).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
-                val providerFuture = ProcessCameraProvider.getInstance(ctx)
-                providerFuture.addListener({
-                    val provider = providerFuture.get()
-                    val prev = Preview.Builder().build().also { it.setSurfaceProvider(pv.surfaceProvider) }
-                    try {
-                        provider.unbindAll()
-                        provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, prev)
-                    } catch (e: Exception) { Log.e("Camera", "Erro bind", e) }
-                }, ContextCompat.getMainExecutor(ctx))
-                pv
-            },
-            modifier = Modifier.fillMaxSize()
+
+        // ── Camera preview — COMPATIBLE resolve tela preta ───────────────────
+        // PERFORMANCE pode causar tela preta em alguns dispositivos.
+        // COMPATIBLE usa SurfaceView em vez de TextureView, mais compatível.
+        if (cameraOk) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    PreviewView(ctx).apply {
+                        // COMPATIBLE = usa SurfaceView = sem tela preta
+                        implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                        scaleType = PreviewView.ScaleType.FILL_CENTER
+                    }.also { pv ->
+                        // Obtém provider e inicia câmera dentro do factory (thread principal)
+                        val future = ProcessCameraProvider.getInstance(ctx)
+                        future.addListener({
+                            try {
+                                val provider = future.get()
+                                val preview  = Preview.Builder()
+                                    .build()
+                                    .also { it.setSurfaceProvider(pv.surfaceProvider) }
+                                // Desvincula tudo antes de re-vincular (evita IllegalStateException)
+                                provider.unbindAll()
+                                provider.bindToLifecycle(
+                                    lifecycleOwner,
+                                    CameraSelector.DEFAULT_BACK_CAMERA,
+                                    preview
+                                )
+                                Log.d(TAG, "✅ Câmera iniciada com COMPATIBLE mode")
+                            } catch (e: Exception) {
+                                Log.e(TAG, "❌ Erro câmera: ${e.message}", e)
+                            }
+                        }, ContextCompat.getMainExecutor(ctx))
+                    }
+                }
+            )
+        }
+
+        // Gradiente inferior para legibilidade
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.65f)
+                .align(Alignment.BottomCenter)
+                .background(
+                    Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f)))
+                )
         )
 
-        // Gradiente sutil para leitura
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(0.4f)))))
-
-        // --- HUD DE DADOS (LAYOUT FIEL À IMAGEM 2) ---
+        // ── HUD — métricas sempre visíveis (aparecem no vídeo) ───────────────
         Column(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(start = 24.dp, bottom = 48.dp),
-            verticalArrangement = Arrangement.Bottom,
-            horizontalAlignment = Alignment.Start
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .padding(start = 24.dp, end = 24.dp, bottom = 100.dp)
         ) {
-            // Distância
-            HudGrande("%.2f".format(state.distanciaMetros / 1000.0).replace(".", ","), "Km", "Distance")
-            
-            Spacer(Modifier.height(24.dp))
-            
-            // Pace
-            val paceDisplay = if (state.paceAtual == "--:--") "--' --\"" else {
-                val p = state.paceAtual.split(":")
-                if (p.size == 2) "${p[0]}' ${p[1]}\"" else state.paceAtual
+            HudGrande(
+                "%.2f".format(state.distanciaMetros / 1000.0).replace(".", ","),
+                "Km", "Distance"
+            )
+            Spacer(Modifier.height(12.dp))
+            val pace = state.paceAtual.let { p ->
+                if (p == "--:--") "--' --\""
+                else p.split(":").let { parts ->
+                    if (parts.size == 2) "${parts[0]}' ${parts[1]}\"" else p
+                }
             }
-            HudGrande(paceDisplay, "", "Pace")
-            
-            Spacer(Modifier.height(40.dp))
-            
-            // Linha Inferior: Velocímetro + Dados Pequenos
+            HudGrande(pace, "", "Pace")
+            Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Velocimetro(velocidadeDesPace(state.paceAtual), Modifier.size(130.dp))
-                
-                Spacer(Modifier.width(24.dp))
-                
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    HudPequeno("Tempo", state.tempoFormatado)
+                Spacer(Modifier.width(20.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HudPequeno("Tempo",      state.tempoFormatado)
                     HudPequeno("Pace médio", state.paceMedia)
                     if (state.cadencia > 0) HudPequeno("Cadência", "${state.cadencia} spm")
                 }
             }
         }
 
-        // 4. BOTÕES (Ocultos no vídeo via SecureOn)
+        // ── Botão voltar — só visível quando NÃO grava ───────────────────────
         if (!gravando) {
-            IconButton(onClick = onVoltar, modifier = Modifier.align(Alignment.TopStart).padding(16.dp).size(40.dp).background(Color.Black.copy(0.3f), CircleShape)) {
-                Icon(Icons.Default.ArrowBack, null, tint = Color.White)
-            }
-            // Botão Iniciar (Centralizado embaixo)
-            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp).size(72.dp).clip(CircleShape).background(Color.Red).clickable {
-                val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                projectionLauncher.launch(mgr.createScreenCaptureIntent())
-            }, contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.FiberManualRecord, null, tint = Color.White, modifier = Modifier.size(40.dp))
+            IconButton(
+                onClick = onVoltar,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(12.dp)
+                    .size(40.dp)
+                    .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+            ) { Icon(Icons.Default.ArrowBack, null, tint = Color.White) }
+        }
+
+        // ── Botão central: gravar / indicador quando grava ───────────────────
+        if (!gravando) {
+            // Botão gravar — grande, centralizado na parte inferior
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 32.dp)
+                    .size(68.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.5f)),
+                contentAlignment = Alignment.Center
+            ) {
+                IconButton(
+                    onClick = {
+                        val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
+                                as MediaProjectionManager
+                        projectionLauncher.launch(mgr.createScreenCaptureIntent())
+                    },
+                    modifier = Modifier.size(68.dp)
+                ) {
+                    Icon(
+                        Icons.Default.FiberManualRecord, null,
+                        tint = Color(0xFFEF5350),
+                        modifier = Modifier.size(34.dp)
+                    )
+                }
             }
         } else {
-            // Botão Parar (Canto inferior direito, invisível no vídeo)
-            Popup(alignment = Alignment.BottomEnd, properties = PopupProperties(securePolicy = SecureFlagPolicy.SecureOn)) {
-                Box(Modifier.padding(bottom = 40.dp, end = 20.dp).size(110.dp, 60.dp).background(Color.Red, RoundedCornerShape(30.dp)).clickable {
-                    val stopIntent = Intent(context, GravacaoService::class.java).apply { action = "com.runapp.STOP" }
-                    context.startService(stopIntent)
-                }, contentAlignment = Alignment.Center) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Stop, null, tint = Color.White, modifier = Modifier.size(28.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("PARAR", color = Color.White, fontWeight = FontWeight.Bold)
+            // ── Botão STOP flutuante — canto inferior direito ─────────────────
+            // Nota: o botão aparece no vídeo (limitação do Android para apps de terceiros).
+            // Apps do sistema usam APIs internas para excluir janelas da captura.
+            // A solução: botão mínimo + semi-transparente para ser discreto no vídeo.
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 32.dp)
+                    .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(24.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Indicador pulsante
+                val pulse = rememberInfiniteTransition(label = "pulse")
+                val a by pulse.animateFloat(
+                    1f, 0.3f,
+                    infiniteRepeatable(tween(700, easing = LinearEasing), RepeatMode.Reverse),
+                    label = "alpha"
+                )
+                Box(Modifier.size(7.dp).background(Color(0xFFEF5350).copy(alpha = a), CircleShape))
+
+                // Tempo
+                Text(
+                    "%02d:%02d".format(tempoGravacao / 60, tempoGravacao % 60),
+                    color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold
+                )
+
+                // Botão stop
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFEF5350).copy(alpha = 0.8f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    IconButton(
+                        onClick = {
+                            gravacaoService?.pararGravacao()
+                            runCatching { context.unbindService(serviceConnection) }
+                            gravando = false
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Stop, null,
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
                     }
                 }
             }
         }
 
-        if (arquivoSalvo != null) {
-            Box(Modifier.align(Alignment.TopCenter).padding(20.dp).background(Color(0xFF1B5E20), RoundedCornerShape(8.dp)).padding(16.dp)) {
-                Text("✅ Vídeo salvo na galeria!", color = Color.White)
+        // ── Confirmação de vídeo salvo ────────────────────────────────────────
+        arquivoSalvo?.let {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 16.dp)
+                    .background(Color(0xFF1B5E20).copy(alpha = 0.95f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+            ) {
+                Text(
+                    "✅ Salvo em Galeria → Filmes → RunApp",
+                    color = Color.White, fontSize = 13.sp,
+                    textAlign = TextAlign.Center
+                )
             }
-            LaunchedEffect(arquivoSalvo) { delay(3000L); arquivoSalvo = null }
+            LaunchedEffect(it) { delay(3000L); onVoltar() }
         }
     }
 }
 
+// ── Componentes HUD ──────────────────────────────────────────────────────────
+
 @Composable
 private fun HudGrande(valor: String, unidade: String, label: String) {
-    Column(horizontalAlignment = Alignment.Start) {
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(valor, fontSize = 72.sp, fontWeight = FontWeight.Bold, color = Color.White, lineHeight = 72.sp)
-            if (unidade.isNotEmpty()) {
-                Text(unidade, fontSize = 24.sp, color = Color.White, modifier = Modifier.padding(bottom = 12.dp, start = 6.dp))
-            }
+    Row(verticalAlignment = Alignment.Bottom) {
+        Text(
+            valor, fontSize = 60.sp, fontWeight = FontWeight.Bold,
+            color = Color.White, lineHeight = 60.sp
+        )
+        if (unidade.isNotEmpty()) {
+            Spacer(Modifier.width(6.dp))
+            Text(
+                unidade, fontSize = 22.sp, color = Color.White.copy(alpha = 0.8f),
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
         }
-        Text(label, fontSize = 14.sp, color = Color.White.copy(0.8f))
     }
+    Text(label, fontSize = 13.sp, color = Color.White.copy(alpha = 0.55f))
 }
 
 @Composable
 private fun HudPequeno(label: String, valor: String) {
     Column {
-        Text(label, fontSize = 12.sp, color = Color.White.copy(0.7f))
-        Text(valor, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        Text(label, fontSize = 11.sp, color = Color.White.copy(alpha = 0.5f))
+        Text(valor, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
     }
 }
 
@@ -211,15 +367,20 @@ private fun Velocimetro(vel: Float, modifier: Modifier) {
     val ratio = (vel / 30f).coerceIn(0f, 1f)
     Box(modifier, contentAlignment = Alignment.Center) {
         androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
-            val sw = 9.dp.toPx()
-            val pad = sw / 2 + 4.dp.toPx()
-            val arcSize = Size(size.width - 2 * pad, size.height - 2 * pad)
-            drawArc(Color.White.copy(0.2f), 150f, 240f, false, Offset(pad, pad), arcSize, style = Stroke(sw, cap = androidx.compose.ui.graphics.StrokeCap.Round))
-            drawArc(Color(0xFF29B6F6), 150f, 240f * ratio, false, Offset(pad, pad), arcSize, style = Stroke(sw, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+            val sw  = 9.dp.toPx()
+            val pad = sw / 2 + 6.dp.toPx()
+            val tl  = Offset(pad, pad)
+            val sz  = Size(size.width - 2 * pad, size.height - 2 * pad)
+            val st  = Stroke(sw, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            drawArc(Color.White.copy(alpha = 0.15f), 150f, 240f, false, tl, sz, style = st)
+            if (ratio > 0f) {
+                val cor = androidx.compose.ui.graphics.lerp(Color(0xFF29B6F6), Color(0xFF66BB6A), ratio)
+                drawArc(cor, 150f, 240f * ratio, false, tl, sz, style = st)
+            }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(vel.roundToInt().toString(), fontSize = 38.sp, fontWeight = FontWeight.Bold, color = Color.White)
-            Text("KM/H", fontSize = 10.sp, color = Color.White.copy(0.6f))
+            Text(vel.roundToInt().toString(), fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Text("KM/H", fontSize = 9.sp, color = Color.White.copy(alpha = 0.5f), letterSpacing = 2.sp)
         }
     }
 }
@@ -228,6 +389,7 @@ private fun velocidadeDesPace(p: String): Float {
     if (p == "--:--") return 0f
     return runCatching {
         val partes = p.split(":")
+        if (partes.size < 2) return 0f
         val s = partes[0].toFloat() * 60 + partes[1].toFloat()
         if (s <= 0f) 0f else 3600f / s
     }.getOrDefault(0f)

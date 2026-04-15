@@ -1,89 +1,214 @@
 package com.runapp.service
 
-import android.app.*
-import android.content.*
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
-import android.os.*
+import android.os.Binder
+import android.os.Build
+import android.os.IBinder
 import android.provider.MediaStore
 import android.util.Log
+import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 
+/**
+ * ForegroundService para gravação de tela via MediaProjection.
+ *
+ * AndroidManifest.xml — dentro de <application>:
+ *   <service
+ *       android:name=".service.GravacaoService"
+ *       android:foregroundServiceType="mediaProjection"
+ *       android:exported="false" />
+ *
+ * Permissões:
+ *   <uses-permission android:name="android.permission.RECORD_AUDIO" />
+ *   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+ *   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+ */
 class GravacaoService : Service() {
-    inner class LocalBinder : Binder() { fun getService(): GravacaoService = this@GravacaoService }
-    private val binder = LocalBinder()
-    private var mediaProjection: MediaProjection? = null
-    private var mediaRecorder: MediaRecorder? = null
-    private var virtualDisplay: VirtualDisplay? = null
-    private var pfd: ParcelFileDescriptor? = null
-    private var nomeArquivo: String? = null
+
+    inner class LocalBinder : Binder() {
+        fun getService(): GravacaoService = this@GravacaoService
+    }
+
+    private val binder          = LocalBinder()
+    private var projection      : MediaProjection? = null
+    private var recorder        : MediaRecorder?   = null
+    private var virtualDisplay  : VirtualDisplay?  = null
+    private var nomeArquivo     : String?          = null
+
+    var gravando = false
+        private set
     var onFinalizado: ((String?) -> Unit)? = null
+
+    companion object {
+        private const val TAG           = "GravacaoService"
+        private const val CANAL_ID      = "gravacao_canal"
+        private const val NOTIF_ID      = 9001
+        const val EXTRA_RESULT_CODE     = "result_code"
+        const val EXTRA_DATA            = "projection_data"
+        const val EXTRA_AUDIO_OK        = "audio_ok"
+    }
 
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == "com.runapp.STOP") { encerrarTudo(); return START_NOT_STICKY }
-        val rc = intent?.getIntExtra("result_code", -1) ?: -1
-        val dt = intent?.getParcelableExtra<Intent>("projection_data")
-        if (rc != -1 && dt != null) { iniciarNotif(); iniciarGravacao(rc, dt) }
-        return START_STICKY
-    }
+        criarCanal()
 
-    private fun iniciarNotif() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            nm.createNotificationChannel(NotificationChannel("rec", "Gravando", NotificationManager.IMPORTANCE_LOW))
+        val notif = NotificationCompat.Builder(this, CANAL_ID)
+            .setContentTitle("RunApp")
+            .setContentText("Gravando corrida…")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setOngoing(true)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIF_ID, notif,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        } else {
+            startForeground(NOTIF_ID, notif)
         }
-        val stopIn = Intent(this, GravacaoService::class.java).apply { action = "com.runapp.STOP" }
-        val stopPe = PendingIntent.getService(this, 0, stopIn, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val notif = NotificationCompat.Builder(this, "rec").setContentTitle("RunApp Gravando").setSmallIcon(android.R.drawable.ic_media_play)
-            .addAction(android.R.drawable.ic_media_pause, "PARAR", stopPe).setOngoing(true).build()
-        startForeground(9001, notif)
+
+        val resultCode  = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
+        val data        = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
+        val audioOk     = intent?.getBooleanExtra(EXTRA_AUDIO_OK, false) ?: false
+
+        if (resultCode == -1 || data == null) {
+            Log.e(TAG, "Dados de projeção inválidos — parando")
+            stopSelf()
+        } else {
+            iniciarGravacao(resultCode, data, audioOk)
+        }
+
+        return START_NOT_STICKY
     }
 
-    private fun iniciarGravacao(rc: Int, dt: Intent) {
+    private fun iniciarGravacao(resultCode: Int, data: Intent, audioOk: Boolean) {
         val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = mgr.getMediaProjection(rc, dt)
-        val m = resources.displayMetrics
-        val w = if (m.widthPixels % 2 == 0) m.widthPixels else m.widthPixels - 1
-        val h = if (m.heightPixels % 2 == 0) m.heightPixels else m.heightPixels - 1
-        
-        nomeArquivo = "run_${System.currentTimeMillis()}"
-        val cv = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, "$nomeArquivo.mp4")
-            put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/RunApp")
-            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+        projection = mgr.getMediaProjection(resultCode, data)
+
+        // Dimensões: exclui status bar e nav bar para vídeo limpo
+        val wm  = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val dm  = resources.displayMetrics
+        val dpi = dm.densityDpi
+        val w: Int
+        val h: Int
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds  = wm.currentWindowMetrics.bounds
+            val insets  = wm.currentWindowMetrics.windowInsets
+                .getInsetsIgnoringVisibility(android.view.WindowInsets.Type.systemBars())
+            w = bounds.width()
+            h = bounds.height() - insets.top - insets.bottom
+        } else {
+            val sbRes = resources.getIdentifier("status_bar_height", "dimen", "android")
+            val sbH   = if (sbRes > 0) resources.getDimensionPixelSize(sbRes) else 72
+            w = dm.widthPixels
+            h = dm.heightPixels - sbH
         }
-        
-        val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv) ?: return
-        pfd = contentResolver.openFileDescriptor(uri, "w")
-        
-        mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
-        mediaRecorder?.apply {
-            setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            setVideoSize(w, h)
-            setVideoFrameRate(30)
-            setVideoEncodingBitRate(8_000_000)
-            setOutputFile(pfd?.fileDescriptor)
-            prepare()
-            virtualDisplay = mediaProjection?.createVirtualDisplay("Rec", w, h, m.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, surface, null, null)
-            start()
+
+        Log.d(TAG, "Gravando ${w}x${h} dpi=$dpi audioOk=$audioOk")
+
+        // Cria arquivo via MediaStore — sem permissão de armazenamento necessária
+        val nome = "corrida_${System.currentTimeMillis()}"
+        nomeArquivo = nome
+
+        val cv = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, "$nome.mp4")
+            put(MediaStore.Video.Media.MIME_TYPE,    "video/mp4")
+            put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/RunApp")
+        }
+        val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv)
+        if (uri == null) { Log.e(TAG, "Falha ao criar URI"); stopSelf(); return }
+
+        val pfd = contentResolver.openFileDescriptor(uri, "w")
+        if (pfd == null) { Log.e(TAG, "Falha ao abrir FD"); stopSelf(); return }
+
+        val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+            MediaRecorder(this)
+        else
+            @Suppress("DEPRECATION") MediaRecorder()
+
+        try {
+            rec.apply {
+                if (audioOk) setAudioSource(MediaRecorder.AudioSource.MIC)
+                setVideoSource(MediaRecorder.VideoSource.SURFACE)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+                if (audioOk) {
+                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                    setAudioEncodingBitRate(128_000)
+                    setAudioSamplingRate(44100)
+                }
+                setVideoSize(w, h)
+                setVideoFrameRate(30)
+                setVideoEncodingBitRate(6_000_000)
+                setOutputFile(pfd.fileDescriptor)
+                prepare()
+            }
+
+            virtualDisplay = projection?.createVirtualDisplay(
+                "GravacaoCorrida", w, h, dpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                rec.surface, null, null
+            )
+
+            rec.start()
+            recorder = rec
+            gravando = true
+            Log.d(TAG, "▶️ Gravação iniciada: $nome.mp4")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Erro ao iniciar gravação: ${e.message}", e)
+            runCatching { rec.release() }
+            runCatching { pfd.close() }
+            projection?.stop()
+            stopSelf()
         }
     }
 
-    fun encerrarTudo() {
-        try { mediaRecorder?.stop(); mediaRecorder?.release() } catch (e: Exception) { Log.e("Service", "Erro stop") }
-        virtualDisplay?.release(); mediaProjection?.stop(); pfd?.close()
-        
-        // Callback para a UI avisar que salvou
-        Handler(Looper.getMainLooper()).post { onFinalizado?.invoke(nomeArquivo) }
-        
+    fun pararGravacao() {
+        if (!gravando) {
+            Log.w(TAG, "pararGravacao chamado mas não estava gravando")
+            return
+        }
+        gravando = false
+        Log.d(TAG, "⏹️ Parando gravação: $nomeArquivo")
+
+        runCatching { recorder?.stop()   }.onFailure { Log.e(TAG, "Erro stop: ${it.message}") }
+        runCatching { recorder?.release() }
+        runCatching { virtualDisplay?.release() }
+        runCatching { projection?.stop() }
+
+        recorder      = null
+        virtualDisplay = null
+        projection    = null
+
+        Log.d(TAG, "✅ Arquivo salvo: $nomeArquivo.mp4")
+        onFinalizado?.invoke(nomeArquivo)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (gravando) pararGravacao()
+    }
+
+    private fun criarCanal() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val c = NotificationChannel(CANAL_ID, "Gravação", NotificationManager.IMPORTANCE_LOW)
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(c)
+        }
     }
 }
