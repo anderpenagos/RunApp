@@ -1,25 +1,15 @@
 package com.runapp.service
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.app.Service
-import android.content.ContentValues
-import android.content.Context
-import android.content.Intent
-import android.content.ServiceConnection
+import android.app.*
+import android.content.*
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
-import android.os.Binder
-import android.os.Build
-import android.os.IBinder
-import android.os.ParcelFileDescriptor
+import android.os.*
 import android.provider.MediaStore
 import android.util.Log
-import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 
 class GravacaoService : Service() {
@@ -41,9 +31,10 @@ class GravacaoService : Service() {
 
     companion object {
         private const val TAG = "GravacaoService"
-        private const val CANAL_ID = "gravacao_canal"
+        private const val CANAL_ID = "gravacao_canal_v2"
         private const val NOTIF_ID = 9001
-        const val ACTION_PARAR = "com.runapp.PARAR_GRAVACAO"
+        // Use uma string simples e única
+        const val ACTION_PARAR = "STOP_RECORDING_NOW"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_DATA = "projection_data"
         const val EXTRA_AUDIO_OK = "audio_ok"
@@ -52,27 +43,46 @@ class GravacaoService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // ESSENCIAL: Verifica se recebeu a ordem de parar
         if (intent?.action == ACTION_PARAR) {
+            Log.d(TAG, "Recebido comando para PARAR")
             pararGravacao()
             return START_NOT_STICKY
         }
 
+        iniciarForeground()
+
+        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
+        val data = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
+        val audioOk = intent?.getBooleanExtra(EXTRA_AUDIO_OK, false) ?: false
+
+        if (resultCode != -1 && data != null && !gravando) {
+            iniciarGravacao(resultCode, data, audioOk)
+        }
+
+        return START_STICKY
+    }
+
+    private fun iniciarForeground() {
         criarCanal()
         
-        val stopIntent = Intent(this, GravacaoService::class.java).apply { action = ACTION_PARAR }
+        // Intent que volta para o Service para parar
+        val stopIntent = Intent(this, GravacaoService::class.java).apply { 
+            action = ACTION_PARAR 
+        }
+        
         val stopPendingIntent = PendingIntent.getService(
             this, 0, stopIntent, 
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val notif = NotificationCompat.Builder(this, CANAL_ID)
-            .setContentTitle("RunApp — Gravando Corrida")
-            .setContentText("A gravação está ativa. Toque para encerrar.")
+            .setContentTitle("RunApp — Gravando")
+            .setContentText("Clique no botão abaixo para encerrar")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
-            // AQUI ESTAVA O ERRO - TROCAMOS PARA ic_media_pause
-            .addAction(android.R.drawable.ic_media_pause, "PARAR AGORA", stopPendingIntent)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setSilent(true) // Não faz barulho toda hora
+            .addAction(android.R.drawable.ic_media_pause, "PARAR GRAVAÇÃO", stopPendingIntent)
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -80,16 +90,6 @@ class GravacaoService : Service() {
         } else {
             startForeground(NOTIF_ID, notif)
         }
-
-        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
-        val data = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
-        val audioOk = intent?.getBooleanExtra(EXTRA_AUDIO_OK, false) ?: false
-
-        if (resultCode != -1 && data != null) {
-            iniciarGravacao(resultCode, data, audioOk)
-        }
-
-        return START_NOT_STICKY
     }
 
     private fun iniciarGravacao(resultCode: Int, data: Intent, audioOk: Boolean) {
@@ -99,10 +99,9 @@ class GravacaoService : Service() {
         val metrics = resources.displayMetrics
         var w = metrics.widthPixels
         var h = metrics.heightPixels
-        if (w % 2 != 0) w--
+        if (w % 2 != 0) w-- // Codecs odeiam números ímpares
         if (h % 2 != 0) h--
-        val dpi = metrics.densityDpi
-
+        
         val nome = "corrida_${System.currentTimeMillis()}"
         nomeArquivo = nome
 
@@ -127,13 +126,13 @@ class GravacaoService : Service() {
                 if (audioOk) setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setVideoSize(w, h)
                 setVideoFrameRate(30)
-                setVideoEncodingBitRate(8_000_000)
+                setVideoEncodingBitRate(6_000_000)
                 setOutputFile(fd)
                 prepare()
             }
 
             virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "GravacaoRunApp", w, h, dpi,
+                "RunApp_Rec", w, h, metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 mediaRecorder?.surface, null, null
             )
@@ -141,7 +140,6 @@ class GravacaoService : Service() {
             mediaRecorder?.start()
             gravando = true
         } catch (e: Exception) {
-            Log.e(TAG, "Falha ao iniciar recorder", e)
             pararGravacao()
         }
     }
@@ -153,7 +151,7 @@ class GravacaoService : Service() {
         try {
             mediaRecorder?.stop()
         } catch (e: Exception) {
-            Log.e(TAG, "Erro ao parar", e)
+            Log.e(TAG, "Vídeo muito curto")
         } finally {
             mediaRecorder?.release()
             virtualDisplay?.release()
@@ -178,8 +176,8 @@ class GravacaoService : Service() {
 
     private fun criarCanal() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val canal = NotificationChannel(CANAL_ID, "Gravação", NotificationManager.IMPORTANCE_LOW)
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            val canal = NotificationChannel(CANAL_ID, "Gravação de Tela", NotificationManager.IMPORTANCE_LOW)
             nm.createNotificationChannel(canal)
         }
     }

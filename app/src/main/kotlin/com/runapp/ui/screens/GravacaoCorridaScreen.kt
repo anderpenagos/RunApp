@@ -40,7 +40,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -85,8 +84,8 @@ fun GravacaoCorridaScreen(
     // ── Estado do Service ────────────────────────────────────────────────────
     var gravando by remember { mutableStateOf(false) }
     var arquivoSalvo by remember { mutableStateOf<String?>(null) }
-    var gravacaoService by remember { mutableStateOf<GravacaoService?>(null) }
-
+    
+    // Conexão apenas para receber o callback de finalização
     val serviceConnection = remember {
         object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -94,13 +93,9 @@ fun GravacaoCorridaScreen(
                 svc.onFinalizado = { nome ->
                     gravando = false
                     arquivoSalvo = nome
-                    gravacaoService = null
                 }
-                gravacaoService = svc
             }
-            override fun onServiceDisconnected(name: ComponentName?) {
-                gravacaoService = null
-            }
+            override fun onServiceDisconnected(name: ComponentName?) {}
         }
     }
 
@@ -129,7 +124,7 @@ fun GravacaoCorridaScreen(
     // ── Layout ────────────────────────────────────────────────────────────────
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        // 1. Preview da Câmera (Será gravado no vídeo da tela)
+        // 1. Preview da Câmera (Fundo do Vídeo)
         if (cameraOk) {
             AndroidView(
                 factory = { ctx ->
@@ -151,14 +146,14 @@ fun GravacaoCorridaScreen(
             )
         }
 
-        // Gradiente inferior para leitura dos dados
+        // Gradiente para melhorar visibilidade dos dados
         Box(
             modifier = Modifier
-                .fillMaxWidth().fillMaxHeight(0.65f).align(Alignment.BottomCenter)
-                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))))
+                .fillMaxWidth().fillMaxHeight(0.6f).align(Alignment.BottomCenter)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f))))
         )
 
-        // 2. HUD - Informações da corrida (Aparecem no vídeo final)
+        // 2. HUD - Informações (Km, Pace, Velocímetro) - APARECEM NO VÍDEO
         Column(
             modifier = Modifier
                 .fillMaxWidth().align(Alignment.BottomCenter)
@@ -180,7 +175,7 @@ fun GravacaoCorridaScreen(
             }
         }
 
-        // 3. CONTROLES INICIAIS (Somem quando a gravação começa)
+        // 3. CONTROLES DE INÍCIO (Somem ao gravar)
         if (!gravando) {
             IconButton(
                 onClick = onVoltar,
@@ -207,25 +202,29 @@ fun GravacaoCorridaScreen(
             Popup(
                 alignment = Alignment.BottomEnd,
                 properties = PopupProperties(
-                    securePolicy = SecureFlagPolicy.SecureOn, // AQUI A MÁGICA: Invisível para o gravador
+                    securePolicy = SecureFlagPolicy.SecureOn, // FAZ O BOTÃO SUMIR NO VÍDEO
                     excludeFromSystemGesture = true
                 )
             ) {
                 Box(
                     modifier = Modifier
                         .padding(bottom = 40.dp, end = 20.dp)
-                        .size(100.dp, 56.dp)
-                        .background(Color(0xFFEF5350).copy(alpha = 0.9f), RoundedCornerShape(28.dp))
+                        .size(110.dp, 60.dp)
+                        .background(Color(0xFFEF5350).copy(alpha = 0.95f), RoundedCornerShape(30.dp))
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null
                         ) {
-                            gravacaoService?.pararGravacao()
+                            // Envia o comando direto de parar para o Service
+                            val intentParar = Intent(context, GravacaoService::class.java).apply {
+                                action = GravacaoService.ACTION_PARAR
+                            }
+                            context.startService(intentParar)
                         },
                     contentAlignment = Alignment.Center
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Stop, null, tint = Color.White, modifier = Modifier.size(24.dp))
+                        Icon(Icons.Default.Stop, null, tint = Color.White, modifier = Modifier.size(28.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("PARAR", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
                     }
@@ -233,13 +232,13 @@ fun GravacaoCorridaScreen(
             }
         }
 
-        // Mensagem de Vídeo Salvo
+        // Mensagem de Sucesso
         arquivoSalvo?.let {
             Box(
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 20.dp)
                     .background(Color(0xFF1B5E20), RoundedCornerShape(8.dp)).padding(16.dp)
             ) {
-                Text("✅ Vídeo salvo na galeria!", color = Color.White, fontWeight = FontWeight.Bold)
+                Text("✅ Vídeo salvo com sucesso!", color = Color.White, fontWeight = FontWeight.Bold)
             }
             LaunchedEffect(it) { delay(3000L); onVoltar() }
         }
