@@ -452,6 +452,8 @@ fun CorridaScreen(
 
     // Tela de gravação — fullscreen com câmera
     if (gravacaoVisivel) {
+        // BackHandler local: gesto de voltar fecha a gravação, não o app
+        BackHandler { gravacaoVisivel = false }
         GravacaoCorridaScreen(
             state    = state,
             onVoltar = { gravacaoVisivel = false }
