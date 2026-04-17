@@ -18,6 +18,7 @@ import android.provider.MediaStore
 import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
+import java.io.File
 
 /**
  * AndroidManifest.xml — dentro de <application>:
@@ -42,14 +43,10 @@ class GravacaoService : Service() {
         const val EXTRA_DATA        = "projection_data"
         const val EXTRA_AUDIO_OK    = "audio_ok"
 
-        // ── Singleton estático — acessível de qualquer lugar sem bind ────────
-        // Usando objeto estático, o Composable acessa diretamente sem ServiceConnection.
         @Volatile var instancia: GravacaoService? = null
             private set
 
-        // Callback chamado na main thread quando gravação termina
         var onFinalizado: ((String?) -> Unit)? = null
-
         val gravando: Boolean get() = instancia?.gravandoInterno == true
     }
 
@@ -57,15 +54,15 @@ class GravacaoService : Service() {
     private var projection      : MediaProjection? = null
     private var recorder        : MediaRecorder?   = null
     private var virtualDisplay  : android.hardware.display.VirtualDisplay? = null
-    private var nomeArquivo     : String? = null
+    private var arquivoTemp     : File? = null
     private val mainHandler     = Handler(Looper.getMainLooper())
 
-    override fun onBind(intent: Intent?): IBinder? = null  // não usa bind
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         instancia = this
-        Log.d(TAG, "Service criado, instancia=$instancia")
+        Log.d(TAG, "Service onCreate")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -91,7 +88,8 @@ class GravacaoService : Service() {
         val audioOk    = intent?.getBooleanExtra(EXTRA_AUDIO_OK, false) ?: false
 
         if (resultCode == -1 || data == null) {
-            Log.e(TAG, "Dados inválidos"); stopSelf(); return START_NOT_STICKY
+            Log.e(TAG, "Dados inválidos")
+            stopSelf(); return START_NOT_STICKY
         }
 
         iniciarGravacao(resultCode, data, audioOk)
@@ -102,35 +100,29 @@ class GravacaoService : Service() {
         val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projection = mgr.getMediaProjection(resultCode, data)
 
-        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val dm = resources.displayMetrics
+        // Dimensões sem status bar
+        val wm  = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val dm  = resources.displayMetrics
         val dpi = dm.densityDpi
         val w: Int; val h: Int
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val b = wm.currentWindowMetrics.bounds
+            val b   = wm.currentWindowMetrics.bounds
             val ins = wm.currentWindowMetrics.windowInsets
                 .getInsetsIgnoringVisibility(android.view.WindowInsets.Type.systemBars())
             w = b.width(); h = b.height() - ins.top - ins.bottom
         } else {
             val sbRes = resources.getIdentifier("status_bar_height", "dimen", "android")
-            val sbH = if (sbRes > 0) resources.getDimensionPixelSize(sbRes) else 72
+            val sbH   = if (sbRes > 0) resources.getDimensionPixelSize(sbRes) else 72
             w = dm.widthPixels; h = dm.heightPixels - sbH
         }
         Log.d(TAG, "Dimensões: ${w}x${h} dpi=$dpi audioOk=$audioOk")
 
-        val nome = "corrida_${System.currentTimeMillis()}"
-        nomeArquivo = nome
-
-        val cv = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, "$nome.mp4")
-            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-            put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/RunApp")
-        }
-        val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv)
-        if (uri == null) { Log.e(TAG, "URI null"); chamarFinalizado(null); stopSelf(); return }
-
-        val pfd = contentResolver.openFileDescriptor(uri, "w")
-        if (pfd == null) { Log.e(TAG, "FD null"); chamarFinalizado(null); stopSelf(); return }
+        // Salva em arquivo temporário no cache do app (sem permissão)
+        // Depois de parar, copiamos para a galeria
+        val cacheDir = externalCacheDir ?: cacheDir
+        val tempFile = File(cacheDir, "gravacao_temp_${System.currentTimeMillis()}.mp4")
+        arquivoTemp  = tempFile
+        Log.d(TAG, "Arquivo temp: ${tempFile.absolutePath}")
 
         val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
             MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()
@@ -149,41 +141,81 @@ class GravacaoService : Service() {
                 setVideoSize(w, h)
                 setVideoFrameRate(30)
                 setVideoEncodingBitRate(6_000_000)
-                setOutputFile(pfd.fileDescriptor)
+                // Salva direto no arquivo — sem FileDescriptor aberto/fechado
+                setOutputFile(tempFile.absolutePath)
                 prepare()
+                Log.d(TAG, "MediaRecorder preparado")
             }
+
             virtualDisplay = projection?.createVirtualDisplay(
                 "GravacaoCorrida", w, h, dpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 rec.surface, null, null
             )
+            Log.d(TAG, "VirtualDisplay criado: $virtualDisplay")
+
             rec.start()
-            recorder = rec
+            recorder       = rec
             gravandoInterno = true
-            pfd.close()
-            Log.d(TAG, "▶️ Gravando: $nome.mp4")
+            Log.d(TAG, "▶️ Gravando para: ${tempFile.absolutePath}")
+
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Erro: ${e.message}", e)
-            runCatching { rec.release() }; runCatching { pfd.close() }
+            Log.e(TAG, "❌ Erro ao iniciar: ${e.message}", e)
+            runCatching { rec.release() }
             projection?.stop(); projection = null
-            chamarFinalizado(null); stopSelf()
+            chamarFinalizado(null)
+            stopSelf()
         }
     }
 
     fun pararGravacao() {
-        Log.d(TAG, "pararGravacao() gravandoInterno=$gravandoInterno recorder=$recorder")
+        Log.d(TAG, "pararGravacao() gravandoInterno=$gravandoInterno")
         if (!gravandoInterno) return
         gravandoInterno = false
+
+        // 1. Para o recorder — arquivo temp fica completo em disco
         runCatching { recorder?.stop()    }.onFailure { Log.e(TAG, "stop: ${it.message}") }
         runCatching { recorder?.release() }
         runCatching { virtualDisplay?.release() }
         runCatching { projection?.stop() }
         recorder = null; virtualDisplay = null; projection = null
-        val nome = nomeArquivo
-        Log.d(TAG, "✅ Salvo: $nome.mp4")
-        chamarFinalizado(nome)
+
+        // 2. Copia arquivo temp para galeria via MediaStore
+        val temp = arquivoTemp
+        if (temp != null && temp.exists() && temp.length() > 0) {
+            Log.d(TAG, "Arquivo temp OK: ${temp.length()} bytes — copiando para galeria")
+            val nome = copiarParaGaleria(temp)
+            temp.delete()
+            Log.d(TAG, if (nome != null) "✅ Salvo na galeria: $nome" else "❌ Falha ao copiar para galeria")
+            chamarFinalizado(nome)
+        } else {
+            Log.e(TAG, "❌ Arquivo temp não existe ou vazio: ${temp?.absolutePath} size=${temp?.length()}")
+            chamarFinalizado(null)
+        }
+
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun copiarParaGaleria(origem: File): String? {
+        return runCatching {
+            val nome = "corrida_${System.currentTimeMillis()}"
+            val cv   = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, "$nome.mp4")
+                put(MediaStore.Video.Media.MIME_TYPE,    "video/mp4")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/RunApp")
+            }
+            val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv)
+                ?: return null
+            contentResolver.openOutputStream(uri)?.use { out ->
+                origem.inputStream().use { it.copyTo(out) }
+            }
+            Log.d(TAG, "Cópia concluída para URI: $uri")
+            nome
+        }.getOrElse {
+            Log.e(TAG, "Erro ao copiar para galeria: ${it.message}", it)
+            null
+        }
     }
 
     private fun chamarFinalizado(nome: String?) {
