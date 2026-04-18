@@ -239,8 +239,16 @@ fun GravacaoCorridaScreen(
 @Composable private fun BarrasVelocidade(vel: Float, modifier: Modifier) {
     val nBarras = 5; val ativas = ((vel / 25f).coerceIn(0f,1f) * nBarras).roundToInt().coerceIn(0, nBarras)
     val cores = listOf(Color(0xFF546E7A), Color(0xFF1565C0), Color(0xFF29B6F6), Color(0xFF26C6DA), Color(0xFF66BB6A), Color(0xFFFFA726))
-    Column(modifier, Alignment.CenterHorizontally, Arrangement.Bottom) {
-        Row(Modifier.fillMaxWidth().weight(1f), Alignment.Bottom, Arrangement.spacedBy(5.dp)) {
+    Column(
+        modifier = modifier, 
+        verticalArrangement = Arrangement.Bottom, 
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().weight(1f), 
+            horizontalArrangement = Arrangement.spacedBy(5.dp), 
+            verticalAlignment = Alignment.Bottom
+        ) {
             for (i in 1..nBarras) Box(Modifier.weight(1f).fillMaxHeight(0.3f + 0.7f * i / nBarras)
                 .clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp))
                 .background(if (i <= ativas) cores[ativas] else Color.White.copy(alpha = 0.18f)))
