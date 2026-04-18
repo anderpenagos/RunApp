@@ -10,10 +10,12 @@ import android.hardware.display.DisplayManager
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.Log
 import android.view.WindowManager
@@ -31,7 +33,6 @@ import java.io.File
  *   <uses-permission android:name="android.permission.RECORD_AUDIO" />
  *   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
  *   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
- *   <!-- Necessário para Android 9 (API 28) e abaixo -->
  *   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
  *       android:maxSdkVersion="28" />
  */
@@ -56,11 +57,17 @@ class GravacaoService : Service() {
     private var gravandoInterno  = false
     private var recorder         : MediaRecorder? = null
     private var virtualDisplay   : android.hardware.display.VirtualDisplay? = null
-    // FIX 1: Guardar referência forte ao MediaProjection para evitar GC prematuro
-    // e poder chamar proj.stop() corretamente em pararGravacao()
     private var mediaProjection  : MediaProjection? = null
+
+    // API 29+: gravação direto no MediaStore via FileDescriptor (sem cópia)
+    private var mediaStoreUri    : Uri? = null
+    private var mediaStorePfd    : ParcelFileDescriptor? = null
+
+    // API < 29: arquivo temporário + cópia
     private var arquivoTemp      : File? = null
-    private val mainHandler      = Handler(Looper.getMainLooper())
+    private var nomeArquivo      : String? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -106,22 +113,16 @@ class GravacaoService : Service() {
                 chamarFinalizado(null); stopSelf(); return START_NOT_STICKY
             }
 
-            // FIX 2: Registrar Callback ANTES de usar a projeção.
-            // No Android 14+, a projeção pode ser encerrada pelo sistema sem aviso.
-            // Sem este callback, o app nem saberia que a gravação parou.
             proj.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
                     Log.w(TAG, "MediaProjection encerrado pelo sistema")
-                    // Garante limpeza mesmo que o sistema encerre a projeção
-                    if (gravandoInterno) {
-                        pararGravacao()
-                    }
+                    if (gravandoInterno) pararGravacao()
                 }
             }, mainHandler)
 
             mediaProjection = proj
-            Log.d(TAG, "MediaProjection criado: $proj")
             iniciarGravacao(proj, audioOk)
+
         } catch (e: Exception) {
             Log.e(TAG, "Erro ao criar MediaProjection: ${e.message}", e)
             chamarFinalizado(null); stopSelf()
@@ -148,15 +149,13 @@ class GravacaoService : Service() {
         }
         Log.d(TAG, "Dimensões: ${w}x${h} dpi=$dpi audioOk=$audioOk")
 
-        val cacheDir = externalCacheDir ?: cacheDir
-        val temp = File(cacheDir, "gravacao_${System.currentTimeMillis()}.mp4")
-        arquivoTemp = temp
-        Log.d(TAG, "Gravando em: ${temp.absolutePath}")
-
         val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
             MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()
 
         try {
+            val nome = "corrida_${System.currentTimeMillis()}"
+            nomeArquivo = nome
+
             rec.apply {
                 if (audioOk) setAudioSource(MediaRecorder.AudioSource.MIC)
                 setVideoSource(MediaRecorder.VideoSource.SURFACE)
@@ -170,9 +169,41 @@ class GravacaoService : Service() {
                 setVideoSize(w, h)
                 setVideoFrameRate(30)
                 setVideoEncodingBitRate(5_000_000)
-                setOutputFile(temp.absolutePath)
+
+                // ── Destino da gravação ──────────────────────────────────────────
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    // API 29+: grava diretamente no MediaStore via FileDescriptor.
+                    // O vídeo já existe na galeria (oculto com IS_PENDING=1) desde o início.
+                    // Não há cópia de arquivo — tudo vai direto para Movies/RunApp.
+                    val cv = ContentValues().apply {
+                        put(MediaStore.Video.Media.DISPLAY_NAME, "$nome.mp4")
+                        put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                        put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/RunApp")
+                        put(MediaStore.Video.Media.IS_PENDING, 1) // oculto até terminar
+                    }
+                    val uri = contentResolver.insert(
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv
+                    ) ?: throw Exception("MediaStore.insert retornou null")
+
+                    mediaStoreUri = uri
+
+                    val pfd = contentResolver.openFileDescriptor(uri, "w")
+                        ?: throw Exception("openFileDescriptor retornou null para $uri")
+                    mediaStorePfd = pfd
+
+                    setOutputFile(pfd.fileDescriptor)
+                    Log.d(TAG, "✅ Destino: MediaStore direto — $uri")
+
+                } else {
+                    // API < 29 (Android 9 e abaixo): arquivo temporário
+                    val temp = File(externalCacheDir ?: cacheDir, "$nome.mp4")
+                    arquivoTemp = temp
+                    setOutputFile(temp.absolutePath)
+                    Log.d(TAG, "Destino: arquivo temp — ${temp.absolutePath}")
+                }
+
                 prepare()
-                Log.d(TAG, "MediaRecorder preparado")
+                Log.d(TAG, "MediaRecorder preparado com sucesso")
             }
 
             virtualDisplay = proj.createVirtualDisplay(
@@ -180,16 +211,17 @@ class GravacaoService : Service() {
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 rec.surface, null, null
             )
-            Log.d(TAG, "VirtualDisplay: $virtualDisplay")
+            Log.d(TAG, "VirtualDisplay criado: $virtualDisplay")
 
             rec.start()
             recorder        = rec
             gravandoInterno = true
-            Log.d(TAG, "▶️ Gravação iniciada: ${temp.absolutePath}")
+            Log.d(TAG, "▶️ Gravação iniciada")
 
         } catch (e: Exception) {
             Log.e(TAG, "Erro iniciarGravacao: ${e.message}", e)
             runCatching { rec.release() }
+            limparMediaStorePendente()
             proj.stop()
             mediaProjection = null
             chamarFinalizado(null)
@@ -202,75 +234,95 @@ class GravacaoService : Service() {
         if (!gravandoInterno) return
         gravandoInterno = false
 
-        // FIX 3: Ordem correta de encerramento:
-        // 1. Parar o VirtualDisplay primeiro (para de enviar frames ao recorder)
-        // 2. Parar o MediaRecorder (finaliza o arquivo MP4)
-        // 3. Parar o MediaProjection (libera a permissão de captura de tela)
-        runCatching { virtualDisplay?.release() }.onFailure { Log.e(TAG, "vd release: ${it.message}") }
+        // Ordem crítica:
+        // 1. VirtualDisplay: para de entregar frames ao MediaRecorder
+        runCatching { virtualDisplay?.release() }.onFailure { Log.e(TAG, "vd: ${it.message}") }
         virtualDisplay = null
 
-        // FIX 4: Dar um pequeno tempo para o último frame ser processado antes de stop()
-        // Isso evita o erro "stop failed" em gravações muito curtas
-        Thread.sleep(100)
+        // 2. Aguarda encoder processar os últimos frames (evita "stop failed")
+        Thread.sleep(200)
 
-        val recorderParado = runCatching {
-            recorder?.stop()
-            true
-        }.onFailure { Log.e(TAG, "recorder stop: ${it.message}") }.getOrDefault(false)
-
+        // 3. Para o recorder — mesmo que lance exceção, o arquivo pode ser válido
+        runCatching { recorder?.stop() }.onFailure { Log.w(TAG, "recorder.stop: ${it.message}") }
         runCatching { recorder?.release() }
         recorder = null
 
-        // FIX 1 (continuação): Agora podemos parar o MediaProjection com segurança
-        runCatching { mediaProjection?.stop() }.onFailure { Log.e(TAG, "proj stop: ${it.message}") }
+        // 4. Fecha o FileDescriptor DEPOIS do recorder liberar o arquivo
+        runCatching { mediaStorePfd?.close() }.onFailure { Log.e(TAG, "pfd: ${it.message}") }
+        mediaStorePfd = null
+
+        // 5. Para o MediaProjection
+        runCatching { mediaProjection?.stop() }.onFailure { Log.e(TAG, "proj: ${it.message}") }
         mediaProjection = null
 
-        val temp = arquivoTemp
-        Log.d(TAG, "Temp: ${temp?.absolutePath} exists=${temp?.exists()} size=${temp?.length()} recorderParado=$recorderParado")
-
-        val nome = if (recorderParado && temp != null && temp.exists() && temp.length() > 1000) {
-            copiarParaGaleria(temp).also { temp.delete() }
-        } else {
-            Log.e(TAG, "Arquivo temp inválido ou recorder não parou corretamente")
-            temp?.delete()
-            null
-        }
+        // 6. Publica o arquivo (remove IS_PENDING ou copia temp)
+        val nome = finalizarArquivo()
+        Log.d(TAG, "Resultado final: nome=$nome")
 
         chamarFinalizado(nome)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    private fun copiarParaGaleria(origem: File): String? {
+    /**
+     * API 29+: apenas muda IS_PENDING de 1 para 0 — o arquivo já está na galeria.
+     * API <29: copia o arquivo temp para o MediaStore.
+     */
+    private fun finalizarArquivo(): String? {
+        val nome = nomeArquivo ?: return null
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val uri = mediaStoreUri ?: run { Log.e(TAG, "mediaStoreUri null"); return null }
+            runCatching {
+                val cv = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+                val rows = contentResolver.update(uri, cv, null, null)
+                Log.d(TAG, "IS_PENDING=0: $rows linha(s) atualizadas — $uri")
+                if (rows > 0) nome else null
+            }.getOrElse { Log.e(TAG, "finalizarArquivo: ${it.message}", it); null }
+
+        } else {
+            val temp = arquivoTemp
+            Log.d(TAG, "Temp legado: ${temp?.absolutePath} existe=${temp?.exists()} tamanho=${temp?.length()}")
+            if (temp != null && temp.exists() && temp.length() > 1000) {
+                copiarParaGaleriaLegado(temp, nome).also { temp.delete() }
+            } else {
+                Log.e(TAG, "Arquivo temp inválido")
+                temp?.delete()
+                null
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun copiarParaGaleriaLegado(origem: File, nome: String): String? {
         return runCatching {
-            val nome = "corrida_${System.currentTimeMillis()}"
+            val dir = android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_MOVIES)
+            val runAppDir = File(dir, "RunApp").also { it.mkdirs() }
+            val destino = File(runAppDir, "$nome.mp4")
+            origem.copyTo(destino, overwrite = true)
+
+            // Notifica a galeria sobre o novo arquivo
             val cv = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, "$nome.mp4")
                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/RunApp")
-                // FIX 5: Marcar como pendente durante a escrita (Android 10+).
-                // Sem isso, o Media Scanner pode indexar o arquivo incompleto e descartá-lo.
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.Video.Media.IS_PENDING, 1)
-                }
+                put(MediaStore.Video.Media.DATA, destino.absolutePath)
             }
-
-            val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv)
-                ?: run { Log.e(TAG, "insert retornou null"); return null }
-
-            contentResolver.openOutputStream(uri)?.use { out ->
-                origem.inputStream().use { it.copyTo(out) }
-            } ?: run { Log.e(TAG, "openOutputStream retornou null"); return null }
-
-            // FIX 5 (continuação): Marcar como disponível após escrita completa
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val update = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
-                contentResolver.update(uri, update, null, null)
-            }
-
-            Log.d(TAG, "Copiado para galeria: $uri ($nome.mp4)")
+            contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv)
+            Log.d(TAG, "Legado: salvo em ${destino.absolutePath}")
             nome
-        }.getOrElse { Log.e(TAG, "copiarParaGaleria erro: ${it.message}", it); null }
+        }.getOrElse { Log.e(TAG, "copiarParaGaleriaLegado: ${it.message}", it); null }
+    }
+
+    /** Remove a entrada pendente do MediaStore se a gravação falhou antes de iniciar */
+    private fun limparMediaStorePendente() {
+        mediaStoreUri?.let { uri ->
+            runCatching { contentResolver.delete(uri, null, null) }
+                .onSuccess { Log.d(TAG, "Entrada pendente removida do MediaStore") }
+        }
+        mediaStoreUri = null
+        runCatching { mediaStorePfd?.close() }
+        mediaStorePfd = null
     }
 
     private fun chamarFinalizado(nome: String?) = mainHandler.post { onFinalizado?.invoke(nome) }
