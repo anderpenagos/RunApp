@@ -77,15 +77,15 @@ fun GravacaoCorridaScreen(
         if (!cc || !ca) permLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
     }
 
-    // Callback do singleton
+    // Callback singleton
     DisposableEffect(Unit) {
         GravacaoService.onFinalizado = { nome ->
             gravando = false
             if (nome != null) {
                 arquivoSalvo = nome
-                Toast.makeText(context, "✅ Vídeo salvo: Movies/RunApp/$nome.mp4", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "✅ Vídeo salvo: $nome.mp4", Toast.LENGTH_LONG).show()
             } else {
-                Toast.makeText(context, "❌ Erro — verifique Logcat", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "❌ Falha ao salvar — veja Logcat", Toast.LENGTH_LONG).show()
             }
         }
         onDispose { GravacaoService.onFinalizado = null }
@@ -96,32 +96,21 @@ fun GravacaoCorridaScreen(
         while (gravando) { delay(1000L); tempoGravacao++ }
     }
 
-    // ── CHAVE: criamos MediaProjection AQUI, na main thread, imediatamente ──
-    // Passar resultCode+data para o serviço corrompe os IBinder internos.
-    // A solução: criar o objeto MediaProjection antes de iniciar o serviço.
+    // Launcher: passa resultCode + data para o serviço via Intent (abordagem padrão Android)
+    // O serviço chama getMediaProjection() DEPOIS do startForeground() — requisito Android 14
     val projectionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        Log.d(TAG, "Resultado: resultCode=${result.resultCode} data=${result.data}")
+        Log.d(TAG, "Resultado launcher: resultCode=${result.resultCode}")
         if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
-            // Cria MediaProjection AQUI, main thread, imediatamente após consentimento
-            val mgr  = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            val proj = mgr.getMediaProjection(result.resultCode, result.data!!)
-            Log.d(TAG, "MediaProjection criado: $proj")
-
-            if (proj == null) {
-                Toast.makeText(context, "❌ Falha ao criar MediaProjection", Toast.LENGTH_LONG).show()
-                return@rememberLauncherForActivityResult
+            val si = Intent(context, GravacaoService::class.java).apply {
+                putExtra(GravacaoService.EXTRA_RESULT_CODE, result.resultCode)
+                putExtra(GravacaoService.EXTRA_DATA, result.data)
+                putExtra(GravacaoService.EXTRA_AUDIO_OK, audioOk)
             }
-
-            // Armazena no singleton ANTES de iniciar o serviço
-            GravacaoService.projectionPronta = proj
-            GravacaoService.audioOkPendente  = audioOk
-
-            // Inicia o serviço — ele pega a projection do singleton
-            val si = Intent(context, GravacaoService::class.java)
             ContextCompat.startForegroundService(context, si)
             gravando = true
+            Log.d(TAG, "startForegroundService chamado")
             Toast.makeText(context, "⏺ Gravando…", Toast.LENGTH_SHORT).show()
         } else {
             Toast.makeText(context, "Gravação cancelada", Toast.LENGTH_SHORT).show()
@@ -148,8 +137,8 @@ fun GravacaoCorridaScreen(
                                     prov.unbindAll()
                                     prov.bindToLifecycle(lifecycleOwner, seletor,
                                         Preview.Builder().build().also { it.setSurfaceProvider(pv.surfaceProvider) })
-                                    Log.d(TAG, "Câmera OK")
-                                }.onFailure { Log.e(TAG, "Câmera: ${it.message}") }
+                                    Log.d(TAG, "Câmera OK: ${if (cameraFrontal) "frontal" else "traseira"}")
+                                }.onFailure { Log.e(TAG, "Câmera erro: ${it.message}") }
                             }, ContextCompat.getMainExecutor(ctx))
                         }
                     }
@@ -161,7 +150,7 @@ fun GravacaoCorridaScreen(
         Box(modifier = Modifier.fillMaxWidth().fillMaxHeight(0.65f).align(Alignment.BottomCenter)
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f)))))
 
-        // HUD
+        // HUD — sempre visível no vídeo
         Column(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter)
             .padding(start = 24.dp, end = 24.dp, bottom = 100.dp)) {
             HudGrande("%.2f".format(state.distanciaMetros / 1000.0).replace(".", ","), "Km", "Distance")
@@ -182,6 +171,7 @@ fun GravacaoCorridaScreen(
             }
         }
 
+        // Controles
         if (!gravando) {
             IconButton(onClick = onVoltar,
                 modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 36.dp)
@@ -206,6 +196,7 @@ fun GravacaoCorridaScreen(
                 }
             }
         } else {
+            // Botão STOP
             Button(
                 onClick = {
                     Log.d(TAG, "STOP. instancia=${GravacaoService.instancia}")
@@ -213,9 +204,9 @@ fun GravacaoCorridaScreen(
                     if (svc != null) {
                         svc.pararGravacao()
                     } else {
+                        Log.w(TAG, "instancia null — stopService direto")
                         context.stopService(Intent(context, GravacaoService::class.java))
                         gravando = false
-                        Toast.makeText(context, "Gravação parada", Toast.LENGTH_SHORT).show()
                     }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350)),
@@ -239,19 +230,17 @@ fun GravacaoCorridaScreen(
             Box(modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp)
                 .background(Color(0xFF1B5E20).copy(alpha = 0.95f), RoundedCornerShape(10.dp))
                 .padding(horizontal = 16.dp, vertical = 10.dp)
-            ) { Text("✅ Salvo em Galeria → Filmes → RunApp", color = Color.White, fontSize = 13.sp, textAlign = TextAlign.Center) }
+            ) { Text("✅ Salvo: Galeria → Filmes → RunApp", color = Color.White, fontSize = 13.sp, textAlign = TextAlign.Center) }
             LaunchedEffect(it) { delay(3000L); onVoltar() }
         }
     }
 }
 
 @Composable private fun BarrasVelocidade(vel: Float, modifier: Modifier) {
-    val maxVel = 25f; val nBarras = 5
-    val ratio  = (vel / maxVel).coerceIn(0f, 1f)
-    val ativas = (ratio * nBarras).roundToInt().coerceIn(0, nBarras)
-    val cores  = listOf(Color(0xFF546E7A), Color(0xFF1565C0), Color(0xFF29B6F6), Color(0xFF26C6DA), Color(0xFF66BB6A), Color(0xFFFFA726))
-    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom) {
-        Row(Modifier.fillMaxWidth().weight(1f), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+    val nBarras = 5; val ativas = ((vel / 25f).coerceIn(0f,1f) * nBarras).roundToInt().coerceIn(0, nBarras)
+    val cores = listOf(Color(0xFF546E7A), Color(0xFF1565C0), Color(0xFF29B6F6), Color(0xFF26C6DA), Color(0xFF66BB6A), Color(0xFFFFA726))
+    Column(modifier, Alignment.CenterHorizontally, Arrangement.Bottom) {
+        Row(Modifier.fillMaxWidth().weight(1f), Alignment.Bottom, Arrangement.spacedBy(5.dp)) {
             for (i in 1..nBarras) Box(Modifier.weight(1f).fillMaxHeight(0.3f + 0.7f * i / nBarras)
                 .clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp))
                 .background(if (i <= ativas) cores[ativas] else Color.White.copy(alpha = 0.18f)))
@@ -281,9 +270,8 @@ fun GravacaoCorridaScreen(
 private fun velocidadeDesPace(p: String): Float {
     if (p == "--:--") return 0f
     return runCatching {
-        val parts = p.split(":")
-        if (parts.size < 2) return 0f
-        val s = parts[0].toFloat() * 60 + parts[1].toFloat()
+        val pts = p.split(":"); if (pts.size < 2) return 0f
+        val s = pts[0].toFloat() * 60 + pts[1].toFloat()
         if (s <= 0f) 0f else 3600f / s
     }.getOrDefault(0f)
 }
