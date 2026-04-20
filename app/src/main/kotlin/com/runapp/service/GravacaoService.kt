@@ -49,9 +49,6 @@ class GravacaoService : Service() {
     private var arquivoTemp     : File? = null
     private val mainHandler     = Handler(Looper.getMainLooper())
 
-    // ── Logger em arquivo (acessível sem Android Studio) ──────────────────────
-    // O arquivo fica em: Armazenamento interno → Android/data/com.runapp/files/gravacao_log.txt
-    // Abra com qualquer gerenciador de arquivos do celular
     private var logWriter: FileWriter? = null
 
     private fun log(msg: String) {
@@ -60,7 +57,7 @@ class GravacaoService : Service() {
             if (logWriter == null) {
                 val dir  = getExternalFilesDir(null) ?: filesDir
                 val file = File(dir, "gravacao_log.txt")
-                logWriter = FileWriter(file, true) // append
+                logWriter = FileWriter(file, true)
             }
             val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date())
             logWriter?.write("[$ts] $msg\n")
@@ -72,7 +69,6 @@ class GravacaoService : Service() {
         try { logWriter?.close() } catch (_: Exception) {}
         logWriter = null
     }
-    // ──────────────────────────────────────────────────────────────────────────
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -102,14 +98,22 @@ class GravacaoService : Service() {
             startForeground(NOTIF_ID, notif)
         }
 
-        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
+        // ── BUG CORRIGIDO ────────────────────────────────────────────────────
+        // Activity.RESULT_OK == -1 no Android.
+        // Versões anteriores usavam -1 como sentinela de "valor inválido",
+        // então RESULT_OK era sempre tratado como erro e a gravação abortava
+        // antes mesmo de começar.
+        // Agora o sentinela é 0 (Activity.RESULT_CANCELED).
+        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
+        // ─────────────────────────────────────────────────────────────────────
+
         @Suppress("DEPRECATION")
-        val data       = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
-        val audioOk    = intent?.getBooleanExtra(EXTRA_AUDIO_OK, false) ?: false
+        val data    = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
+        val audioOk = intent?.getBooleanExtra(EXTRA_AUDIO_OK, false) ?: false
 
         log("resultCode=$resultCode  data=${data != null}  audioOk=$audioOk")
 
-        if (resultCode == -1 || data == null) {
+        if (resultCode == 0 || data == null) {
             log("ERRO: dados inválidos — abortando")
             stopSelf(); return START_NOT_STICKY
         }
@@ -143,14 +147,9 @@ class GravacaoService : Service() {
         return START_NOT_STICKY
     }
 
-    // Dimensão precisa ser múltiplo de 2 para o encoder H264
     private fun Int.toEven() = if (this % 2 == 0) this else this - 1
 
     private fun iniciarGravacao(proj: MediaProjection, audioOk: Boolean) {
-
-        // ── Tela inteira, sem subtrair status bar ou navigation bar ──────────
-        // Subtrair insets causava dimensões diferentes entre o VirtualDisplay
-        // e o MediaRecorder, o que corrompe a gravação silenciosamente.
         val dm  = resources.displayMetrics
         val w   = dm.widthPixels.toEven()
         val h   = dm.heightPixels.toEven()
@@ -162,7 +161,6 @@ class GravacaoService : Service() {
         val dir  = externalCacheDir ?: cacheDir
         val temp = File(dir, "corrida_$ts.mp4")
         arquivoTemp = temp
-
         log("Arquivo temp: ${temp.absolutePath}")
 
         val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
@@ -221,50 +219,40 @@ class GravacaoService : Service() {
         log("pararGravacao() chamado — gravandoInterno=$gravandoInterno")
         if (!gravandoInterno) return
         gravandoInterno = false
-
         Thread { executarParada() }.start()
     }
 
     private fun executarParada() {
-        log("executarParada() — thread iniciada")
+        log("executarParada() iniciado")
 
-        // 1. Para o VirtualDisplay antes do recorder
         runCatching { virtualDisplay?.release() }.onFailure { log("vd.release erro: ${it.message}") }
         virtualDisplay = null
         log("VirtualDisplay liberado")
 
-        // 2. Aguarda encoder finalizar os últimos frames
         Thread.sleep(500)
 
-        // 3. Para o recorder (swallow exception — o arquivo ainda pode ser válido)
         runCatching { recorder?.stop() }
             .onSuccess { log("recorder.stop() OK") }
-            .onFailure { log("recorder.stop() erro (pode ser normal): ${it.message}") }
-
+            .onFailure { log("recorder.stop() erro: ${it.message}") }
         runCatching { recorder?.release() }
         recorder = null
 
-        // 4. Para o MediaProjection
         runCatching { mediaProjection?.stop() }
             .onSuccess { log("mediaProjection.stop() OK") }
             .onFailure { log("mediaProjection.stop() erro: ${it.message}") }
         mediaProjection = null
 
-        // 5. Verifica o arquivo
         val temp   = arquivoTemp
         val existe = temp?.exists() == true
         val bytes  = temp?.length() ?: 0L
-        log("Arquivo: ${temp?.absolutePath}  existe=$existe  bytes=$bytes")
+        log("Arquivo temp: ${temp?.absolutePath}  existe=$existe  bytes=$bytes")
 
         val nome: String? = when {
-            temp == null    -> { log("ERRO: arquivoTemp null");                    null }
-            !existe         -> { log("ERRO: arquivo não existe");                  null }
-            bytes == 0L     -> { log("ERRO: 0 bytes — encoder não gravou nada"); temp.delete(); null }
-            bytes < 1000    -> { log("ERRO: $bytes bytes — MP4 corrompido");      temp.delete(); null }
-            else            -> {
-                log("Arquivo OK ($bytes bytes) — salvando na galeria...")
-                salvarNaGaleria(temp)
-            }
+            temp == null -> { log("ERRO: arquivoTemp null"); null }
+            !existe      -> { log("ERRO: arquivo não existe"); null }
+            bytes == 0L  -> { log("ERRO: 0 bytes"); temp.delete(); null }
+            bytes < 1000 -> { log("ERRO: $bytes bytes — MP4 incompleto"); temp.delete(); null }
+            else         -> { log("Arquivo OK ($bytes bytes) — salvando..."); salvarNaGaleria(temp) }
         }
 
         arquivoTemp = null
@@ -282,7 +270,6 @@ class GravacaoService : Service() {
         val nome = "corrida_${System.currentTimeMillis()}"
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // API 29+ — MediaStore com IS_PENDING
                 val cv = ContentValues().apply {
                     put(MediaStore.Video.Media.DISPLAY_NAME, "$nome.mp4")
                     put(MediaStore.Video.Media.MIME_TYPE,    "video/mp4")
@@ -290,13 +277,13 @@ class GravacaoService : Service() {
                     put(MediaStore.Video.Media.IS_PENDING,    1)
                 }
                 val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv)
-                    ?: run { log("ERRO: MediaStore.insert retornou null"); return null }
+                    ?: run { log("ERRO: MediaStore.insert null"); return null }
 
                 log("URI criada: $uri")
 
                 contentResolver.openOutputStream(uri)?.use { out ->
                     val copied = origem.inputStream().use { it.copyTo(out) }
-                    log("Bytes copiados para MediaStore: $copied")
+                    log("Bytes copiados: $copied")
                 } ?: run { log("ERRO: openOutputStream null"); return null }
 
                 val rows = contentResolver.update(
@@ -304,14 +291,13 @@ class GravacaoService : Service() {
                     ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) },
                     null, null
                 )
-                log("IS_PENDING=0: $rows linha(s) atualizada(s)")
+                log("IS_PENDING=0: $rows linha(s)")
 
                 origem.delete()
                 log("✅ Salvo em Movies/RunApp/$nome.mp4")
                 nome
 
             } else {
-                // API < 29
                 @Suppress("DEPRECATION")
                 val moviesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
                 val destDir   = File(moviesDir, "RunApp").also { it.mkdirs() }
