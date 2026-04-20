@@ -214,10 +214,10 @@ class RunningService : Service(), SensorEventListener {
 
     fun setIndexPassoAtivo(index: Int) {
         if (index != indexPassoAtivo && treinoAtivo != null) {
-            // Guarda timestamp da troca — urna será limpa após 3s em calcularPaceAtual
+            // Guarda timestamp da troca — urna será limpa após 2s em calcularPaceAtual
             timestampTrocaPasso = SystemClock.elapsedRealtime()
             urnaEstruturadaResetFeito = false
-            Log.d(TAG, "⏭️ Passo $indexPassoAtivo→$index — reset urna agendado em 3s")
+            Log.d(TAG, "⏭️ Passo $indexPassoAtivo→$index — reset urna agendado em 2s")
         }
         indexPassoAtivo = index
     }
@@ -416,15 +416,16 @@ class RunningService : Service(), SensorEventListener {
     // descarta esses pontos silenciosamente até o GPS estabilizar.
     private var screenOffTimestampMs = 0L
     private var screenOnTimestampMs  = 0L
-    private var urnaScreenOffResetFeito = false  // reset 17s após SCREEN_OFF
+    private var urnaScreenOffResetFeito = false  // reset 21s após SCREEN_OFF
+    private var ultimoCalculoPaceMs  = 0L        // throttle: pace recalculado a cada 2s
 
     private val screenOnReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     screenOffTimestampMs = SystemClock.elapsedRealtime()
-                    urnaScreenOffResetFeito = false  // agendado reset em 17s
-                    Log.d(TAG, "📱 Tela apagada — reset urna agendado em 17s")
+                    urnaScreenOffResetFeito = false  // agendado reset em 21s
+                    Log.d(TAG, "📱 Tela apagada — reset urna agendado em 21s")
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     if (!estaCorrendo || estaPausado) return
@@ -468,12 +469,12 @@ class RunningService : Service(), SensorEventListener {
                     modoRecuperacaoGps = true
                     contadorPontosRecuperacao = 0
                     screenOnTimestampMs = SystemClock.elapsedRealtime()
-                    urnaDebugResetFeito = false  // reset flag — urna será limpa aos 17s
+                    urnaDebugResetFeito = false  // reset flag — urna será limpa aos 21s
                     ultimasLocalizacoes.clear()
                     bufferPace30s.clear()
                     bufferDeltasPace.clear()
                     bufferStride5s.clear()
-                    Log.d(TAG, "Tela ligada após ${tempoTelaApagadaMs / 1000}s — urna preservada, reset em 17s")
+                    Log.d(TAG, "Tela ligada após ${tempoTelaApagadaMs / 1000}s — urna preservada, reset em 21s")
                 }
             }
         }
@@ -802,7 +803,7 @@ class RunningService : Service(), SensorEventListener {
     // Treino estruturado: urna de bins de amplitude do pace alvo
     private var urnaEstruturadaResetFeito = false
     private var timestampTrocaPasso = 0L   // quando o passo foi trocado — reset urna após 3s
-    private val urnaAmplitude = ArrayDeque<VotoPace>(12)  // máx 11 votos na faixa alvo
+    private val urnaAmplitude = ArrayDeque<VotoPace>(18)  // máx 17 votos na faixa alvo
     private var ultimoPaceEmaAmplitude: Double? = null
     
     private val _rotaAtual = MutableStateFlow<List<LatLngPonto>>(emptyList())
@@ -1156,6 +1157,7 @@ class RunningService : Service(), SensorEventListener {
         urnaDebugResetFeito = false  // para cronômetro
         urnaEstruturadaResetFeito = false
         urnaScreenOffResetFeito = false
+        ultimoCalculoPaceMs = 0L
         timestampTrocaPasso = 0L
         treinoEstruturadoConcluido = false
         urnaAmplitude.clear()
@@ -2131,7 +2133,10 @@ class RunningService : Service(), SensorEventListener {
             return
         }
 
-        calcularPaceAtual(location, distancia, deltaMs)
+        if (agora - ultimoCalculoPaceMs >= 2_000L) {
+            ultimoCalculoPaceMs = agora
+            calcularPaceAtual(location, distancia, deltaMs)
+        }
         calcularPaceMedia()
 
         Log.d(TAG, "📍 Dist: ${String.format("%.1f", _distanciaMetros.value)}m | Pace: ${_paceAtual.value} | Janela: ${ultimasLocalizacoes.size}")
@@ -2224,7 +2229,7 @@ class RunningService : Service(), SensorEventListener {
                         distM       = distTotal,
                         deltaMs     = tempoTotal
                     ))
-                    val limiteUrna = if (treinoAtivo != null) 11 + 2 else URNA_VOTOS_NORMAL + 3
+                    val limiteUrna = if (treinoAtivo != null) 17 + 2 else URNA_VOTOS_NORMAL + 3
                     if (urnaVotosPace.size > limiteUrna) urnaVotosPace.removeFirst()
                 }
             }
@@ -2390,17 +2395,17 @@ class RunningService : Service(), SensorEventListener {
         val paceModa: Double?
 
         if (passoAtivo != null) {
-            // Reset da urna 3s após troca de passo
+            // Reset da urna 2s após troca de passo
             val agoraElapsedEst = SystemClock.elapsedRealtime()
             if (!urnaEstruturadaResetFeito && timestampTrocaPasso > 0 &&
-                agoraElapsedEst - timestampTrocaPasso >= 3_000L) {
-                val doisRecentes = urnaVotosPace.toList().takeLast(2)
+                agoraElapsedEst - timestampTrocaPasso >= 2_000L) {
+                val umMaisRecente = urnaVotosPace.toList().takeLast(1)
                 urnaVotosPace.clear()
-                urnaVotosPace.addAll(doisRecentes)
+                urnaVotosPace.addAll(umMaisRecente)
                 urnaAmplitude.clear()
                 ultimoPaceEmaAmplitude = null
                 urnaEstruturadaResetFeito = true
-                Log.d(TAG, "⏭️ Reset urna (3s após troca): ${doisRecentes.size}v recentes conservados")
+                Log.d(TAG, "⏭️ Reset urna (2s após troca): ${umMaisRecente.size}v recente conservado")
             }
 
             // Define faixa alvo — descanso sem pace usa 12:00-15:00 como amplitude
@@ -2418,12 +2423,12 @@ class RunningService : Service(), SensorEventListener {
             val votoAtual = urnaVotosPace.lastOrNull()
             if (votoAtual != null && votoAtual.paceSegKm in paceRapidoSegKm..paceLentoSegKm) {
                 urnaAmplitude.addLast(votoAtual)
-                if (urnaAmplitude.size > 11) urnaAmplitude.removeFirst()
+                if (urnaAmplitude.size > 17) urnaAmplitude.removeFirst()
             }
 
             // Janela temporal: 11s
             val agoraMs = System.currentTimeMillis()
-            val votosAmplitude = urnaAmplitude.filter { agoraMs - it.timestampMs <= 11_000L }
+            val votosAmplitude = urnaAmplitude.filter { agoraMs - it.timestampMs <= 17_000L }
 
             // Emite votos da amplitude no debug
             _modaDebug.value = _modaDebug.value.copy(votosAmplitude = votosAmplitude.size)
@@ -2552,36 +2557,36 @@ class RunningService : Service(), SensorEventListener {
             (paceCandidato * alpha) + (anterior * (1.0 - alpha))
         } ?: paceCandidato
 
-        // ── Proteção pós-desbloqueio — urna reset após 17s ───────────────────────
-        // Nos primeiros 17s após SCREEN_ON: urna funciona normalmente com histórico.
-        // Aos 17s: conserva só os 2 votos mais antigos e continua acumulando novos.
+        // ── Proteção pós-desbloqueio — urna reset após 21s ───────────────────────
+        // Nos primeiros 21s após SCREEN_ON: urna funciona normalmente com histórico.
+        // Aos 21s: conserva só os 2 votos mais antigos e continua acumulando novos.
         // Isso força a Moda a reconstruir o consenso com os dados reais pós-desbloqueio,
         // eliminando votos contaminados pelo GPS instável ao reativar.
         val agoraElapsed = SystemClock.elapsedRealtime()
         val msPosScreenOn = if (screenOnTimestampMs > 0) agoraElapsed - screenOnTimestampMs else Long.MAX_VALUE
 
-        // ── Reset 17s após SCREEN_OFF ─────────────────────────────────────────────
+        // ── Reset 21s após SCREEN_OFF ─────────────────────────────────────────────
         // Conserva 2 votos mais recentes — GPS em batch mode pode ter acumulado
         // votos de posições antigas; limpeza garante reconstrução com dados frescos.
         if (!urnaScreenOffResetFeito && screenOffTimestampMs > 0) {
             val msPosScreenOff = SystemClock.elapsedRealtime() - screenOffTimestampMs
-            if (msPosScreenOff >= 17_000L) {
+            if (msPosScreenOff >= 21_000L) {
                 val doisRecentes = urnaVotosPace.toList().takeLast(2)
                 urnaVotosPace.clear()
                 urnaVotosPace.addAll(doisRecentes)
                 urnaAmplitude.clear()
                 urnaScreenOffResetFeito = true
-                Log.d(TAG, "📱 Reset urna 17s pós SCREEN_OFF: ${doisRecentes.size}v recentes conservados")
+                Log.d(TAG, "📱 Reset urna 21s pós SCREEN_OFF: ${doisRecentes.size}v recentes conservados")
             }
         }
 
-        // ── Reset 17s após SCREEN_ON ──────────────────────────────────────────────
-        if (!urnaDebugResetFeito && msPosScreenOn in 17_000L..90_000L) {
+        // ── Reset 21s após SCREEN_ON ──────────────────────────────────────────────
+        if (!urnaDebugResetFeito && msPosScreenOn in 21_000L..90_000L) {
             val doisMaisAntigos = urnaVotosPace.toList().take(2)
             urnaVotosPace.clear()
             urnaVotosPace.addAll(doisMaisAntigos)
             urnaDebugResetFeito = true
-            Log.d(TAG, "🔄 Urna reset pós-desbloqueio (25s): conservados ${doisMaisAntigos.size} votos mais antigos")
+            Log.d(TAG, "🔄 Urna reset pós-desbloqueio (21s): conservados ${doisMaisAntigos.size} votos mais antigos")
         }
 
         ultimoPaceEmaInterno = paceEma
