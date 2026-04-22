@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -81,12 +80,7 @@ fun GravacaoCorridaScreen(
     DisposableEffect(Unit) {
         GravacaoService.onFinalizado = { nome ->
             gravando = false
-            if (nome != null) {
-                arquivoSalvo = nome
-                Toast.makeText(context, "✅ Vídeo salvo: $nome.mp4", Toast.LENGTH_LONG).show()
-            } else {
-                Toast.makeText(context, "❌ Falha ao salvar — veja Logcat", Toast.LENGTH_LONG).show()
-            }
+            if (nome != null) arquivoSalvo = nome
         }
         onDispose { GravacaoService.onFinalizado = null }
     }
@@ -110,10 +104,8 @@ fun GravacaoCorridaScreen(
             }
             ContextCompat.startForegroundService(context, si)
             gravando = true
-            Log.d(TAG, "startForegroundService chamado")
-            Toast.makeText(context, "⏺ Gravando…", Toast.LENGTH_SHORT).show()
         } else {
-            Toast.makeText(context, "Gravação cancelada", Toast.LENGTH_SHORT).show()
+            Log.d(TAG, "Gravação cancelada pelo usuário")
         }
     }
 
@@ -226,13 +218,6 @@ fun GravacaoCorridaScreen(
             }
         }
 
-        arquivoSalvo?.let {
-            Box(modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp)
-                .background(Color(0xFF1B5E20).copy(alpha = 0.95f), RoundedCornerShape(10.dp))
-                .padding(horizontal = 16.dp, vertical = 10.dp)
-            ) { Text("✅ Salvo: Galeria → Filmes → RunApp", color = Color.White, fontSize = 13.sp, textAlign = TextAlign.Center) }
-            LaunchedEffect(it) { delay(3000L); onVoltar() }
-        }
     }
 }
 

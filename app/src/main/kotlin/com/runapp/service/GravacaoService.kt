@@ -18,8 +18,6 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import java.io.File
-import java.io.FileWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -49,26 +47,7 @@ class GravacaoService : Service() {
     private var arquivoTemp     : File? = null
     private val mainHandler     = Handler(Looper.getMainLooper())
 
-    private var logWriter: FileWriter? = null
-
-    private fun log(msg: String) {
-        Log.d(TAG, msg)
-        try {
-            if (logWriter == null) {
-                val dir  = getExternalFilesDir(null) ?: filesDir
-                val file = File(dir, "gravacao_log.txt")
-                logWriter = FileWriter(file, true)
-            }
-            val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date())
-            logWriter?.write("[$ts] $msg\n")
-            logWriter?.flush()
-        } catch (_: Exception) {}
-    }
-
-    private fun fecharLog() {
-        try { logWriter?.close() } catch (_: Exception) {}
-        logWriter = null
-    }
+    private fun log(msg: String) = Log.d(TAG, msg)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -257,7 +236,6 @@ class GravacaoService : Service() {
 
         arquivoTemp = null
         log("Resultado final: nome=$nome")
-        fecharLog()
 
         chamarFinalizado(nome)
         mainHandler.post {
@@ -323,7 +301,6 @@ class GravacaoService : Service() {
         instancia = null
         if (gravandoInterno) pararGravacao()
         log("onDestroy")
-        fecharLog()
     }
 
     private fun criarCanal() {
