@@ -8,6 +8,7 @@ import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -61,6 +62,8 @@ fun GravacaoCorridaScreen(
     var tempoGravacao by remember { mutableStateOf(0) }
     var arquivoSalvo  by remember { mutableStateOf<String?>(null) }
     var cameraFrontal by remember { mutableStateOf(false) }
+    var zoomLevel     by remember { mutableStateOf(1.0f) }
+    var cameraRef     by remember { mutableStateOf<Camera?>(null) }
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -88,6 +91,11 @@ fun GravacaoCorridaScreen(
     LaunchedEffect(gravando) {
         tempoGravacao = 0
         while (gravando) { delay(1000L); tempoGravacao++ }
+    }
+
+    // Aplica zoom sempre que zoomLevel ou cameraRef mudar
+    LaunchedEffect(zoomLevel, cameraRef) {
+        cameraRef?.cameraControl?.setZoomRatio(zoomLevel)
     }
 
     // Launcher: passa resultCode + data para o serviço via Intent (abordagem padrão Android)
@@ -127,8 +135,11 @@ fun GravacaoCorridaScreen(
                                 runCatching {
                                     val prov = ProcessCameraProvider.getInstance(ctx).get()
                                     prov.unbindAll()
-                                    prov.bindToLifecycle(lifecycleOwner, seletor,
+                                    val cam = prov.bindToLifecycle(lifecycleOwner, seletor,
                                         Preview.Builder().build().also { it.setSurfaceProvider(pv.surfaceProvider) })
+                                    cameraRef = cam
+                                    // Aplica zoom atual ao trocar câmera
+                                    cam.cameraControl.setZoomRatio(zoomLevel)
                                     Log.d(TAG, "Câmera OK: ${if (cameraFrontal) "frontal" else "traseira"}")
                                 }.onFailure { Log.e(TAG, "Câmera erro: ${it.message}") }
                             }, ContextCompat.getMainExecutor(ctx))
@@ -144,7 +155,7 @@ fun GravacaoCorridaScreen(
 
         // HUD — sempre visível no vídeo
         Column(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter)
-            .padding(start = 24.dp, end = 24.dp, bottom = 100.dp)) {
+            .padding(start = 24.dp, end = 24.dp, bottom = 148.dp)) {
             HudGrande("%.2f".format(state.distanciaMetros / 1000.0).replace(".", ","), "Km", "Distance")
             Spacer(Modifier.height(12.dp))
             HudGrande(state.paceAtual.let { p ->
@@ -166,16 +177,16 @@ fun GravacaoCorridaScreen(
         // Controles
         if (!gravando) {
             IconButton(onClick = onVoltar,
-                modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 36.dp)
+                modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 72.dp)
                     .size(44.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape)
             ) { Icon(Icons.Default.ArrowBack, "Voltar", tint = Color.White) }
 
-            IconButton(onClick = { cameraFrontal = !cameraFrontal },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 36.dp)
+            IconButton(onClick = { cameraFrontal = !cameraFrontal; zoomLevel = 1.0f },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 72.dp)
                     .size(44.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape)
             ) { Icon(Icons.Default.Cameraswitch, "Trocar câmera", tint = Color.White) }
 
-            Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp)
+            Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 68.dp)
                 .size(68.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.5f)),
                 contentAlignment = Alignment.Center
             ) {
@@ -188,23 +199,21 @@ fun GravacaoCorridaScreen(
                 }
             }
         } else {
-            // Botão STOP
+            // Botão STOP — gravando=false imediatamente para feedback visual instantâneo
             Button(
                 onClick = {
-                    Log.d(TAG, "STOP. instancia=${GravacaoService.instancia}")
+                    gravando = false
                     val svc = GravacaoService.instancia
                     if (svc != null) {
                         svc.pararGravacao()
                     } else {
-                        Log.w(TAG, "instancia null — stopService direto")
                         context.stopService(Intent(context, GravacaoService::class.java))
-                        gravando = false
                     }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350)),
                 shape  = RoundedCornerShape(28.dp),
                 modifier = Modifier.align(Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = 36.dp).height(52.dp)
+                    .padding(end = 16.dp, bottom = 72.dp).height(52.dp)
             ) {
                 val pulse = rememberInfiniteTransition(label = "p")
                 val a by pulse.animateFloat(1f, 0.4f,
@@ -215,6 +224,41 @@ fun GravacaoCorridaScreen(
                     color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(6.dp))
                 Icon(Icons.Default.Stop, null, tint = Color.White, modifier = Modifier.size(20.dp))
+            }
+        }
+
+        // Zoom — sempre visível na parte inferior, igual à câmera nativa
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 16.dp)
+                .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(20.dp))
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            listOf(0.5f, 1.0f, 2.0f).forEach { nivel ->
+                val selecionado = zoomLevel == nivel
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(if (selecionado) Color.White.copy(alpha = 0.2f) else Color.Transparent),
+                    contentAlignment = Alignment.Center
+                ) {
+                    TextButton(
+                        onClick = { zoomLevel = nivel },
+                        modifier = Modifier.size(38.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text(
+                            text = if (nivel == 0.5f) ".5×" else "${nivel.toInt()}×",
+                            fontSize = 13.sp,
+                            fontWeight = if (selecionado) FontWeight.Bold else FontWeight.Normal,
+                            color = if (selecionado) Color.Yellow else Color.White
+                        )
+                    }
+                }
             }
         }
 
