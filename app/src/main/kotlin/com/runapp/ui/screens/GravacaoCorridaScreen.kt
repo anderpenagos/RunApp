@@ -93,9 +93,11 @@ fun GravacaoCorridaScreen(
         while (gravando) { delay(1000L); tempoGravacao++ }
     }
 
-    // Aplica zoom sempre que zoomLevel ou cameraRef mudar
+    // Aplica zoom (apenas 1x/2x — 0.5x troca de câmera física, não usa ratio)
     LaunchedEffect(zoomLevel, cameraRef) {
-        cameraRef?.cameraControl?.setZoomRatio(zoomLevel)
+        if (zoomLevel != 0.5f) {
+            cameraRef?.cameraControl?.setZoomRatio(zoomLevel)
+        }
     }
 
     // Launcher: passa resultCode + data para o serviço via Intent (abordagem padrão Android)
@@ -121,9 +123,10 @@ fun GravacaoCorridaScreen(
 
         // Câmera
         if (cameraOk) {
-            val seletor = if (cameraFrontal) CameraSelector.DEFAULT_FRONT_CAMERA
-                          else CameraSelector.DEFAULT_BACK_CAMERA
-            key(cameraFrontal) {
+            // 0.5x = câmera ultra-wide (física diferente), 1x/2x = câmera principal com zoom ratio
+            val useUltraWide = !cameraFrontal && zoomLevel == 0.5f
+
+            key(cameraFrontal, useUltraWide) {
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
@@ -134,13 +137,35 @@ fun GravacaoCorridaScreen(
                             ProcessCameraProvider.getInstance(ctx).addListener({
                                 runCatching {
                                     val prov = ProcessCameraProvider.getInstance(ctx).get()
+
+                                    // Seleciona câmera: ultra-wide por intrinsicZoomRatio, frontal, ou principal
+                                    val seletor = when {
+                                        cameraFrontal -> CameraSelector.DEFAULT_FRONT_CAMERA
+                                        useUltraWide  -> {
+                                            // Câmera traseira com intrinsicZoomRatio < 1.0 = ultra-wide
+                                            val ultraWideSelector = CameraSelector.Builder()
+                                                .requireLensFacing(CameraSelector.LENS_FACING_BACK)
+                                                .addCameraFilter { infos ->
+                                                    infos.filter { it.intrinsicZoomRatio < 1.0f }
+                                                        .ifEmpty { infos } // fallback se não encontrar
+                                                }
+                                                .build()
+                                            ultraWideSelector
+                                        }
+                                        else -> CameraSelector.DEFAULT_BACK_CAMERA
+                                    }
+
                                     prov.unbindAll()
-                                    val cam = prov.bindToLifecycle(lifecycleOwner, seletor,
-                                        Preview.Builder().build().also { it.setSurfaceProvider(pv.surfaceProvider) })
+                                    val cam = prov.bindToLifecycle(
+                                        lifecycleOwner, seletor,
+                                        Preview.Builder().build().also { it.setSurfaceProvider(pv.surfaceProvider) }
+                                    )
                                     cameraRef = cam
-                                    // Aplica zoom atual ao trocar câmera
-                                    cam.cameraControl.setZoomRatio(zoomLevel)
-                                    Log.d(TAG, "Câmera OK: ${if (cameraFrontal) "frontal" else "traseira"}")
+                                    // Aplica zoom ratio apenas para 1x/2x (ultra-wide já está no FOV correto)
+                                    if (!useUltraWide && !cameraFrontal) {
+                                        cam.cameraControl.setZoomRatio(zoomLevel)
+                                    }
+                                    Log.d(TAG, "Câmera OK — frontal=$cameraFrontal ultraWide=$useUltraWide zoom=$zoomLevel")
                                 }.onFailure { Log.e(TAG, "Câmera erro: ${it.message}") }
                             }, ContextCompat.getMainExecutor(ctx))
                         }
@@ -181,7 +206,10 @@ fun GravacaoCorridaScreen(
                     .size(44.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape)
             ) { Icon(Icons.Default.ArrowBack, "Voltar", tint = Color.White) }
 
-            IconButton(onClick = { cameraFrontal = !cameraFrontal; zoomLevel = 1.0f },
+            IconButton(onClick = {
+                cameraFrontal = !cameraFrontal
+                zoomLevel = 1.0f // reseta zoom ao trocar câmera
+            },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 72.dp)
                     .size(44.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape)
             ) { Icon(Icons.Default.Cameraswitch, "Trocar câmera", tint = Color.White) }
@@ -227,36 +255,38 @@ fun GravacaoCorridaScreen(
             }
         }
 
-        // Zoom — sempre visível na parte inferior, igual à câmera nativa
-        Row(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 16.dp)
-                .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(20.dp))
-                .padding(horizontal = 6.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            listOf(0.5f, 1.0f, 2.0f).forEach { nivel ->
-                val selecionado = zoomLevel == nivel
-                Box(
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(if (selecionado) Color.White.copy(alpha = 0.2f) else Color.Transparent),
-                    contentAlignment = Alignment.Center
-                ) {
-                    TextButton(
-                        onClick = { zoomLevel = nivel },
-                        modifier = Modifier.size(38.dp),
-                        contentPadding = PaddingValues(0.dp)
+        // Zoom — apenas na câmera traseira, na parte inferior da tela
+        if (!cameraFrontal) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 16.dp)
+                    .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(20.dp))
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf(0.5f, 1.0f, 2.0f).forEach { nivel ->
+                    val selecionado = zoomLevel == nivel
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(if (selecionado) Color.White.copy(alpha = 0.2f) else Color.Transparent),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = if (nivel == 0.5f) ".5×" else "${nivel.toInt()}×",
-                            fontSize = 13.sp,
-                            fontWeight = if (selecionado) FontWeight.Bold else FontWeight.Normal,
-                            color = if (selecionado) Color.Yellow else Color.White
-                        )
+                        TextButton(
+                            onClick = { zoomLevel = nivel },
+                            modifier = Modifier.size(38.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(
+                                text = if (nivel == 0.5f) ".5×" else "${nivel.toInt()}×",
+                                fontSize = 13.sp,
+                                fontWeight = if (selecionado) FontWeight.Bold else FontWeight.Normal,
+                                color = if (selecionado) Color.Yellow else Color.White
+                            )
+                        }
                     }
                 }
             }
