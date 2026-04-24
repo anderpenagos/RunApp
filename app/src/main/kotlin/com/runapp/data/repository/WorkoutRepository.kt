@@ -287,12 +287,17 @@ class WorkoutRepository(private val api: IntervalsApi) {
         // CORREÇÃO: comparação case-insensitive — intervals.icu envia "rest" (minúsculo)
         // ou "FreeRide" para pausas. Também verifica texto do passo como fallback,
         // cobrindo casos como "PARADO OU CAMINHANDO" que não têm type explícito.
+        // CASO CRÍTICO: steps sem nenhum alvo de pace (paceTarget == null) nunca
+        // têm ritmo definido — o intervals.icu omite o campo "pace" em descansos
+        // cujo "type" também não é enviado, fazendo o parser defaultar "SteadyState".
+        // Nesses casos o sinal mais confiável é justamente a ausência do target.
         val isDescanso = step.type.equals("Rest", ignoreCase = true)
             || step.type.equals("FreeRide", ignoreCase = true)
             || paceTarget?.isRest == true
             || step.text?.contains("rest", ignoreCase = true) == true
             || step.text?.contains("parado", ignoreCase = true) == true
             || step.text?.contains("caminhando", ignoreCase = true) == true
+            || paceTarget == null  // sem alvo de pace → sem zona (descanso implícito)
 
         var zona = 2
         var paceMinStr = "--:--"
@@ -412,9 +417,14 @@ class WorkoutRepository(private val api: IntervalsApi) {
         Log.d(TAG, "  → Final: Z$zona, $paceMinStr – $paceMaxStr")
 
         val nomePasso = when {
-            step.type == "Warmup"   -> "Aquecimento"
-            step.type == "Cooldown" -> "Desaceleração"
-            isDescanso              -> if (repAtual != null) "Recuperação $repAtual/$repsTotal" else "Descanso"
+            step.type.equals("Warmup", ignoreCase = true)   -> "Aquecimento"
+            step.type.equals("Cooldown", ignoreCase = true) -> "Desaceleração"
+            isDescanso -> when {
+                repAtual != null -> "Recuperação $repAtual/$repsTotal"
+                step.type.equals("Rest", ignoreCase = true)
+                    || step.text?.contains("rest", ignoreCase = true) == true -> "Descanso"
+                else -> "Pausa"
+            }
             // Z1 dentro de repeat = recuperação ativa, não esforço
             repAtual != null && zona <= 1 -> "Recuperação $repAtual/$repsTotal"
             repAtual != null        -> "Esforço $repAtual/$repsTotal"
