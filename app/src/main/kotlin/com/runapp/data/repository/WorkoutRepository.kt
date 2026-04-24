@@ -284,7 +284,15 @@ class WorkoutRepository(private val api: IntervalsApi) {
         val paceTarget = step.pace ?: step.target
         Log.d(TAG, "converterStep → type=${step.type} pace={value=${paceTarget?.value}, start=${paceTarget?.start}, end=${paceTarget?.end}, units=${paceTarget?.units}}")
 
-        val isDescanso = step.type == "Rest" || paceTarget?.isRest == true
+        // CORREÇÃO: comparação case-insensitive — intervals.icu envia "rest" (minúsculo)
+        // ou "FreeRide" para pausas. Também verifica texto do passo como fallback,
+        // cobrindo casos como "PARADO OU CAMINHANDO" que não têm type explícito.
+        val isDescanso = step.type.equals("Rest", ignoreCase = true)
+            || step.type.equals("FreeRide", ignoreCase = true)
+            || paceTarget?.isRest == true
+            || step.text?.contains("rest", ignoreCase = true) == true
+            || step.text?.contains("parado", ignoreCase = true) == true
+            || step.text?.contains("caminhando", ignoreCase = true) == true
 
         var zona = 2
         var paceMinStr = "--:--"
@@ -292,7 +300,10 @@ class WorkoutRepository(private val api: IntervalsApi) {
 
         when {
             isDescanso -> {
-                zona = 1
+                // zona = 0 → sem zona definida (cinza no gráfico, sem pace exibido)
+                zona = 0
+                paceMinStr = "--:--"
+                paceMaxStr = "--:--"
             }
 
             // Alvo em % do pace limiar (ex: 110-114% Pace do Intervals.icu).
