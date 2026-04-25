@@ -424,8 +424,8 @@ class RunningService : Service(), SensorEventListener {
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     screenOffTimestampMs = SystemClock.elapsedRealtime()
-                    urnaScreenOffResetFeito = false  // agendado reset em 21s
-                    Log.d(TAG, "📱 Tela apagada — reset urna agendado em 21s")
+                    urnaScreenOffResetFeito = false  // agendado reset em 50s
+                    Log.d(TAG, "📱 Tela apagada — reset urna agendado em 50s")
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     if (!estaCorrendo || estaPausado) return
@@ -2565,18 +2565,18 @@ class RunningService : Service(), SensorEventListener {
         val agoraElapsed = SystemClock.elapsedRealtime()
         val msPosScreenOn = if (screenOnTimestampMs > 0) agoraElapsed - screenOnTimestampMs else Long.MAX_VALUE
 
-        // ── Reset 21s após SCREEN_OFF ─────────────────────────────────────────────
+        // ── Reset 50s após SCREEN_OFF ─────────────────────────────────────────────
         // Conserva 2 votos mais recentes — GPS em batch mode pode ter acumulado
         // votos de posições antigas; limpeza garante reconstrução com dados frescos.
         if (!urnaScreenOffResetFeito && screenOffTimestampMs > 0) {
             val msPosScreenOff = SystemClock.elapsedRealtime() - screenOffTimestampMs
-            if (msPosScreenOff >= 21_000L) {
+            if (msPosScreenOff >= 50_000L) {
                 val doisRecentes = urnaVotosPace.toList().takeLast(2)
                 urnaVotosPace.clear()
                 urnaVotosPace.addAll(doisRecentes)
                 urnaAmplitude.clear()
                 urnaScreenOffResetFeito = true
-                Log.d(TAG, "📱 Reset urna 21s pós SCREEN_OFF: ${doisRecentes.size}v recentes conservados")
+                Log.d(TAG, "📱 Reset urna 50s pós SCREEN_OFF: ${doisRecentes.size}v recentes conservados")
             }
         }
 
